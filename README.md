@@ -104,8 +104,10 @@ form.
 ## Changelog
 
 ### 0.6.0
-- **Automatic updates**: releases are now signed with a stable identity
-  (CI-held certificate), and the app self-updates — downloads the latest
+- **Automatic updates**: releases are signed with a stable identity
+  (local `Clamshell Dev` certificate; built/released from a trusted Mac —
+  macOS 15 CI runners can't trust self-signed certs), and the app
+  self-updates — downloads the latest
   DMG, verifies the signing identity matches (so TCC grants survive),
   swaps the bundle, and relaunches. Auto-installs only when idle (never
   mid-session); otherwise the menu shows "Install Update".
