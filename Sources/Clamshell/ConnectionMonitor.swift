@@ -11,6 +11,7 @@ final class ConnectionMonitor {
     enum Trigger: String, CaseIterable {
         case screenSharing // Apple Screen Sharing / any VNC client, port 5900
         case jumpDesktop   // Jump Desktop Connect (Fluid protocol)
+        case sunshine      // Sunshine (Moonlight client streaming)
     }
 
     /// Called on the main queue whenever the connected state flips.
@@ -66,7 +67,24 @@ final class ConnectionMonitor {
         if jumpDesktopSessionActive() {
             return .jumpDesktop
         }
+        if sunshineSessionActive() {
+            return .sunshine
+        }
         return nil
+    }
+
+    /// Sunshine's GameStream discovery endpoint is unauthenticated and
+    /// reports state=SUNSHINE_SERVER_BUSY / currentgame != 0 while a
+    /// Moonlight session is streaming. Connection-refused (Sunshine not
+    /// installed/running) returns nil instantly and costs nothing.
+    static func sunshineSessionActive() -> Bool {
+        guard let xml = run("/usr/bin/curl", ["-s", "-m", "1", "http://127.0.0.1:47989/serverinfo"]),
+              !xml.isEmpty else { return false }
+        if xml.contains("SUNSHINE_SERVER_BUSY") { return true }
+        if let m = xml.range(of: "<currentgame>"), let e = xml.range(of: "</currentgame>") {
+            return xml[m.upperBound..<e.lowerBound].trimmingCharacters(in: .whitespaces) != "0"
+        }
+        return false
     }
 
     struct Connection {

@@ -51,6 +51,15 @@ Menu bar: collapse/restore manually, toggle auto mode, pick the remote
 screen size preset. Grant **Accessibility** permission when prompted —
 without it the collapse still works but window positions can't be restored.
 
+**Accessibility after updates:** the release DMG is ad-hoc signed, so macOS
+treats each update as a new app — the old grant in System Settings looks
+enabled but no longer applies. Fix: remove Clamshell from the Accessibility
+list (− button), relaunch the app, re-grant. To stop this permanently,
+create a local signing cert once (Keychain Access → Certificate Assistant →
+Create a Certificate → name `Clamshell Dev`, type Code Signing) — builds
+made on that Mac via `package.sh` then keep a stable identity and grants
+survive updates.
+
 ## Browser access
 
 Enable **Web Access** in the menu and open `http://<mac-hostname>:5901`
@@ -97,6 +106,15 @@ after macOS updates. Not sandboxable / not App Store eligible in its current
 form.
 
 ## Changelog
+
+### 0.5.0
+- Sunshine (Moonlight) session detection via the unauthenticated
+  `serverinfo` endpoint — streaming sessions trigger collapse/restore like
+  VNC/Jump/browser sessions.
+- `package.sh` signs with a local `Clamshell Dev` certificate when present,
+  keeping TCC grants (Accessibility) stable across updates; falls back to
+  ad-hoc.
+
 
 ### 0.4.1
 - Cloudflare Tunnel support: behind an HTTPS proxy the client uses

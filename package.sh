@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="${1:-0.4.1}"
+VERSION="${1:-0.5.0}"
 APP="dist/Clamshell.app"
 DMG="dist/Clamshell-${VERSION}.dmg"
 
@@ -44,8 +44,17 @@ cat > "${APP}/Contents/Info.plist" <<EOF
 </plist>
 EOF
 
-echo "=== ad-hoc codesign ==="
-codesign --force --deep --sign - "${APP}"
+# Prefer a stable local signing identity when one exists: ad-hoc signatures
+# change every build, which invalidates TCC grants (Accessibility) on every
+# update. Create once in Keychain Access: Certificate Assistant → Create a
+# Certificate → name "Clamshell Dev", type "Code Signing".
+if security find-identity -v -p codesigning 2>/dev/null | grep -q "Clamshell Dev"; then
+    SIGN_ID="Clamshell Dev"
+else
+    SIGN_ID="-"
+fi
+echo "=== codesign (identity: ${SIGN_ID}) ==="
+codesign --force --deep --sign "${SIGN_ID}" "${APP}"
 
 echo "=== creating ${DMG} ==="
 mkdir -p dist/dmg-root
