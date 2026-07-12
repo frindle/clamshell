@@ -59,8 +59,28 @@ no client app needed. It bridges to the Mac's own Screen Sharing service,
 so enable **"VNC viewers may control screen with password"** in
 System Settings → General → Sharing → Screen Sharing options (browser
 clients speak standard VNC auth, not Apple's). Browser sessions trigger
-the collapse just like native clients. LAN use only — don't port-forward
-this; VNC-over-plain-WebSocket is not encrypted.
+the collapse just like native clients.
+
+**Remote access:** don't port-forward these ports raw (unencrypted
+WebSocket). Two good options:
+
+- **WireGuard/Tailscale VPN** — works as-is, nothing to configure.
+- **Cloudflare Tunnel** — route both ports through one hostname; Clamshell
+  detects the proxy (`X-Forwarded-Proto`) and switches the client to
+  same-origin `wss://`. Example `config.yml` ingress:
+
+  ```yaml
+  ingress:
+    - hostname: mac.example.com
+      path: ^/websockify$
+      service: http://localhost:5902
+    - hostname: mac.example.com
+      service: http://localhost:5901
+    - service: http_status:404
+  ```
+
+  Put Cloudflare Access in front of the hostname — the VNC password is the
+  only other lock on the door.
 
 ## Remote client notes
 
@@ -77,6 +97,12 @@ after macOS updates. Not sandboxable / not App Store eligible in its current
 form.
 
 ## Changelog
+
+### 0.4.1
+- Cloudflare Tunnel support: behind an HTTPS proxy the client uses
+  same-origin `wss://` (path `/websockify`) instead of the raw :5902 port.
+  README documents the ingress config.
+
 
 ### 0.4.0
 - Web Access URLs show the Mac's LAN IP instead of its hostname.
