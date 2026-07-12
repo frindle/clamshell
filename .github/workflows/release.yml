@@ -21,9 +21,14 @@ jobs:
           security unlock-keychain -p ci build.keychain
           security import cert.p12 -k build.keychain -P "$PW" -T /usr/bin/codesign
           security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          # Make the keychain searchable — default-keychain alone doesn't
+          # put it in the search list, so find-identity/codesign miss it.
+          security list-keychains -d user -s build.keychain
           openssl pkcs12 -in cert.p12 -clcerts -nokeys -passin pass:"$PW" -out cert.crt
           sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain cert.crt
           rm cert.p12
+          echo "--- identities visible:"
+          security find-identity -v -p codesigning
       - name: Package
         run: ./package.sh "${GITHUB_REF_NAME#v}"
       - name: Verify signature identity
