@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -77,6 +78,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(presetItem)
         menu.setSubmenu(presetMenu, for: presetItem)
 
+        let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
+        mute.state = coordinator.comfort.muteWhileCollapsed ? .on : .off
+        mute.target = self
+        menu.addItem(mute)
+
+        // SMAppService only works from a real .app bundle; hide the toggle
+        // when running the bare SwiftPM binary during development.
+        if Bundle.main.bundleIdentifier != nil {
+            let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
+            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            login.target = self
+            menu.addItem(login)
+        }
+
+        menu.addItem(.separator())
+        menu.addItem(withTitle: "Open Log File", action: #selector(openLog), keyEquivalent: "l")
+            .target = self
+
         if !WindowLayoutStore.hasAccessibilityPermission {
             menu.addItem(.separator())
             let warn = NSMenuItem(
@@ -109,6 +128,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         coordinator.preset = preset
         UserDefaults.standard.set(preset.name, forKey: "preset")
         rebuildMenu()
+    }
+
+    @objc private func toggleMute() {
+        coordinator.comfort.muteWhileCollapsed.toggle()
+        UserDefaults.standard.set(coordinator.comfort.muteWhileCollapsed, forKey: "muteWhileCollapsed")
+        rebuildMenu()
+    }
+
+    @objc private func toggleLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            clog("start-at-login toggle failed: \(error)")
+        }
+        rebuildMenu()
+    }
+
+    @objc private func openLog() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: clamshellLogPath))
     }
 
     @objc private func openAccessibilitySettings() {

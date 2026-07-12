@@ -43,8 +43,7 @@ final class WindowLayoutStore {
                 ))
             }
         }
-        NSLog("[clamshell] snapshot: %d windows across %d apps",
-              saved.count, Set(saved.map(\.pid)).count)
+        clog("snapshot: \(saved.count) windows across \(Set(saved.map(\.pid)).count) apps")
     }
 
     func restore() {
@@ -63,7 +62,7 @@ final class WindowLayoutStore {
             guard let win = target else { continue }
             if setFrame(of: win, to: w.frame) { restored += 1 }
         }
-        NSLog("[clamshell] restore: %d/%d windows restored", restored, saved.count)
+        clog("restore: \(restored)/\(saved.count) windows restored")
     }
 
     // MARK: - AX plumbing

@@ -60,18 +60,17 @@ final class VirtualDisplayController {
             CGVirtualDisplayMode(width: preset.pixelsWide, height: preset.pixelsHigh, refreshRate: 60),
         ]
         guard newDisplay.apply(settings) else {
-            NSLog("[clamshell] applySettings failed for virtual display")
+            clog("applySettings failed for virtual display")
             return nil
         }
         display = newDisplay
-        NSLog("[clamshell] virtual display created: id=%u %@ (%ux%u @2x)",
-              newDisplay.displayID, preset.name, preset.pointsWide, preset.pointsHigh)
+        clog("virtual display created: id=\(newDisplay.displayID) \(preset.name) (\(preset.pointsWide)x\(preset.pointsHigh) @2x)")
         return CGDirectDisplayID(newDisplay.displayID)
     }
 
     func destroy() {
         guard let d = display else { return }
-        NSLog("[clamshell] destroying virtual display id=%u", d.displayID)
+        clog("destroying virtual display id=\(d.displayID)")
         display = nil // releasing the instance removes the display
     }
 }
