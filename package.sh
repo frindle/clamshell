@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="${1:-0.2.0}"
+VERSION="${1:-0.3.0}"
 APP="dist/Clamshell.app"
 DMG="dist/Clamshell-${VERSION}.dmg"
 
@@ -22,6 +22,7 @@ cp "${BIN}" "${APP}/Contents/MacOS/Clamshell"
 # SwiftPM resource bundle (noVNC assets) — Bundle.module finds it in
 # Contents/Resources when running from the .app.
 cp -R ".build/apple/Products/Release/Clamshell_Clamshell.bundle" "${APP}/Contents/Resources/"
+cp AppIcon.icns "${APP}/Contents/Resources/"
 
 cat > "${APP}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -38,6 +39,7 @@ cat > "${APP}/Contents/Info.plist" <<EOF
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
     <key>NSHighResolutionCapable</key><true/>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>
 </plist>
 EOF

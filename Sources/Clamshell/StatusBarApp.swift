@@ -1,8 +1,9 @@
 import AppKit
 import ServiceManagement
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
+    private var updateAvailable: String? // e.g. "v0.4.0" when newer than us
     private let coordinator = CollapseCoordinator()
     private let monitor = ConnectionMonitor()
     private let webServer = WebServer()
@@ -46,6 +47,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if UserDefaults.standard.bool(forKey: "webAccess") {
             webServer.start()
         }
+
+        checkForUpdate()
+        Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            self?.checkForUpdate()
+        }
+    }
+
+    /// Compares the running bundle version against the latest GitHub release
+    /// tag. Skipped for the bare dev binary (no bundle version).
+    private func checkForUpdate() {
+        guard let current = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String else { return }
+        let url = URL(string: "https://api.github.com/repos/frindle/clamshell/releases/latest")!
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = json["tag_name"] as? String else { return }
+            let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            DispatchQueue.main.async {
+                self?.updateAvailable = latest.compare(current, options: .numeric) == .orderedDescending ? tag : nil
+                if self?.updateAvailable != nil { clog("update available: \(tag) (running \(current))") }
+                self?.rebuildMenu()
+            }
+        }.resume()
     }
 
     private func recomputeSessionState() {
@@ -63,8 +87,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
     }
 
+    private let menu = NSMenu()
+
     private func rebuildMenu() {
-        let menu = NSMenu()
+        menu.removeAllItems()
 
         let stateLine = NSMenuItem(
             title: coordinator.state == .collapsed ? "Collapsed (remote)" : "Desk mode",
@@ -72,6 +98,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         stateLine.isEnabled = false
         menu.addItem(stateLine)
+        if let tag = updateAvailable {
+            let item = NSMenuItem(title: "⬆ Update Available: \(tag)", action: #selector(openReleases), keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
         menu.addItem(.separator())
 
         if coordinator.state == .collapsed {
@@ -135,13 +166,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             )
             warn.target = self
             menu.addItem(warn)
+            // macOS only re-evaluates the TCC grant at process launch.
+            let hint = NSMenuItem(title: "   (already granted? quit & reopen Clamshell)", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            menu.addItem(hint)
         }
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Clamshell", action: #selector(quit), keyEquivalent: "q")
             .target = self
 
+        menu.delegate = self // re-check permissions/state every open
         statusItem.menu = menu
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        // Repopulate on every open so the Accessibility warning clears
+        // without waiting for a state change.
+        rebuildMenu()
+    }
+
+    @objc private func openReleases() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/frindle/clamshell/releases")!)
     }
 
     @objc private func collapseNow() { coordinator.collapse() }

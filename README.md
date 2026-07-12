@@ -78,6 +78,14 @@ form.
 
 ## Changelog
 
+### 0.3.0
+- App icon (laptop).
+- Update-available check against GitHub releases (menu item when newer).
+- iPad mini screen-size preset.
+- Menu re-checks Accessibility permission on every open, with a hint that
+  macOS requires quitting/reopening after granting.
+
+
 ### 0.2.0
 - Browser-based remote desktop: vendored noVNC served at `http://<mac>:5901`
   with a WebSocket→VNC bridge; browser sessions trigger collapse/restore.

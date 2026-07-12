@@ -17,8 +17,9 @@ struct DisplayPreset: Equatable {
     /// edge-to-edge with no letterboxing.
     static let iPadAir13 = DisplayPreset(name: "iPad Air 13\"", pointsWide: 1366, pointsHigh: 1024)
     static let iPadPro11 = DisplayPreset(name: "iPad Pro 11\"", pointsWide: 1194, pointsHigh: 834)
+    static let iPadMini = DisplayPreset(name: "iPad mini", pointsWide: 1133, pointsHigh: 744)
     static let hd1080 = DisplayPreset(name: "1080p (16:9)", pointsWide: 1920, pointsHigh: 1080)
-    static let all: [DisplayPreset] = [.iPadAir13, .iPadPro11, .hd1080]
+    static let all: [DisplayPreset] = [.iPadAir13, .iPadPro11, .iPadMini, .hd1080]
 }
 
 /// Owns the lifecycle of the private-API virtual display. The display exists

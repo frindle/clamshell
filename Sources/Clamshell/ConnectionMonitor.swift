@@ -17,7 +17,6 @@ final class ConnectionMonitor {
     var onChange: ((Bool, Trigger?) -> Void)?
 
     private(set) var isConnected = false
-    private var activeTrigger: Trigger?
     private var timer: Timer?
     private let pollInterval: TimeInterval
 
@@ -45,7 +44,6 @@ final class ConnectionMonitor {
         let connected = trigger != nil
         guard connected != isConnected else { return }
         isConnected = connected
-        activeTrigger = trigger
         clog("remote session \(connected ? "CONNECTED" : "DISCONNECTED")\(trigger.map { " via \($0.rawValue)" } ?? "")")
         onChange?(connected, trigger)
     }
