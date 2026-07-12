@@ -78,9 +78,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                   let tag = json["tag_name"] as? String else { return }
             let latest = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
             DispatchQueue.main.async {
-                self?.updateAvailable = latest.compare(current, options: .numeric) == .orderedDescending ? tag : nil
-                if self?.updateAvailable != nil { clog("update available: \(tag) (running \(current))") }
-                self?.rebuildMenu()
+                guard let self else { return }
+                self.updateAvailable = latest.compare(current, options: .numeric) == .orderedDescending ? tag : nil
+                if self.updateAvailable != nil { clog("update available: \(tag) (running \(current))") }
+                self.rebuildMenu()
+                self.maybeAutoInstall()
             }
         }.resume()
     }
@@ -112,7 +114,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stateLine.isEnabled = false
         menu.addItem(stateLine)
         if let tag = updateAvailable {
-            let item = NSMenuItem(title: "⬆ Update Available: \(tag)", action: #selector(openReleases), keyEquivalent: "")
+            let item = NSMenuItem(
+                title: installingUpdate ? "Installing \(tag)…" : "⬆ Install Update \(tag)",
+                action: installingUpdate ? nil : #selector(installUpdate), keyEquivalent: ""
+            )
             item.target = self
             menu.addItem(item)
         }
@@ -219,8 +224,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
     }
 
-    @objc private func openReleases() {
-        NSWorkspace.shared.open(URL(string: "https://github.com/frindle/clamshell/releases")!)
+    private var installingUpdate = false
+
+    /// Auto-install when nothing is at stake: not collapsed, no live
+    /// sessions. A surprise relaunch mid-remote-session would drop the
+    /// user's connection.
+    private func maybeAutoInstall() {
+        guard updateAvailable != nil, !installingUpdate,
+              UpdateInstaller.canInstall,
+              coordinator.state == .idle,
+              !vncSessionActive, !webSessionActive else { return }
+        installUpdate()
+    }
+
+    @objc private func installUpdate() {
+        guard !installingUpdate else { return }
+        installingUpdate = true
+        rebuildMenu()
+        UpdateInstaller.install { [weak self] errorMessage in
+            // Only called on failure — success relaunches the app.
+            self?.installingUpdate = false
+            self?.rebuildMenu()
+            clog("update aborted: \(errorMessage) — opening releases page")
+            NSWorkspace.shared.open(URL(string: "https://github.com/frindle/clamshell/releases")!)
+        }
     }
 
     @objc private func collapseNow() { coordinator.collapse() }

@@ -10,8 +10,24 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Import signing certificate
+        env:
+          P12: ${{ secrets.CLAMSHELL_CERT_P12 }}
+          PW: ${{ secrets.CLAMSHELL_CERT_PASSWORD }}
+        run: |
+          echo "$P12" | base64 -d > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$PW" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          openssl pkcs12 -in cert.p12 -clcerts -nokeys -passin pass:"$PW" -out cert.crt
+          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain cert.crt
+          rm cert.p12
       - name: Package
         run: ./package.sh "${GITHUB_REF_NAME#v}"
+      - name: Verify signature identity
+        run: codesign -dv dist/Clamshell.app 2>&1 | grep Authority
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}

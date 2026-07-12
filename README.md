@@ -51,14 +51,10 @@ Menu bar: collapse/restore manually, toggle auto mode, pick the remote
 screen size preset. Grant **Accessibility** permission when prompted —
 without it the collapse still works but window positions can't be restored.
 
-**Accessibility after updates:** the release DMG is ad-hoc signed, so macOS
-treats each update as a new app — the old grant in System Settings looks
-enabled but no longer applies. Fix: remove Clamshell from the Accessibility
-list (− button), relaunch the app, re-grant. To stop this permanently,
-create a local signing cert once (Keychain Access → Certificate Assistant →
-Create a Certificate → name `Clamshell Dev`, type Code Signing) — builds
-made on that Mac via `package.sh` then keep a stable identity and grants
-survive updates.
+**Accessibility after updates:** releases from v0.6.0 onward are signed
+with a stable identity, so grants survive updates. If you're coming from an
+older (ad-hoc) build: remove Clamshell from the Accessibility list
+(− button), relaunch, re-grant — once.
 
 ## Browser access
 
@@ -106,6 +102,14 @@ after macOS updates. Not sandboxable / not App Store eligible in its current
 form.
 
 ## Changelog
+
+### 0.6.0
+- **Automatic updates**: releases are now signed with a stable identity
+  (CI-held certificate), and the app self-updates — downloads the latest
+  DMG, verifies the signing identity matches (so TCC grants survive),
+  swaps the bundle, and relaunches. Auto-installs only when idle (never
+  mid-session); otherwise the menu shows "Install Update".
+
 
 ### 0.5.1
 - `Clamshell collapse` / `Clamshell restore` CLI commands signal the running
