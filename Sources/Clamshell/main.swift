@@ -17,6 +17,13 @@ if args.count > 1 {
         controller.destroy()
         print("Done.")
         exit(0)
+    case "test-web":
+        let server = WebServer()
+        server.onSessionChange = { active in print("browser session active: \(active)") }
+        server.start()
+        guard server.isRunning else { print("FAILED to start web server"); exit(1) }
+        print("Serving noVNC on http://localhost:\(server.httpPort) — ctrl-C to stop")
+        RunLoop.main.run()
     case "test-detect":
         let trigger = ConnectionMonitor.detectActiveSession()
         print("Remote session: \(trigger.map { "ACTIVE via \($0.rawValue)" } ?? "none")")

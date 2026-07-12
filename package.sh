@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.2.0}"
 APP="dist/Clamshell.app"
 DMG="dist/Clamshell-${VERSION}.dmg"
 
@@ -17,8 +17,11 @@ BIN=".build/apple/Products/Release/Clamshell"
 
 echo "=== assembling ${APP} ==="
 rm -rf dist
-mkdir -p "${APP}/Contents/MacOS"
+mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp "${BIN}" "${APP}/Contents/MacOS/Clamshell"
+# SwiftPM resource bundle (noVNC assets) — Bundle.module finds it in
+# Contents/Resources when running from the .app.
+cp -R ".build/apple/Products/Release/Clamshell_Clamshell.bundle" "${APP}/Contents/Resources/"
 
 cat > "${APP}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
