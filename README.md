@@ -107,6 +107,14 @@ form.
 
 ## Changelog
 
+### 0.5.1
+- `Clamshell collapse` / `Clamshell restore` CLI commands signal the running
+  app — wire them into Sunshine's per-app prep commands (do/undo) for
+  instant, event-driven collapse instead of the 2s detection poll:
+  `do: /Applications/Clamshell.app/Contents/MacOS/Clamshell collapse`,
+  `undo: ... restore`.
+
+
 ### 0.5.0
 - Sunshine (Moonlight) session detection via the unauthenticated
   `serverinfo` endpoint — streaming sessions trigger collapse/restore like
