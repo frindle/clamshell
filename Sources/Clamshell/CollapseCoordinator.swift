@@ -19,6 +19,7 @@ final class CollapseCoordinator {
     private(set) var state: State = .idle
     private let virtualDisplay = VirtualDisplayController()
     private let layout = WindowLayoutStore()
+    let comfort = SessionComfort()
 
     /// Physical display IDs that were mirrored, for exact un-mirroring.
     private var mirroredDisplays: [CGDirectDisplayID] = []
@@ -46,21 +47,23 @@ final class CollapseCoordinator {
 
     func collapse() {
         guard state == .idle else { return }
-        NSLog("[clamshell] collapsing to %@", preset.name)
+        clog("collapsing to \(preset.name)")
 
         layout.snapshot()
 
         guard let virtualID = virtualDisplay.create(preset: preset) else {
-            NSLog("[clamshell] collapse aborted: virtual display creation failed")
+            clog("collapse aborted: virtual display creation failed")
             return
         }
 
         // Give WindowServer a beat to finish attaching the new display
         // before reconfiguring mirroring.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.mirrorPhysicalDisplays(onto: virtualID)
-            self?.state = .collapsed
-            self?.onStateChange?(.collapsed)
+            guard let self else { return }
+            self.mirrorPhysicalDisplays(onto: virtualID)
+            self.comfort.sessionDidStart()
+            self.state = .collapsed
+            self.onStateChange?(.collapsed)
         }
     }
 
@@ -68,8 +71,9 @@ final class CollapseCoordinator {
         pendingRestore?.cancel()
         pendingRestore = nil
         guard state == .collapsed else { return }
-        NSLog("[clamshell] restoring physical displays")
+        clog("restoring physical displays")
 
+        comfort.sessionDidEnd()
         unmirrorPhysicalDisplays()
         virtualDisplay.destroy()
 
@@ -84,7 +88,7 @@ final class CollapseCoordinator {
 
     private func scheduleRestore() {
         guard state == .collapsed else { return }
-        NSLog("[clamshell] disconnect — restoring in %.0fs unless reconnected", restoreDelay)
+        clog("disconnect — restoring in \(Int(restoreDelay))s unless reconnected")
         let work = DispatchWorkItem { [weak self] in self?.restore() }
         pendingRestore = work
         DispatchQueue.main.asyncAfter(deadline: .now() + restoreDelay, execute: work)
@@ -105,7 +109,7 @@ final class CollapseCoordinator {
 
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success, let cfg = config else {
-            NSLog("[clamshell] CGBeginDisplayConfiguration failed")
+            clog("CGBeginDisplayConfiguration failed")
             return
         }
         for id in physical {
@@ -114,9 +118,9 @@ final class CollapseCoordinator {
         let err = CGCompleteDisplayConfiguration(cfg, .permanently)
         if err == .success {
             mirroredDisplays = physical
-            NSLog("[clamshell] mirrored %d physical display(s) onto virtual %u", physical.count, virtualID)
+            clog("mirrored \(physical.count) physical display(s) onto virtual \(virtualID)")
         } else {
-            NSLog("[clamshell] mirroring failed: %d", err.rawValue)
+            clog("mirroring failed: \(err.rawValue)")
         }
     }
 
@@ -128,8 +132,7 @@ final class CollapseCoordinator {
             CGConfigureDisplayMirrorOfDisplay(cfg, id, kCGNullDirectDisplay)
         }
         let err = CGCompleteDisplayConfiguration(cfg, .permanently)
-        NSLog("[clamshell] un-mirrored %d display(s): %@",
-              mirroredDisplays.count, err == .success ? "ok" : "error \(err.rawValue)")
+        clog("un-mirrored \(mirroredDisplays.count) display(s): \(err == .success ? "ok" : "error \(err.rawValue)")")
         mirroredDisplays = []
     }
 }

@@ -30,13 +30,21 @@ against a real multi-monitor remote setup.
   Sharing port (5900) and for active Jump Desktop Connect sessions. 10-second
   grace period on disconnect so a flaky connection doesn't thrash displays.
 
-## Usage
+## Install
+
+Download `Clamshell-<version>.dmg` from [Releases](https://github.com/frindle/clamshell/releases),
+drag Clamshell.app to Applications. The app is ad-hoc signed (no Apple
+Developer ID), so on first launch **right-click → Open**, or clear
+quarantine: `xattr -dr com.apple.quarantine /Applications/Clamshell.app`.
+
+Or build from source (no Xcode project needed):
 
 ```
 swift build -c release
 .build/release/Clamshell            # menu bar app
 .build/release/Clamshell test-virtual-display   # 10s smoke test
 .build/release/Clamshell test-detect            # print detection state
+./package.sh 0.1.0                  # build .app + .dmg into dist/
 ```
 
 Menu bar: collapse/restore manually, toggle auto mode, pick the remote
@@ -60,6 +68,11 @@ form.
 ## Changelog
 
 ### 0.1.0
-- Initial scaffold: virtual display creation, mirror-based collapse,
+- Initial release: virtual display creation, mirror-based collapse,
   AX window snapshot/restore, VNC + Jump Desktop detection, menu bar app
   with auto mode and resolution presets.
+- Display-sleep prevention while a remote session is active.
+- Optional "mute speakers while remote" toggle.
+- Start at Login toggle (when running as .app).
+- File log at `~/Library/Logs/Clamshell.log` (menu: Open Log File).
+- `package.sh` + tag-triggered release workflow building the .app/.dmg.

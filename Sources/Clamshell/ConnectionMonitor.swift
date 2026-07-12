@@ -46,9 +46,7 @@ final class ConnectionMonitor {
         guard connected != isConnected else { return }
         isConnected = connected
         activeTrigger = trigger
-        NSLog("[clamshell] remote session %@%@",
-              connected ? "CONNECTED" : "DISCONNECTED",
-              trigger.map { " via \($0.rawValue)" } ?? "")
+        clog("remote session \(connected ? "CONNECTED" : "DISCONNECTED")\(trigger.map { " via \($0.rawValue)" } ?? "")")
         onChange?(connected, trigger)
     }
 
