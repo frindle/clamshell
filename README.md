@@ -103,6 +103,12 @@ form.
 
 ## Changelog
 
+### 0.6.1
+- `Clamshell collapse` accepts client pixel dimensions — wire Sunshine's
+  env vars into the prep command for automatic per-device resolution:
+  `sh -c '/Applications/Clamshell.app/Contents/MacOS/Clamshell collapse "$SUNSHINE_CLIENT_WIDTH" "$SUNSHINE_CLIENT_HEIGHT"'`
+  (undo stays `... restore`). Falls back to the menu preset when absent.
+
 ### 0.6.0
 - **Automatic updates**: releases are signed with a stable identity
   (local `Clamshell Dev` certificate; built/released from a trusted Mac —

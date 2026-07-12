@@ -52,9 +52,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // External collapse/restore commands (`Clamshell collapse|restore`),
         // used by Sunshine prep-commands for event-driven triggering.
         let dnc = DistributedNotificationCenter.default()
-        dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.collapse"), object: nil, queue: .main) { [weak self] _ in
-            clog("external collapse command")
-            self?.coordinator.collapse()
+        dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.collapse"), object: nil, queue: .main) { [weak self] note in
+            guard let self else { return }
+            // Optional client pixel dimensions (Sunshine prep-command env
+            // vars) — size the virtual display to the connecting device.
+            if let w = (note.userInfo?["width"] as? String).flatMap(UInt32.init),
+               let h = (note.userInfo?["height"] as? String).flatMap(UInt32.init),
+               w >= 640, h >= 480 {
+                self.coordinator.preset = DisplayPreset(
+                    name: "Client (\(w)×\(h))", pointsWide: w / 2, pointsHigh: h / 2
+                )
+            }
+            clog("external collapse command (\(self.coordinator.preset.name))")
+            self.coordinator.collapse()
         }
         dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.restore"), object: nil, queue: .main) { [weak self] _ in
             clog("external restore command")
