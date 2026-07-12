@@ -6,6 +6,15 @@ import AppKit
 let args = CommandLine.arguments
 if args.count > 1 {
     switch args[1] {
+    case "collapse", "restore":
+        // Signal the running menu bar app (e.g. from Sunshine prep-commands
+        // for instant, event-driven collapse instead of waiting on the poll).
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name("com.frindle.clamshell.\(args[1])"),
+            object: nil, userInfo: nil, deliverImmediately: true
+        )
+        print("sent \(args[1]) to running Clamshell")
+        exit(0)
     case "test-virtual-display":
         let controller = VirtualDisplayController()
         guard let id = controller.create(preset: .iPadAir13) else {
