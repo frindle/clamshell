@@ -15,6 +15,35 @@ final class WebServer {
     let httpPort: NWEndpoint.Port = 5901
     let wsPort: NWEndpoint.Port = 5902
 
+    /// Specific LAN IP to bind to, or nil for all interfaces.
+    var bindHost: String?
+
+    /// The address to advertise in URLs: the bind IP if set, else the
+    /// first LAN IPv4.
+    var displayHost: String {
+        bindHost ?? Self.lanIPv4s().first?.ip ?? "localhost"
+    }
+
+    /// Non-loopback IPv4 addresses with their interface names (en0, en1…).
+    static func lanIPv4s() -> [(name: String, ip: String)] {
+        var result: [(String, String)] = []
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return [] }
+        defer { freeifaddrs(ifaddr) }
+        for ptr in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let ifa = ptr.pointee
+            guard let sa = ifa.ifa_addr, sa.pointee.sa_family == UInt8(AF_INET),
+                  (ifa.ifa_flags & UInt32(IFF_LOOPBACK)) == 0,
+                  (ifa.ifa_flags & UInt32(IFF_UP)) != 0 else { continue }
+            var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+            if getnameinfo(sa, socklen_t(sa.pointee.sa_len), &host, socklen_t(host.count),
+                           nil, 0, NI_NUMERICHOST) == 0 {
+                result.append((String(cString: ifa.ifa_name), String(cString: host)))
+            }
+        }
+        return result
+    }
+
     /// Fires on the main queue when the count of live browser sessions
     /// transitions between zero and non-zero.
     var onSessionChange: ((Bool) -> Void)?
@@ -34,7 +63,7 @@ final class WebServer {
             try startHTTP()
             try startWS()
             isRunning = true
-            clog("web access ON: http://\(Host.current().name ?? "localhost"):\(httpPort) (ws bridge :\(wsPort))")
+            clog("web access ON: http://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bindHost ?? "all interfaces"))")
         } catch {
             clog("web access failed to start: \(error)")
             stop()
@@ -50,8 +79,16 @@ final class WebServer {
 
     // MARK: - HTTP static server (noVNC assets)
 
+    private func makeListener(_ base: NWParameters, port: NWEndpoint.Port) throws -> NWListener {
+        if let host = bindHost {
+            base.requiredLocalEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
+            return try NWListener(using: base)
+        }
+        return try NWListener(using: base, on: port)
+    }
+
     private func startHTTP() throws {
-        let listener = try NWListener(using: .tcp, on: httpPort)
+        let listener = try makeListener(.tcp, port: httpPort)
         listener.newConnectionHandler = { [weak self] conn in
             conn.start(queue: self?.queue ?? .global())
             self?.receiveRequest(conn, buffer: Data())
@@ -140,12 +177,12 @@ final class WebServer {
     // MARK: - WebSocket → VNC bridge
 
     private func startWS() throws {
-        let params = NWParameters.tcp
+        let wsParams = NWParameters.tcp
         let wsOptions = NWProtocolWebSocket.Options()
         wsOptions.autoReplyPing = true
-        params.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+        wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
 
-        let listener = try NWListener(using: params, on: wsPort)
+        let listener = try makeListener(wsParams, port: wsPort)
         listener.newConnectionHandler = { [weak self] ws in
             self?.bridge(ws)
         }

@@ -44,6 +44,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.recomputeSessionState()
         }
         monitor.start()
+        webServer.bindHost = UserDefaults.standard.string(forKey: "bindHost")
         if UserDefaults.standard.bool(forKey: "webAccess") {
             webServer.start()
         }
@@ -132,13 +133,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let web = NSMenuItem(
             title: webServer.isRunning
-                ? "Web Access On — http://\(Host.current().name ?? "localhost"):\(webServer.httpPort)"
+                ? "Web Access On — http://\(webServer.displayHost):\(webServer.httpPort)"
                 : "Enable Web Access (browser remote desktop)",
             action: #selector(toggleWeb), keyEquivalent: ""
         )
         web.state = webServer.isRunning ? .on : .off
         web.target = self
         menu.addItem(web)
+
+        // Bind-address picker — only interesting with more than one LAN IP.
+        let ips = WebServer.lanIPv4s()
+        if ips.count > 1 {
+            let bindMenu = NSMenu()
+            let all = NSMenuItem(title: "All Interfaces", action: #selector(selectBind(_:)), keyEquivalent: "")
+            all.state = webServer.bindHost == nil ? .on : .off
+            all.target = self
+            bindMenu.addItem(all)
+            for (name, ip) in ips {
+                let item = NSMenuItem(title: "\(ip) (\(name))", action: #selector(selectBind(_:)), keyEquivalent: "")
+                item.representedObject = ip
+                item.state = webServer.bindHost == ip ? .on : .off
+                item.target = self
+                bindMenu.addItem(item)
+            }
+            let bindItem = NSMenuItem(title: "Listen On", action: nil, keyEquivalent: "")
+            menu.addItem(bindItem)
+            menu.setSubmenu(bindMenu, for: bindItem)
+        }
 
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
         mute.state = coordinator.comfort.muteWhileCollapsed ? .on : .off
@@ -214,6 +235,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             webServer.start()
         }
         UserDefaults.standard.set(webServer.isRunning, forKey: "webAccess")
+        rebuildMenu()
+    }
+
+    @objc private func selectBind(_ sender: NSMenuItem) {
+        let ip = sender.representedObject as? String // nil = all interfaces
+        webServer.bindHost = ip
+        UserDefaults.standard.set(ip, forKey: "bindHost")
+        if webServer.isRunning { // rebind live
+            webServer.stop()
+            webServer.start()
+        }
         rebuildMenu()
     }
 

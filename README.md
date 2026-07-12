@@ -78,6 +78,12 @@ form.
 
 ## Changelog
 
+### 0.4.0
+- Web Access URLs show the Mac's LAN IP instead of its hostname.
+- "Listen On" picker when the Mac has multiple LAN IPs — bind the web
+  server to a specific interface or all of them.
+
+
 ### 0.3.0
 - App icon (laptop).
 - Update-available check against GitHub releases (menu item when newer).

@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-VERSION="${1:-0.3.0}"
+VERSION="${1:-0.4.0}"
 APP="dist/Clamshell.app"
 DMG="dist/Clamshell-${VERSION}.dmg"
 
