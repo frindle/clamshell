@@ -11,7 +11,8 @@ let package = Package(
         .target(name: "CGVirtualDisplayShim"),
         .executableTarget(
             name: "Clamshell",
-            dependencies: ["CGVirtualDisplayShim"]
+            dependencies: ["CGVirtualDisplayShim"],
+            resources: [.copy("Resources/novnc")]
         ),
     ]
 )

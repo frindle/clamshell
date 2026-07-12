@@ -5,7 +5,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let coordinator = CollapseCoordinator()
     private let monitor = ConnectionMonitor()
+    private let webServer = WebServer()
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
+
+    // Remote-session state is the OR of the two signals: polled VNC/Jump
+    // detection and live browser (noVNC) sessions. Either alone keeps the
+    // collapse active.
+    private var vncSessionActive = false
+    private var webSessionActive = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !WindowLayoutStore.hasAccessibilityPermission {
@@ -26,10 +33,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.rebuildMenu()
         }
         monitor.onChange = { [weak self] connected, _ in
-            guard let self, self.autoMode else { return }
-            self.coordinator.remoteSessionChanged(connected: connected)
+            guard let self else { return }
+            self.vncSessionActive = connected
+            self.recomputeSessionState()
+        }
+        webServer.onSessionChange = { [weak self] active in
+            guard let self else { return }
+            self.webSessionActive = active
+            self.recomputeSessionState()
         }
         monitor.start()
+        if UserDefaults.standard.bool(forKey: "webAccess") {
+            webServer.start()
+        }
+    }
+
+    private func recomputeSessionState() {
+        guard autoMode else { return }
+        coordinator.remoteSessionChanged(connected: vncSessionActive || webSessionActive)
     }
 
     private func updateIcon() {
@@ -77,6 +98,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let presetItem = NSMenuItem(title: "Remote Screen Size", action: nil, keyEquivalent: "")
         menu.addItem(presetItem)
         menu.setSubmenu(presetMenu, for: presetItem)
+
+        let web = NSMenuItem(
+            title: webServer.isRunning
+                ? "Web Access On — http://\(Host.current().name ?? "localhost"):\(webServer.httpPort)"
+                : "Enable Web Access (browser remote desktop)",
+            action: #selector(toggleWeb), keyEquivalent: ""
+        )
+        web.state = webServer.isRunning ? .on : .off
+        web.target = self
+        menu.addItem(web)
 
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
         mute.state = coordinator.comfort.muteWhileCollapsed ? .on : .off
@@ -127,6 +158,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
               let preset = DisplayPreset.all.first(where: { $0.name == name }) else { return }
         coordinator.preset = preset
         UserDefaults.standard.set(preset.name, forKey: "preset")
+        rebuildMenu()
+    }
+
+    @objc private func toggleWeb() {
+        if webServer.isRunning {
+            webServer.stop()
+        } else {
+            webServer.start()
+        }
+        UserDefaults.standard.set(webServer.isRunning, forKey: "webAccess")
         rebuildMenu()
     }
 

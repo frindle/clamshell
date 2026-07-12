@@ -51,6 +51,17 @@ Menu bar: collapse/restore manually, toggle auto mode, pick the remote
 screen size preset. Grant **Accessibility** permission when prompted —
 without it the collapse still works but window positions can't be restored.
 
+## Browser access
+
+Enable **Web Access** in the menu and open `http://<mac-hostname>:5901`
+from any browser on your network — a full remote desktop session (noVNC),
+no client app needed. It bridges to the Mac's own Screen Sharing service,
+so enable **"VNC viewers may control screen with password"** in
+System Settings → General → Sharing → Screen Sharing options (browser
+clients speak standard VNC auth, not Apple's). Browser sessions trigger
+the collapse just like native clients. LAN use only — don't port-forward
+this; VNC-over-plain-WebSocket is not encrypted.
+
 ## Remote client notes
 
 - **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
@@ -66,6 +77,11 @@ after macOS updates. Not sandboxable / not App Store eligible in its current
 form.
 
 ## Changelog
+
+### 0.2.0
+- Browser-based remote desktop: vendored noVNC served at `http://<mac>:5901`
+  with a WebSocket→VNC bridge; browser sessions trigger collapse/restore.
+- Menu toggle for Web Access (persisted).
 
 ### 0.1.0
 - Initial release: virtual display creation, mirror-based collapse,
