@@ -54,6 +54,10 @@ else
     SIGN_ID="-"
 fi
 echo "=== codesign (identity: ${SIGN_ID}) ==="
+# Copied files can carry Finder/quarantine extended attributes, which
+# codesign rejects ("resource fork, Finder information, or similar
+# detritus not allowed"). Strip them first.
+xattr -cr "${APP}"
 codesign --force --deep --sign "${SIGN_ID}" "${APP}"
 
 echo "=== creating ${DMG} ==="
