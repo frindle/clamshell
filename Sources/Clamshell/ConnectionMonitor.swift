@@ -21,6 +21,9 @@ final class ConnectionMonitor {
     private var timer: Timer?
     private let pollInterval: TimeInterval
 
+    /// Sunshine reported busy on the previous poll (edge tracking).
+    private var sunshineWasBusy = false
+
     init(pollInterval: TimeInterval = 2.0) {
         self.pollInterval = pollInterval
     }
@@ -41,7 +44,20 @@ final class ConnectionMonitor {
     }
 
     private func poll() {
-        let trigger = Self.detectActiveSession()
+        var trigger = Self.detectActiveSession()
+        if trigger == .sunshine {
+            // SUNSHINE_SERVER_BUSY means the streaming app process is running,
+            // not that a Moonlight client is attached — it stays BUSY after a
+            // normal client disconnect. Arm-only: the rising edge triggers a
+            // collapse, but sustained BUSY can't hold the session open, or
+            // Clamshell would stay collapsed forever after a disconnect.
+            // Sunshine prep-commands remain the reliable event-driven path
+            // (and suppress the poll-driven restore while active).
+            if sunshineWasBusy { trigger = nil }
+            sunshineWasBusy = true
+        } else {
+            sunshineWasBusy = false
+        }
         let connected = trigger != nil
         guard connected != isConnected else { return }
         isConnected = connected

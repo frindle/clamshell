@@ -15,6 +15,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var vncSessionActive = false
     private var webSessionActive = false
 
+    /// The current collapse was commanded externally (Sunshine prep-command).
+    /// The poller can't see a live Moonlight stream (Sunshine's serverinfo is
+    /// arm-only, see ConnectionMonitor), so suppress poll-driven restore until
+    /// the matching external restore — cleared whenever the coordinator
+    /// returns to idle by any path.
+    private var externallyCollapsed = false
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !WindowLayoutStore.hasAccessibilityPermission {
             WindowLayoutStore.requestAccessibilityPermission()
@@ -35,7 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateIcon()
         rebuildMenu()
 
-        coordinator.onStateChange = { [weak self] _ in
+        coordinator.onStateChange = { [weak self] state in
+            if state == .idle { self?.externallyCollapsed = false }
             self?.updateIcon()
             self?.rebuildMenu()
         }
@@ -71,6 +79,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             clog("external collapse command (\(self.coordinator.preset.name))")
             self.syncDualPresets() // client dimensions may have changed display A's size
+            self.externallyCollapsed = true
             self.coordinator.collapse()
         }
         dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.restore"), object: nil, queue: .main) { [weak self] _ in
@@ -106,7 +115,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func recomputeSessionState() {
         guard autoMode else { return }
-        coordinator.remoteSessionChanged(connected: vncSessionActive || webSessionActive)
+        let connected = vncSessionActive || webSessionActive
+        // An externally-commanded collapse owns its lifecycle; don't restore
+        // out from under a stream the poller can't see.
+        if !connected && externallyCollapsed { return }
+        coordinator.remoteSessionChanged(connected: connected)
     }
 
     private func updateIcon() {

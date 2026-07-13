@@ -136,6 +136,28 @@ form.
 
 ## Changelog
 
+### 0.8.0
+- **Virtual display robustness**: HiDPI mode is now verified and enforced
+  after creation (re-asserted every second for 6s in case macOS reverts to
+  1x or restores a stale saved mode); creation retries up to 8 times when
+  WindowServer still holds a stale display registration (quick relaunch
+  after a crash); a termination handler logs system-side display death and
+  keeps internal state accurate.
+- **Clipboard bridge** (⚠ untested on real hardware): `GET`/`POST
+  /clipboard` on the web server sync the Mac clipboard with the browser —
+  pulled on page focus, pushed when the page is hidden. Requires a secure
+  context (HTTPS tunnel or localhost); over plain LAN HTTP the browser
+  clipboard API is unavailable and the script no-ops. Same trust boundary
+  as the rest of the web server.
+- **Sunshine disconnect fix** (⚠ untested on real hardware): Sunshine's
+  `serverinfo` BUSY state only means the streaming app is running, not
+  that a client is attached, so it kept Clamshell collapsed forever after
+  a normal Moonlight disconnect. It's now arm-only: a rising edge still
+  triggers collapse, but sustained BUSY no longer holds the session open.
+  Prep-command collapses now suppress the poll-driven restore until the
+  matching restore command, so event-driven Sunshine setups keep their
+  full-stream collapse.
+
 ### 0.7.0
 - **Dual Display Mode** (⚠ untested — built ahead of the target Mac mini
   being set up): a second virtual display positioned side-by-side with the

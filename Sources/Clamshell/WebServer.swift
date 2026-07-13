@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Network
 
@@ -109,7 +110,21 @@ final class WebServer {
             buf.append(data)
             if let headerEnd = buf.range(of: Data("\r\n\r\n".utf8)) {
                 let head = String(data: buf[..<headerEnd.lowerBound], encoding: .utf8) ?? ""
-                self.respond(conn, requestHead: head)
+                // POST bodies (clipboard): read Content-Length bytes past the
+                // headers. GETs have no Content-Length, so their flow is
+                // unchanged (body arrives empty).
+                let contentLength = Self.contentLength(in: head)
+                guard contentLength <= 1_048_576 else {
+                    self.send(conn, status: "413 Payload Too Large", contentType: "text/plain",
+                              body: Data("too large".utf8))
+                    return
+                }
+                let bodySoFar = buf[headerEnd.upperBound...]
+                if bodySoFar.count < contentLength {
+                    self.receiveRequest(conn, buffer: buf) // keep reading until the body is complete
+                    return
+                }
+                self.respond(conn, requestHead: head, body: Data(bodySoFar.prefix(contentLength)))
             } else if buf.count < 65536 {
                 self.receiveRequest(conn, buffer: buf)
             } else {
@@ -118,14 +133,35 @@ final class WebServer {
         }
     }
 
-    private func respond(_ conn: NWConnection, requestHead: String) {
+    private static func contentLength(in head: String) -> Int {
+        for line in head.split(separator: "\r\n").dropFirst() {
+            let lower = line.lowercased()
+            guard lower.hasPrefix("content-length:") else { continue }
+            return Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) ?? 0
+        }
+        return 0
+    }
+
+    private func respond(_ conn: NWConnection, requestHead: String, body: Data) {
         let requestLine = requestHead.split(separator: "\r\n").first.map(String.init) ?? ""
         let parts = requestLine.split(separator: " ")
-        guard parts.count >= 2, parts[0] == "GET" else {
+        guard parts.count >= 2 else {
             send(conn, status: "405 Method Not Allowed", contentType: "text/plain", body: Data("nope".utf8))
             return
         }
         var path = String(parts[1].split(separator: "?").first ?? "/")
+
+        // Clipboard bridge. Reachable by anyone who can reach the web server —
+        // same trust boundary as the rest of the remote-desktop surface.
+        if path == "/clipboard" {
+            handleClipboard(conn, method: String(parts[0]), body: body)
+            return
+        }
+
+        guard parts[0] == "GET" else {
+            send(conn, status: "405 Method Not Allowed", contentType: "text/plain", body: Data("nope".utf8))
+            return
+        }
 
         // Dual display mode: picker at "/", cropped per-display views.
         if let dual = dualPresets {
@@ -174,12 +210,88 @@ final class WebServer {
             return
         }
         let fileURL = root.appendingPathComponent(String(path.dropFirst()))
-        guard let body = try? Data(contentsOf: fileURL) else {
+        guard var fileBody = try? Data(contentsOf: fileURL) else {
             send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
             return
         }
-        send(conn, status: "200 OK", contentType: Self.contentType(for: fileURL.pathExtension), body: body)
+        // Inject the clipboard-sync script into the single-display noVNC page
+        // at serve time so the vendored tree stays untouched.
+        if fileURL.lastPathComponent == "vnc.html",
+           let html = String(data: fileBody, encoding: .utf8),
+           let range = html.range(of: "</body>") {
+            fileBody = Data(html.replacingCharacters(in: range, with: Self.clipboardScript + "</body>").utf8)
+        }
+        send(conn, status: "200 OK", contentType: Self.contentType(for: fileURL.pathExtension), body: fileBody)
     }
+
+    // MARK: - Clipboard bridge
+
+    /// GET returns the Mac clipboard as {"text","changeCount"}; POST sets it
+    /// from {"text"}. Exposed to anyone who can reach the web server — same
+    /// trust boundary as the VNC bridge itself.
+    private func handleClipboard(_ conn: NWConnection, method: String, body: Data) {
+        switch method {
+        case "GET":
+            var text = ""
+            var count = 0
+            DispatchQueue.main.sync {
+                text = NSPasteboard.general.string(forType: .string) ?? ""
+                count = NSPasteboard.general.changeCount
+            }
+            let json = (try? JSONSerialization.data(withJSONObject: ["text": text, "changeCount": count]))
+                ?? Data("{}".utf8)
+            send(conn, status: "200 OK", contentType: "application/json", body: json)
+        case "POST":
+            guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+                  let text = obj["text"] as? String else {
+                send(conn, status: "400 Bad Request", contentType: "text/plain", body: Data("expected {\"text\": ...}".utf8))
+                return
+            }
+            DispatchQueue.main.sync {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+            send(conn, status: "200 OK", contentType: "application/json", body: Data("{\"ok\":true}".utf8))
+        default:
+            send(conn, status: "405 Method Not Allowed", contentType: "text/plain", body: Data("nope".utf8))
+        }
+    }
+
+    /// Browser-side clipboard sync. Event-driven (focus pulls, hide pushes) —
+    /// no polling, and the events themselves debounce echo loops. Requires a
+    /// secure context (HTTPS via the tunnel, or localhost); over plain LAN
+    /// HTTP `navigator.clipboard` is unavailable and the script is a no-op.
+    /// The push on hide is best-effort: browsers may refuse clipboard reads
+    /// once the page loses focus.
+    static let clipboardScript = """
+    <script>
+    (() => {
+      if (!navigator.clipboard) return;
+      let last = -1;
+      window.addEventListener('focus', async () => {
+        try {
+          const r = await fetch('/clipboard');
+          const j = await r.json();
+          if (j.changeCount !== last) {
+            last = j.changeCount;
+            if (j.text) await navigator.clipboard.writeText(j.text);
+          }
+        } catch (e) {}
+      });
+      document.addEventListener('visibilitychange', async () => {
+        if (!document.hidden) return;
+        try {
+          const t = await navigator.clipboard.readText();
+          if (t) await fetch('/clipboard', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({text: t})
+          });
+        } catch (e) {}
+      });
+    })();
+    </script>
+    """
 
     private func send(_ conn: NWConnection, status: String, contentType: String, body: Data) {
         var head = "HTTP/1.1 \(status)\r\n"
@@ -309,7 +421,7 @@ final class WebServer {
         // Re-assert crop geometry if the framebuffer changes size (collapse /
         // restore while the page is open). Idempotent, so a cheap poll is fine.
         setInterval(layout, 2000);
-        </script></body></html>
+        </script>\(clipboardScript)</body></html>
         """
     }
 
