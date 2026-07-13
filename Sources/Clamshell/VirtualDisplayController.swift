@@ -22,24 +22,34 @@ struct DisplayPreset: Equatable {
     static let all: [DisplayPreset] = [.iPadAir13, .iPadPro11, .iPadMini, .hd1080]
 }
 
-/// Owns the lifecycle of the private-API virtual display. The display exists
-/// exactly as long as the CGVirtualDisplay instance is retained.
-final class VirtualDisplayController {
-    private var display: CGVirtualDisplay?
+/// Which of the (at most two) virtual displays a call refers to. Single-display
+/// mode only ever uses `.a`; dual display mode adds `.b`.
+enum VirtualSlot: String {
+    case a = "A"
+    case b = "B"
+}
 
-    var displayID: CGDirectDisplayID? {
-        display.map { CGDirectDisplayID($0.displayID) }
+/// Owns the lifecycle of the private-API virtual displays (up to two). Each
+/// display exists exactly as long as its CGVirtualDisplay instance is retained.
+final class VirtualDisplayController {
+    private var displays: [VirtualSlot: CGVirtualDisplay] = [:]
+
+    var displayID: CGDirectDisplayID? { displayID(for: .a) }
+
+    func displayID(for slot: VirtualSlot) -> CGDirectDisplayID? {
+        displays[slot].map { CGDirectDisplayID($0.displayID) }
     }
 
-    var isActive: Bool { display != nil }
+    var isActive: Bool { !displays.isEmpty }
 
-    /// Creates the virtual display. Returns its display ID, or nil on failure.
+    /// Creates a virtual display in the given slot. Returns its display ID,
+    /// or nil on failure.
     @discardableResult
-    func create(preset: DisplayPreset) -> CGDirectDisplayID? {
-        guard display == nil else { return displayID }
+    func create(preset: DisplayPreset, slot: VirtualSlot = .a) -> CGDirectDisplayID? {
+        if displays[slot] != nil { return displayID(for: slot) }
 
         let descriptor = CGVirtualDisplayDescriptor()
-        descriptor.name = "Clamshell"
+        descriptor.name = slot == .a ? "Clamshell" : "Clamshell B"
         descriptor.queue = DispatchQueue.main
         descriptor.maxPixelsWide = preset.pixelsWide
         descriptor.maxPixelsHigh = preset.pixelsHigh
@@ -51,7 +61,7 @@ final class VirtualDisplayController {
         )
         descriptor.productID = 0xC1A5
         descriptor.vendorID = 0x5AE1
-        descriptor.serialNum = 1
+        descriptor.serialNum = slot == .a ? 1 : 2 // must differ or WindowServer treats them as one device
 
         let newDisplay = CGVirtualDisplay(descriptor: descriptor)
 
@@ -61,17 +71,19 @@ final class VirtualDisplayController {
             CGVirtualDisplayMode(width: preset.pixelsWide, height: preset.pixelsHigh, refreshRate: 60),
         ]
         guard newDisplay.apply(settings) else {
-            clog("applySettings failed for virtual display")
+            clog("applySettings failed for virtual display \(slot.rawValue)")
             return nil
         }
-        display = newDisplay
-        clog("virtual display created: id=\(newDisplay.displayID) \(preset.name) (\(preset.pointsWide)x\(preset.pointsHigh) @2x)")
+        displays[slot] = newDisplay
+        clog("virtual display \(slot.rawValue) created: id=\(newDisplay.displayID) \(preset.name) (\(preset.pointsWide)x\(preset.pointsHigh) @2x)")
         return CGDirectDisplayID(newDisplay.displayID)
     }
 
+    /// Destroys all virtual displays.
     func destroy() {
-        guard let d = display else { return }
-        clog("destroying virtual display id=\(d.displayID)")
-        display = nil // releasing the instance removes the display
+        for (slot, d) in displays {
+            clog("destroying virtual display \(slot.rawValue) id=\(d.displayID)")
+        }
+        displays = [:] // releasing the instances removes the displays
     }
 }
