@@ -87,6 +87,39 @@ WebSocket). Two good options:
   Put Cloudflare Access in front of the hostname — the VNC password is the
   only other lock on the door.
 
+## Dual Display Mode (UNTESTED on real hardware)
+
+> **⚠ Untested** — built ahead of the target Mac mini being set up. The
+> display positioning, mirroring, and crop geometry have only been verified
+> by code review, not against real hardware. Expect to iterate.
+
+For setups with two remote surfaces — e.g. an iPad (whose own screen is one
+surface) with one external monitor attached (iPadOS caps at exactly one, but
+Stage Manager extends to it as a real second screen). Toggle **Dual Display
+Mode** in the menu: collapsing now creates *two* virtual displays side by
+side — Display A (the "Remote Screen Size" preset) at the desktop origin and
+Display B (**External Monitor Size**, default 1080p) immediately to its
+right, as a genuinely empty extended display (like plugging in a fresh
+monitor; nothing auto-populates it).
+
+With Web Access on, `http://<mac>:5901/` becomes a picker linking to two
+independent browser views, each cropped to one display's region of the
+Screen Sharing framebuffer:
+
+- `http://<mac>:5901/display-a` — Display A only
+- `http://<mac>:5901/display-b` — Display B only
+
+Open one in a Safari window on the iPad's screen and the other in a Safari
+window on the external monitor: two real, independent Mac monitors. The
+pages use noVNC's core API with a panned, clipped viewport, so mouse/touch
+input maps correctly within each region.
+
+Not yet: dual mode is a manual menu toggle only — remote connections
+(including `Clamshell collapse` from Sunshine, which still sizes Display A)
+don't switch it on or off automatically; there's no reliable Mac-side signal
+for "iPad with an external monitor attached". The minimal viewer pages have
+no on-screen-keyboard button yet — use a hardware keyboard.
+
 ## Remote client notes
 
 - **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
@@ -102,6 +135,15 @@ after macOS updates. Not sandboxable / not App Store eligible in its current
 form.
 
 ## Changelog
+
+### 0.7.0
+- **Dual Display Mode** (⚠ untested — built ahead of the target Mac mini
+  being set up): a second virtual display positioned side-by-side with the
+  first, plus per-display browser views at `/display-a` and `/display-b`
+  (noVNC core with a cropped viewport; `/` becomes a picker while dual mode
+  is on). New menu items: "Dual Display Mode (two virtual screens)" toggle
+  and "External Monitor Size (Display B)" preset picker. Manual toggle only
+  for now — not auto-triggered by remote sessions.
 
 ### 0.6.1
 - `Clamshell collapse` accepts client pixel dimensions — wire Sunshine's

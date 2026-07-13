@@ -24,6 +24,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            let preset = DisplayPreset.all.first(where: { $0.name == presetName }) {
             coordinator.preset = preset
         }
+        coordinator.dualMode = UserDefaults.standard.bool(forKey: "dualMode")
+        if let presetBName = UserDefaults.standard.string(forKey: "presetB"),
+           let presetB = DisplayPreset.all.first(where: { $0.name == presetBName }) {
+            coordinator.presetB = presetB
+        }
+        syncDualPresets()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         updateIcon()
@@ -64,6 +70,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 )
             }
             clog("external collapse command (\(self.coordinator.preset.name))")
+            self.syncDualPresets() // client dimensions may have changed display A's size
             self.coordinator.collapse()
         }
         dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.restore"), object: nil, queue: .main) { [weak self] _ in
@@ -154,9 +161,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self
             presetMenu.addItem(item)
         }
-        let presetItem = NSMenuItem(title: "Remote Screen Size", action: nil, keyEquivalent: "")
+        let presetItem = NSMenuItem(
+            title: coordinator.dualMode ? "Remote Screen Size (Display A)" : "Remote Screen Size",
+            action: nil, keyEquivalent: ""
+        )
         menu.addItem(presetItem)
         menu.setSubmenu(presetMenu, for: presetItem)
+
+        let dual = NSMenuItem(title: "Dual Display Mode (two virtual screens)", action: #selector(toggleDual), keyEquivalent: "")
+        dual.state = coordinator.dualMode ? .on : .off
+        dual.target = self
+        menu.addItem(dual)
+
+        if coordinator.dualMode {
+            let presetBMenu = NSMenu()
+            for preset in DisplayPreset.all {
+                let item = NSMenuItem(title: preset.name, action: #selector(selectPresetB(_:)), keyEquivalent: "")
+                item.state = coordinator.presetB == preset ? .on : .off
+                item.representedObject = preset.name
+                item.target = self
+                presetBMenu.addItem(item)
+            }
+            let presetBItem = NSMenuItem(title: "External Monitor Size (Display B)", action: nil, keyEquivalent: "")
+            menu.addItem(presetBItem)
+            menu.setSubmenu(presetBMenu, for: presetBItem)
+        }
 
         let web = NSMenuItem(
             title: webServer.isRunning
@@ -274,6 +303,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let preset = DisplayPreset.all.first(where: { $0.name == name }) else { return }
         coordinator.preset = preset
         UserDefaults.standard.set(preset.name, forKey: "preset")
+        syncDualPresets()
+        rebuildMenu()
+    }
+
+    /// The web server needs the two display sizes to build the dual-mode
+    /// picker and cropped views; nil switches it back to the classic flow.
+    private func syncDualPresets() {
+        webServer.dualPresets = coordinator.dualMode ? (coordinator.preset, coordinator.presetB) : nil
+    }
+
+    @objc private func toggleDual() {
+        coordinator.dualMode.toggle()
+        UserDefaults.standard.set(coordinator.dualMode, forKey: "dualMode")
+        syncDualPresets()
+        rebuildMenu()
+    }
+
+    @objc private func selectPresetB(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String,
+              let preset = DisplayPreset.all.first(where: { $0.name == name }) else { return }
+        coordinator.presetB = preset
+        UserDefaults.standard.set(preset.name, forKey: "presetB")
+        syncDualPresets()
         rebuildMenu()
     }
 
