@@ -10,8 +10,17 @@ func clog(_ message: String) {
     let stamp = ISO8601DateFormatter().string(from: Date())
     guard let data = "\(stamp) \(message)\n".data(using: .utf8) else { return }
     if let handle = try? FileHandle(forWritingTo: url) {
+        let end = (try? handle.seekToEnd()) ?? 0
+        // Size-based rotation: keep one 5 MB generation as Clamshell.old.log.
+        if end > 5_000_000 {
+            try? handle.close()
+            let old = url.deletingLastPathComponent().appendingPathComponent("Clamshell.old.log")
+            try? FileManager.default.removeItem(at: old)
+            try? FileManager.default.moveItem(at: url, to: old)
+            try? data.write(to: url)
+            return
+        }
         defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
         try? handle.write(contentsOf: data)
     } else {
         try? data.write(to: url)

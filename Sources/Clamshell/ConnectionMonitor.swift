@@ -17,9 +17,12 @@ final class ConnectionMonitor {
     /// Called on the main queue whenever the connected state flips.
     var onChange: ((Bool, Trigger?) -> Void)?
 
+    /// Confined to `queue` — polling spawns netstat/lsof/curl (curl can
+    /// block up to 1s), so it must never run on the main thread.
     private(set) var isConnected = false
-    private var timer: Timer?
+    private var timer: DispatchSourceTimer?
     private let pollInterval: TimeInterval
+    private let queue = DispatchQueue(label: "clamshell.monitor", qos: .utility)
 
     /// Sunshine reported busy on the previous poll (edge tracking).
     private var sunshineWasBusy = false
@@ -30,19 +33,19 @@ final class ConnectionMonitor {
 
     func start() {
         stop()
-        let t = Timer(timeInterval: pollInterval, repeats: true) { [weak self] _ in
-            self?.poll()
-        }
-        RunLoop.main.add(t, forMode: .common)
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now(), repeating: pollInterval)
+        t.setEventHandler { [weak self] in self?.poll() }
+        t.resume()
         timer = t
-        poll()
     }
 
     func stop() {
-        timer?.invalidate()
+        timer?.cancel()
         timer = nil
     }
 
+    /// Runs on `queue` (serial, so polls never overlap).
     private func poll() {
         var trigger = Self.detectActiveSession()
         if trigger == .sunshine {
@@ -62,7 +65,9 @@ final class ConnectionMonitor {
         guard connected != isConnected else { return }
         isConnected = connected
         clog("remote session \(connected ? "CONNECTED" : "DISCONNECTED")\(trigger.map { " via \($0.rawValue)" } ?? "")")
-        onChange?(connected, trigger)
+        DispatchQueue.main.async { [weak self] in
+            self?.onChange?(connected, trigger)
+        }
     }
 
     // MARK: - Detection
@@ -157,7 +162,9 @@ final class ConnectionMonitor {
         task.arguments = args
         let pipe = Pipe()
         task.standardOutput = pipe
-        task.standardError = Pipe()
+        // Discard stderr rather than piping it — an undrained pipe can fill
+        // its buffer and deadlock the child on large output.
+        task.standardError = FileHandle.nullDevice
         do {
             try task.run()
         } catch {

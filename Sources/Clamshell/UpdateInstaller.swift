@@ -58,13 +58,18 @@ enum UpdateInstaller {
             throw UpdateError("Clamshell.app missing from DMG")
         }
 
-        // The new build must carry the same signing identity as the running
-        // one — otherwise the swap silently invalidates TCC grants
-        // (Accessibility) and the "update" leaves the app half-broken.
-        let currentID = signingAuthority(Bundle.main.bundlePath)
-        let newID = signingAuthority(newApp)
-        guard currentID == newID else {
-            throw UpdateError("signing identity mismatch (running: \(currentID ?? "ad-hoc"), update: \(newID ?? "ad-hoc")) — update manually")
+        // The new bundle must pass real signature verification, and both
+        // builds must carry the same non-ad-hoc signing identity — otherwise
+        // the swap silently invalidates TCC grants (Accessibility) and the
+        // "update" leaves the app half-broken. Requiring a real identity
+        // also stops an ad-hoc local build from accepting any unsigned DMG.
+        guard shell("/usr/bin/codesign", ["--verify", "--deep", "--strict", newApp]) == 0 else {
+            throw UpdateError("update failed signature verification — update manually")
+        }
+        guard let currentID = signingAuthority(Bundle.main.bundlePath),
+              let newID = signingAuthority(newApp),
+              currentID == newID else {
+            throw UpdateError("signing identity mismatch or ad-hoc build (running: \(signingAuthority(Bundle.main.bundlePath) ?? "ad-hoc"), update: \(signingAuthority(newApp) ?? "ad-hoc")) — update manually")
         }
 
         let dest = Bundle.main.bundlePath
@@ -93,7 +98,7 @@ enum UpdateInstaller {
         task.arguments = ["-dv", path]
         let pipe = Pipe()
         task.standardError = pipe // codesign prints to stderr
-        task.standardOutput = Pipe()
+        task.standardOutput = FileHandle.nullDevice
         try? task.run()
         let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         task.waitUntilExit()
@@ -107,8 +112,9 @@ enum UpdateInstaller {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: path)
         task.arguments = args
-        task.standardOutput = Pipe()
-        task.standardError = Pipe()
+        // nullDevice, not undrained Pipes — a full pipe buffer deadlocks the child.
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
         do { try task.run() } catch { return -1 }
         task.waitUntilExit()
         return task.terminationStatus

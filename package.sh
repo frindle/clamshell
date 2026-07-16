@@ -58,7 +58,9 @@ echo "=== codesign (identity: ${SIGN_ID}) ==="
 # codesign rejects ("resource fork, Finder information, or similar
 # detritus not allowed"). Strip them first.
 xattr -cr "${APP}"
-codesign --force --deep --sign "${SIGN_ID}" "${APP}"
+# No --deep: it's deprecated for signing, and the bundle has no nested code
+# (the resource bundle is data-only).
+codesign --force --sign "${SIGN_ID}" "${APP}"
 
 echo "=== creating ${DMG} ==="
 mkdir -p dist/dmg-root

@@ -148,7 +148,12 @@ form.
   pulled on page focus, pushed when the page is hidden. Requires a secure
   context (HTTPS tunnel or localhost); over plain LAN HTTP the browser
   clipboard API is unavailable and the script no-ops. Same trust boundary
-  as the rest of the web server.
+  as the rest of the web server by default; if the server is exposed
+  through a tunnel, gate the endpoint with a token —
+  `defaults write com.frindle.clamshell clipboardToken <secret>` (then
+  relaunch Clamshell). Requests must then carry `?token=<secret>` or an
+  `Authorization: Bearer <secret>` header; the served pages embed the
+  token automatically so browser sync keeps working.
 - **Sunshine disconnect fix** (⚠ untested on real hardware): Sunshine's
   `serverinfo` BUSY state only means the streaming app is running, not
   that a client is attached, so it kept Clamshell collapsed forever after
