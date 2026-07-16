@@ -13,3 +13,5 @@ jobs:
         run: swift build
       - name: Smoke test (detection)
         run: .build/debug/Clamshell test-detect
+      - name: Package (release build, ad-hoc signed DMG)
+        run: ./package.sh 0.0.0

@@ -46,12 +46,49 @@ final class VirtualDisplayController {
 
     var isActive: Bool { !displays.isEmpty }
 
-    /// Creates a virtual display in the given slot. Returns its display ID,
-    /// or nil on failure.
+    /// Fired on the main queue when the system tears down a virtual display
+    /// we didn't destroy ourselves (WindowServer reclaiming it).
+    var onUnexpectedTermination: ((VirtualSlot) -> Void)?
+
+    /// Creates a virtual display in the given slot, retrying briefly off the
+    /// caller's back (asyncAfter, never blocking the main thread). Creation
+    /// can fail transiently if a display with the same vendor/product/serial
+    /// is still registered (quick relaunch after a crash). Main queue only.
+    func create(preset: DisplayPreset, slot: VirtualSlot = .a,
+                completion: @escaping (CGDirectDisplayID?) -> Void) {
+        if displays[slot] != nil { completion(displayID(for: slot)); return }
+        attemptCreate(preset: preset, slot: slot, attempt: 1, completion: completion)
+    }
+
+    private func attemptCreate(preset: DisplayPreset, slot: VirtualSlot, attempt: Int,
+                               completion: @escaping (CGDirectDisplayID?) -> Void) {
+        if let id = createOnce(preset: preset, slot: slot) { completion(id); return }
+        clog("applySettings failed for virtual display \(slot.rawValue) (attempt \(attempt)/8)")
+        guard attempt < 8 else {
+            clog("virtual display \(slot.rawValue) creation gave up after 8 attempts")
+            completion(nil)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.attemptCreate(preset: preset, slot: slot, attempt: attempt + 1, completion: completion)
+        }
+    }
+
+    /// Synchronous variant for the CLI smoke test, where blocking is fine.
     @discardableResult
     func create(preset: DisplayPreset, slot: VirtualSlot = .a) -> CGDirectDisplayID? {
         if displays[slot] != nil { return displayID(for: slot) }
+        for attempt in 1...8 {
+            if let id = createOnce(preset: preset, slot: slot) { return id }
+            clog("applySettings failed for virtual display \(slot.rawValue) (attempt \(attempt)/8)")
+            if attempt < 8 { Thread.sleep(forTimeInterval: 0.25) }
+        }
+        clog("virtual display \(slot.rawValue) creation gave up after 8 attempts")
+        return nil
+    }
 
+    /// Single creation attempt. Returns the display ID, or nil on failure.
+    private func createOnce(preset: DisplayPreset, slot: VirtualSlot) -> CGDirectDisplayID? {
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.name = slot == .a ? "Clamshell" : "Clamshell B"
         descriptor.queue = DispatchQueue.main
@@ -78,6 +115,7 @@ final class VirtualDisplayController {
                 self.displays[slot] = nil
                 self.hiDPITimers[slot]?.invalidate()
                 self.hiDPITimers[slot] = nil
+                self.onUnexpectedTermination?(slot)
             }
         }
 
@@ -90,24 +128,8 @@ final class VirtualDisplayController {
             CGVirtualDisplayMode(width: preset.pixelsWide, height: preset.pixelsHigh, refreshRate: 60),
         ]
 
-        // Creation can fail transiently if a display with the same vendor/
-        // product/serial is still registered (quick relaunch after a crash);
-        // retry briefly. Blocking is fine — collapse() calls this
-        // synchronously on the main queue and expects a result.
-        var newDisplay: CGVirtualDisplay?
-        for attempt in 1...8 {
-            let candidate = CGVirtualDisplay(descriptor: descriptor)
-            if candidate.apply(settings) {
-                newDisplay = candidate
-                break
-            }
-            clog("applySettings failed for virtual display \(slot.rawValue) (attempt \(attempt)/8)")
-            if attempt < 8 { Thread.sleep(forTimeInterval: 0.25) }
-        }
-        guard let newDisplay else {
-            clog("virtual display \(slot.rawValue) creation gave up after 8 attempts")
-            return nil
-        }
+        let newDisplay = CGVirtualDisplay(descriptor: descriptor)
+        guard newDisplay.apply(settings) else { return nil }
 
         displays[slot] = newDisplay
         let id = CGDirectDisplayID(newDisplay.displayID)

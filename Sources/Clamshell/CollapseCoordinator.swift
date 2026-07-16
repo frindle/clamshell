@@ -14,7 +14,7 @@ import CoreGraphics
 ///   2. Destroy the virtual display.
 ///   3. Put every window back on its original monitor.
 final class CollapseCoordinator {
-    enum State { case idle, collapsed }
+    enum State { case idle, collapsing, collapsed }
 
     private(set) var state: State = .idle
     private let virtualDisplay = VirtualDisplayController()
@@ -29,6 +29,12 @@ final class CollapseCoordinator {
     var restoreDelay: TimeInterval = 10
     private var pendingRestore: DispatchWorkItem?
 
+    /// The deferred window-layout restore is still running; completions
+    /// queued via restore() wait for it (e.g. quit must not terminate the
+    /// process before windows are back on their monitors).
+    private var layoutRestoreInFlight = false
+    private var onLayoutRestored: [() -> Void] = []
+
     var preset: DisplayPreset = .iPadAir13
 
     /// Dual display mode: create a second virtual display (sized `presetB`)
@@ -39,6 +45,19 @@ final class CollapseCoordinator {
     var presetB: DisplayPreset = .hd1080
 
     var onStateChange: ((State) -> Void)?
+
+    init() {
+        // If WindowServer reclaims virtual display A out from under us, the
+        // collapse is dead — restore so mirroring/state don't point at a
+        // ghost. B dying in dual mode just loses the second screen; the
+        // controller's own bookkeeping already handled it.
+        virtualDisplay.onUnexpectedTermination = { [weak self] slot in
+            guard let self, slot == .a, self.state != .idle else { return }
+            clog("virtual display A died — restoring")
+            self.restore()
+        }
+        startDisplayReconfigWatch()
+    }
 
     // MARK: - Public entry points
 
@@ -53,27 +72,52 @@ final class CollapseCoordinator {
     }
 
     func collapse() {
-        guard state == .idle else { return }
+        guard state == .idle else {
+            // Re-collapse while already collapsed (e.g. a new Sunshine
+            // session during the restore grace period): keep the current
+            // collapse and make sure no stale restore tears it down.
+            pendingRestore?.cancel()
+            pendingRestore = nil
+            return
+        }
+        pendingRestore?.cancel()
+        pendingRestore = nil
+        state = .collapsing // set before any async work so a disconnect in the gap still schedules a restore
         clog("collapsing to \(preset.name)\(dualMode ? " + \(presetB.name) (dual)" : "")")
 
         layout.snapshot()
 
-        guard let virtualID = virtualDisplay.create(preset: preset, slot: .a) else {
-            clog("collapse aborted: virtual display creation failed")
-            return
-        }
-        var secondID: CGDirectDisplayID?
-        if dualMode {
-            secondID = virtualDisplay.create(preset: presetB, slot: .b)
-            if secondID == nil {
-                clog("dual mode: display B creation failed — continuing single-display")
+        virtualDisplay.create(preset: preset, slot: .a) { [weak self] virtualID in
+            guard let self else { return }
+            guard self.state == .collapsing else {
+                // restore() ran while creation was retrying — clean up.
+                self.virtualDisplay.destroy()
+                return
+            }
+            guard let virtualID else {
+                clog("collapse aborted: virtual display creation failed")
+                self.state = .idle
+                self.onStateChange?(.idle)
+                return
+            }
+            if self.dualMode {
+                self.virtualDisplay.create(preset: self.presetB, slot: .b) { secondID in
+                    if secondID == nil {
+                        clog("dual mode: display B creation failed — continuing single-display")
+                    }
+                    self.finishCollapse(virtualID: virtualID, secondID: secondID)
+                }
+            } else {
+                self.finishCollapse(virtualID: virtualID, secondID: nil)
             }
         }
+    }
 
-        // Give WindowServer a beat to finish attaching the new display(s)
-        // before reconfiguring mirroring.
+    /// Give WindowServer a beat to finish attaching the new display(s)
+    /// before reconfiguring mirroring.
+    private func finishCollapse(virtualID: CGDirectDisplayID, secondID: CGDirectDisplayID?) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self else { return }
+            guard let self, self.state == .collapsing else { return }
             if let b = secondID {
                 self.positionSideBySide(a: virtualID, b: b)
             }
@@ -84,27 +128,43 @@ final class CollapseCoordinator {
         }
     }
 
-    func restore() {
+    /// `completion` fires after the deferred window-layout restore has run
+    /// (or immediately when there is nothing to restore).
+    func restore(completion: (() -> Void)? = nil) {
         pendingRestore?.cancel()
         pendingRestore = nil
-        guard state == .collapsed else { return }
+        if let completion { onLayoutRestored.append(completion) }
+        guard state != .idle else {
+            if !layoutRestoreInFlight { flushRestoreCompletions() }
+            return
+        }
         clog("restoring physical displays")
 
         comfort.sessionDidEnd()
         unmirrorPhysicalDisplays()
         virtualDisplay.destroy()
+        state = .idle
+        onStateChange?(.idle)
 
         // Window restore waits for the display topology to settle; the
         // WindowServer moves windows around for a moment after un-mirroring.
+        layoutRestoreInFlight = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
-            self?.layout.restore()
+            guard let self else { return }
+            self.layout.restore()
+            self.layoutRestoreInFlight = false
+            self.flushRestoreCompletions()
         }
-        state = .idle
-        onStateChange?(.idle)
+    }
+
+    private func flushRestoreCompletions() {
+        let callbacks = onLayoutRestored
+        onLayoutRestored = []
+        for cb in callbacks { cb() }
     }
 
     private func scheduleRestore() {
-        guard state == .collapsed else { return }
+        guard state != .idle else { return }
         clog("disconnect — restoring in \(Int(restoreDelay))s unless reconnected")
         let work = DispatchWorkItem { [weak self] in self?.restore() }
         pendingRestore = work
@@ -125,6 +185,26 @@ final class CollapseCoordinator {
         CGConfigureDisplayOrigin(cfg, b, Int32(preset.pointsWide), 0)
         let err = CGCompleteDisplayConfiguration(cfg, .permanently)
         clog("positioned virtual displays side-by-side (B at x=\(preset.pointsWide)pt): \(err == .success ? "ok" : "error \(err.rawValue)")")
+    }
+
+    // MARK: - Display topology
+
+    /// Track physical displays disappearing (unplugged mid-session) so
+    /// `mirroredDisplays` never holds dead IDs when restore un-mirrors.
+    private func startDisplayReconfigWatch() {
+        let info = Unmanaged.passUnretained(self).toOpaque()
+        CGDisplayRegisterReconfigurationCallback({ displayID, flags, userInfo in
+            guard let userInfo, flags.contains(.removeFlag) else { return }
+            let coordinator = Unmanaged<CollapseCoordinator>.fromOpaque(userInfo).takeUnretainedValue()
+            DispatchQueue.main.async { coordinator.displayRemoved(displayID) }
+        }, info)
+    }
+
+    private func displayRemoved(_ id: CGDirectDisplayID) {
+        if let idx = mirroredDisplays.firstIndex(of: id) {
+            mirroredDisplays.remove(at: idx)
+            clog("mirrored physical display \(id) was removed; \(mirroredDisplays.count) still mirrored")
+        }
     }
 
     // MARK: - Mirroring

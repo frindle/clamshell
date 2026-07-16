@@ -19,6 +19,12 @@ final class WebServer {
     /// Specific LAN IP to bind to, or nil for all interfaces.
     var bindHost: String?
 
+    /// Optional token gating the /clipboard endpoint. nil (the default)
+    /// leaves it open — fine on a trusted LAN, but set this if the server
+    /// is exposed through a tunnel. `defaults write com.frindle.clamshell
+    /// clipboardToken <secret>`.
+    var clipboardToken: String?
+
     /// Non-nil when dual display mode is on: the point sizes of virtual
     /// displays A and B. Drives the "/" picker page and the /display-a and
     /// /display-b cropped views. nil keeps the classic single-display flow.
@@ -149,11 +155,18 @@ final class WebServer {
             send(conn, status: "405 Method Not Allowed", contentType: "text/plain", body: Data("nope".utf8))
             return
         }
-        var path = String(parts[1].split(separator: "?").first ?? "/")
+        let path = String(parts[1].split(separator: "?").first ?? "/")
 
-        // Clipboard bridge. Reachable by anyone who can reach the web server —
-        // same trust boundary as the rest of the remote-desktop surface.
+        // Clipboard bridge. When clipboardToken is set, require it (query
+        // param or bearer header) — a Cloudflare Tunnel would otherwise
+        // expose the Mac's clipboard to the internet unauthenticated.
         if path == "/clipboard" {
+            if let token = clipboardToken,
+               !parts[1].contains("token=\(token)"),
+               !requestHead.contains("Bearer \(token)") {
+                send(conn, status: "401 Unauthorized", contentType: "text/plain", body: Data("token required".utf8))
+                return
+            }
             handleClipboard(conn, method: String(parts[0]), body: body)
             return
         }
@@ -172,11 +185,11 @@ final class WebServer {
                 return
             case "/display-a":
                 send(conn, status: "200 OK", contentType: "text/html; charset=utf-8",
-                     body: Data(Self.cropPage(dual: dual, slot: .a, wsPort: wsPort.rawValue).utf8))
+                     body: Data(cropPage(dual: dual, slot: .a, wsPort: wsPort.rawValue).utf8))
                 return
             case "/display-b":
                 send(conn, status: "200 OK", contentType: "text/html; charset=utf-8",
-                     body: Data(Self.cropPage(dual: dual, slot: .b, wsPort: wsPort.rawValue).utf8))
+                     body: Data(cropPage(dual: dual, slot: .b, wsPort: wsPort.rawValue).utf8))
                 return
             default:
                 break // static noVNC assets below
@@ -202,14 +215,21 @@ final class WebServer {
             return
         }
 
-        // Resolve against the vendored noVNC tree; refuse traversal.
-        path = path.replacingOccurrences(of: "..", with: "")
         guard let root = Self.novncRoot else {
             send(conn, status: "500 Internal Server Error", contentType: "text/plain",
                  body: Data("noVNC resources missing from bundle".utf8))
             return
         }
-        let fileURL = root.appendingPathComponent(String(path.dropFirst()))
+        // Resolve against the vendored noVNC tree; refuse traversal by
+        // checking the fully resolved path stays inside the root (catches
+        // percent-encoded ".." and symlinks, unlike string-stripping).
+        let decoded = path.removingPercentEncoding ?? path
+        let fileURL = root.appendingPathComponent(String(decoded.dropFirst())).standardizedFileURL
+        let rootPath = root.resolvingSymlinksInPath().path
+        guard fileURL.resolvingSymlinksInPath().path.hasPrefix(rootPath + "/") else {
+            send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
+            return
+        }
         guard var fileBody = try? Data(contentsOf: fileURL) else {
             send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
             return
@@ -219,7 +239,7 @@ final class WebServer {
         if fileURL.lastPathComponent == "vnc.html",
            let html = String(data: fileBody, encoding: .utf8),
            let range = html.range(of: "</body>") {
-            fileBody = Data(html.replacingCharacters(in: range, with: Self.clipboardScript + "</body>").utf8)
+            fileBody = Data(html.replacingCharacters(in: range, with: clipboardScript + "</body>").utf8)
         }
         send(conn, status: "200 OK", contentType: Self.contentType(for: fileURL.pathExtension), body: fileBody)
     }
@@ -263,14 +283,19 @@ final class WebServer {
     /// HTTP `navigator.clipboard` is unavailable and the script is a no-op.
     /// The push on hide is best-effort: browsers may refuse clipboard reads
     /// once the page loses focus.
-    static let clipboardScript = """
+    var clipboardScript: String {
+        // The injected pages get the token so browser sync keeps working;
+        // the token's job is blocking direct API access from clients that
+        // never legitimately loaded a page.
+        let q = clipboardToken.map { "?token=\($0)" } ?? ""
+        return """
     <script>
     (() => {
       if (!navigator.clipboard) return;
       let last = -1;
       window.addEventListener('focus', async () => {
         try {
-          const r = await fetch('/clipboard');
+          const r = await fetch('/clipboard\(q)');
           const j = await r.json();
           if (j.changeCount !== last) {
             last = j.changeCount;
@@ -282,7 +307,7 @@ final class WebServer {
         if (!document.hidden) return;
         try {
           const t = await navigator.clipboard.readText();
-          if (t) await fetch('/clipboard', {
+          if (t) await fetch('/clipboard\(q)', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({text: t})
@@ -292,6 +317,7 @@ final class WebServer {
     })();
     </script>
     """
+    }
 
     private func send(_ conn: NWConnection, status: String, contentType: String, body: Data) {
         var head = "HTTP/1.1 \(status)\r\n"
@@ -356,7 +382,7 @@ final class WebServer {
     /// untouched; only rfb._display's public-shaped pan/size methods are
     /// reached into (input mapping stays correct because Display.absX/absY
     /// account for the viewport offset).
-    static func cropPage(dual: (a: DisplayPreset, b: DisplayPreset), slot: VirtualSlot, wsPort: UInt16) -> String {
+    func cropPage(dual: (a: DisplayPreset, b: DisplayPreset), slot: VirtualSlot, wsPort: UInt16) -> String {
         """
         <!DOCTYPE html><html><head><meta charset="utf-8">
         <meta name="viewport" content="width=device-width, initial-scale=1">

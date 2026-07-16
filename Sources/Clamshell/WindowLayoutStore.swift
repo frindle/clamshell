@@ -30,6 +30,9 @@ final class WindowLayoutStore {
         for app in NSWorkspace.shared.runningApplications where app.activationPolicy == .regular {
             let pid = app.processIdentifier
             let axApp = AXUIElementCreateApplication(pid)
+            // Bound per-app AX latency: one unresponsive app must not hang
+            // the whole snapshot (default timeout is ~6s per element).
+            AXUIElementSetMessagingTimeout(axApp, 0.5)
             guard let windows = copyAttribute(axApp, kAXWindowsAttribute) as? [AXUIElement] else { continue }
             for (i, win) in windows.enumerated() {
                 guard let frame = frame(of: win) else { continue }
@@ -50,6 +53,7 @@ final class WindowLayoutStore {
         var restored = 0
         for w in saved {
             let axApp = AXUIElementCreateApplication(w.pid)
+            AXUIElementSetMessagingTimeout(axApp, 0.5)
             guard let windows = copyAttribute(axApp, kAXWindowsAttribute) as? [AXUIElement] else { continue }
             // Prefer identity by title; fall back to positional index.
             var target: AXUIElement?

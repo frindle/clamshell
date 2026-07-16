@@ -43,9 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
 
         coordinator.onStateChange = { [weak self] state in
-            if state == .idle { self?.externallyCollapsed = false }
-            self?.updateIcon()
-            self?.rebuildMenu()
+            guard let self else { return }
+            if state == .idle {
+                self.externallyCollapsed = false
+                self.restoreSavedPreset() // undo any client-dimension override
+            }
+            self.updateIcon()
+            self.rebuildMenu()
         }
         monitor.onChange = { [weak self] connected, _ in
             guard let self else { return }
@@ -59,8 +63,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         monitor.start()
         webServer.bindHost = UserDefaults.standard.string(forKey: "bindHost")
+        // Optional token gating the /clipboard endpoint (see README):
+        //   defaults write com.frindle.clamshell clipboardToken <secret>
+        webServer.clipboardToken = UserDefaults.standard.string(forKey: "clipboardToken")
         if UserDefaults.standard.bool(forKey: "webAccess") {
             webServer.start()
+        }
+
+        // A system sleep kills any live remote stream. On wake, drop the
+        // external-collapse latch (Sunshine can't send its undo command for
+        // a stream that died in sleep) and re-evaluate — the poller then
+        // schedules a restore if nothing reconnects, instead of leaving the
+        // Mac collapsed forever.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self, self.coordinator.state != .idle else { return }
+            clog("system woke while collapsed — re-evaluating session state")
+            self.externallyCollapsed = false
+            self.recomputeSessionState()
         }
 
         // External collapse/restore commands (`Clamshell collapse|restore`),
@@ -73,8 +94,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let w = (note.userInfo?["width"] as? String).flatMap(UInt32.init),
                let h = (note.userInfo?["height"] as? String).flatMap(UInt32.init),
                w >= 640, h >= 480 {
+                // Floor odd client dimensions to even so points * 2 == pixels.
+                let ew = w & ~1, eh = h & ~1
                 self.coordinator.preset = DisplayPreset(
-                    name: "Client (\(w)×\(h))", pointsWide: w / 2, pointsHigh: h / 2
+                    name: "Client (\(ew)×\(eh))", pointsWide: ew / 2, pointsHigh: eh / 2
                 )
             }
             clog("external collapse command (\(self.coordinator.preset.name))")
@@ -392,9 +415,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quit() {
-        if coordinator.state == .collapsed {
-            coordinator.restore()
-        }
         NSApp.terminate(nil)
+    }
+
+    /// Every terminate path (menu Quit, update relaunch, logout) waits for
+    /// the restore — including the deferred window-layout pass — before the
+    /// process dies. Terminating immediately used to kill the 2s-delayed
+    /// window restore, leaving windows stranded on a dead virtual display.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if coordinator.state == .idle { return .terminateNow }
+        coordinator.restore {
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    /// Re-apply the user's saved preset after any collapse ends, so a
+    /// client-dimension override (Sunshine) doesn't stick for later
+    /// manual collapses.
+    private func restoreSavedPreset() {
+        let name = UserDefaults.standard.string(forKey: "preset")
+        let saved = DisplayPreset.all.first { $0.name == name } ?? .iPadAir13
+        guard coordinator.preset != saved else { return }
+        coordinator.preset = saved
+        syncDualPresets()
     }
 }
