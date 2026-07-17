@@ -123,8 +123,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if fromStream, self.autoDualDetect, let ext = note.userInfo?["external"] as? String {
                 dual = ext == "1"
             }
-            clog("external collapse command (\(preset.name), dual \(dual)\(fromStream ? ", stream" : ""))")
-            self.applyExternalCollapse(preset: preset, dual: dual, fromStream: fromStream)
+            // When the client reports the external monitor's real pixel size,
+            // size Display B to it (same treatment as Display A above) instead
+            // of the fixed presetB.
+            var presetB: DisplayPreset? = nil
+            if dual, let bw = (note.userInfo?["widthB"] as? String).flatMap(UInt32.init),
+               let bh = (note.userInfo?["heightB"] as? String).flatMap(UInt32.init),
+               bw >= 640, bh >= 480 {
+                let ew = bw & ~1, eh = bh & ~1
+                presetB = DisplayPreset(name: "Client B (\(ew)×\(eh))", pointsWide: ew / 2, pointsHigh: eh / 2)
+            }
+            clog("external collapse command (\(preset.name), dual \(dual)\(presetB.map { ", B \($0.name)" } ?? "")\(fromStream ? ", stream" : ""))")
+            self.applyExternalCollapse(preset: preset, presetB: presetB, dual: dual, fromStream: fromStream)
         }
         dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.restore"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
@@ -503,9 +513,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// same geometry: keep it (and cancel any pending grace-period restore).
     /// Geometry changed mid-collapse (new client resolution, or a second
     /// screen appeared/vanished): rebuild the collapse with the new shape.
-    private func applyExternalCollapse(preset: DisplayPreset, dual: Bool, fromStream: Bool) {
+    private func applyExternalCollapse(preset: DisplayPreset, presetB: DisplayPreset? = nil, dual: Bool, fromStream: Bool) {
         if coordinator.state != .idle {
-            if coordinator.preset == preset && coordinator.dualMode == dual {
+            if coordinator.preset == preset && coordinator.dualMode == dual
+                && (presetB == nil || coordinator.presetB == presetB) {
                 externallyCollapsed = true
                 if fromStream { streamCollapsed = true }
                 coordinator.collapse() // no-op that cancels a pending restore
@@ -513,11 +524,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             clog("external collapse geometry changed — recollapsing")
             coordinator.restore { [weak self] in
-                self?.applyExternalCollapse(preset: preset, dual: dual, fromStream: fromStream)
+                self?.applyExternalCollapse(preset: preset, presetB: presetB, dual: dual, fromStream: fromStream)
             }
             return
         }
         coordinator.preset = preset
+        if let presetB { coordinator.presetB = presetB }
         coordinator.dualMode = dual
         syncDualPresets()
         externallyCollapsed = true

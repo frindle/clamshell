@@ -58,7 +58,7 @@ final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
             rootView: ExternalDisplayView(client: Connection.shared.external))
         window.isHidden = false
         self.window = window
-        Connection.shared.externalDisplayConnected()
+        Connection.shared.externalDisplayConnected(size: windowScene.screen.nativeBounds.size)
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
@@ -108,9 +108,12 @@ final class Connection: ObservableObject {
     // Called when the external UIWindowScene connects/disconnects. The
     // primary connection tells the Mac about the second surface so it can
     // auto-enter/leave dual display mode (Auto-Detect Dual Display).
-    func externalDisplayConnected() {
+    func externalDisplayConnected(size: CGSize) {
         externalAttached = true
-        primary.updateReportedDisplay(secondDisplay: true)
+        // The primary connection carries Display B's size too (only the
+        // primary's report is honored host-side), so the Mac sizes Display B
+        // to the real external monitor instead of the fixed presetB.
+        primary.updateReportedDisplay(secondDisplay: true, secondPixelSize: size)
         connectExternalIfAttached()
     }
     func externalDisplayDisconnected() {

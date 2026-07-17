@@ -45,9 +45,9 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 
 | Type | Name             | Direction     | Payload |
 |------|------------------|---------------|---------|
-| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached)] |
-| 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
-| 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) |
+| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set]] |
+| 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) [, currentBitrateMbps(1) — see "Connection quality"] |
+| 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -71,12 +71,15 @@ refuse-to-start contract).
 
 The client optionally reports its real display situation: its video surface
 size in pixels (landscape-normalized — Mac virtual displays are landscape)
-and whether a *second* display surface is attached (flags bit 0). The iPad
-viewer reports its own screen and sets the flag while an external monitor is
-attached; the iPhone control app reports the external monitor's size (its
-only video surface) and never sets the flag. The trailing HELLO bytes are
-optional both ways: an old client omits them, an old host ignores them.
-CLIENT_DISPLAYS carries the same fields mid-session (monitor plugged or
+and whether a *second* display surface is attached (flags bit 0). When the
+flag is set the second surface's own pixel size follows (secondWidthPx,
+secondHeightPx), so the host sizes Display B to the real external monitor
+instead of a fixed preset. The iPad viewer reports its own screen, sets the
+flag while an external monitor is attached, and appends that monitor's size;
+the iPhone control app reports the external monitor's size (its only video
+surface) as the primary size and never sets the flag. The trailing HELLO
+bytes are optional both ways: an old client omits them, an old host ignores
+them. CLIENT_DISPLAYS carries the same fields mid-session (monitor plugged or
 unplugged after connecting).
 
 Only the **primary** connection's report is honored. The host forwards it to

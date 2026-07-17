@@ -197,16 +197,25 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         let w = payload.beUInt32(at: offset), h = payload.beUInt32(at: offset + 4)
         let secondDisplay = (payload[payload.startIndex + offset + 8] & 1) == 1
         guard w >= 640, h >= 480 else { return }
+        // Optional trailing Display B size (present only when a second display
+        // is attached) — lets the host size Display B to the real external
+        // monitor instead of the fixed presetB.
+        var secondInfo: (w: UInt32, h: UInt32)?
+        if secondDisplay, payload.count >= offset + 17 {
+            let bw = payload.beUInt32(at: offset + 9), bh = payload.beUInt32(at: offset + 13)
+            if bw >= 640, bh >= 480 { secondInfo = (bw, bh) }
+        }
         clientAnnounced = true
-        clog("STREAM: client reports \(w)x\(h)px\(secondDisplay ? " + second display" : "") — requesting collapse")
+        clog("STREAM: client reports \(w)x\(h)px\(secondDisplay ? " + second display\(secondInfo.map { " \($0.w)x\($0.h)px" } ?? "")" : "") — requesting collapse")
         DispatchQueue.main.async {
             Self.pendingRestorePost?.cancel()
             Self.pendingRestorePost = nil
+            var info: [String: String] = ["width": String(w), "height": String(h),
+                                          "external": secondDisplay ? "1" : "0", "source": "stream"]
+            if let s = secondInfo { info["widthB"] = String(s.w); info["heightB"] = String(s.h) }
             DistributedNotificationCenter.default().postNotificationName(
                 Notification.Name("com.frindle.clamshell.collapse"), object: nil,
-                userInfo: ["width": String(w), "height": String(h),
-                           "external": secondDisplay ? "1" : "0", "source": "stream"],
-                deliverImmediately: true)
+                userInfo: info, deliverImmediately: true)
         }
     }
 

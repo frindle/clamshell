@@ -68,24 +68,36 @@ enum StreamMessage {
     /// Trailing client-display info (optional — hosts that predate it ignore
     /// the extra bytes): the client's video surface size in pixels, and
     /// whether a second display surface is attached (flags bit 0), which
-    /// drives the host's auto dual-display mode.
+    /// drives the host's auto dual-display mode. When a second display is
+    /// attached its own pixel size is appended too (secondSize), so the host
+    /// sizes Display B to the real external monitor instead of a fixed preset.
     static func hello(requestedCodec: StreamCodec,
-                      displayInfo: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool)? = nil) -> Data {
+                      displayInfo: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool)? = nil,
+                      secondSize: (widthPx: UInt32, heightPx: UInt32)? = nil) -> Data {
         var p = Data([streamProtocolVersion, requestedCodec.rawValue])
         if let info = displayInfo {
-            p.appendBE(info.widthPx); p.appendBE(info.heightPx)
-            p.append(info.secondDisplay ? 1 : 0)
+            appendDisplayInfo(&p, info, secondSize)
         }
         return frame(type: .hello, payload: p)
     }
 
     /// Mid-session update of the same info HELLO carries — sent when the
     /// client's external monitor is plugged/unplugged after connecting.
-    static func clientDisplays(widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool) -> Data {
+    static func clientDisplays(widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool,
+                               secondSize: (widthPx: UInt32, heightPx: UInt32)? = nil) -> Data {
         var p = Data()
-        p.appendBE(widthPx); p.appendBE(heightPx)
-        p.append(secondDisplay ? 1 : 0)
+        appendDisplayInfo(&p, (widthPx, heightPx, secondDisplay), secondSize)
         return frame(type: .clientDisplays, payload: p)
+    }
+
+    private static func appendDisplayInfo(_ p: inout Data,
+                                          _ info: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool),
+                                          _ secondSize: (widthPx: UInt32, heightPx: UInt32)?) {
+        p.appendBE(info.widthPx); p.appendBE(info.heightPx)
+        p.append(info.secondDisplay ? 1 : 0)
+        if info.secondDisplay, let s = secondSize {
+            p.appendBE(s.widthPx); p.appendBE(s.heightPx)
+        }
     }
 
     /// `hardwareEncoder` becomes flags bit 0 (trailing byte; clients that
