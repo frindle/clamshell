@@ -20,3 +20,8 @@ jobs:
           cd ClamshellViewer
           xcodebuild -project ClamshellViewer.xcodeproj -target ClamshellViewer \
             -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
+      - name: Build iPhone control app (simulator, compile check only)
+        run: |
+          cd ClamshellViewer
+          xcodebuild -project ClamshellViewer.xcodeproj -target ClamshellControl \
+            -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build

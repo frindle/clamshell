@@ -138,6 +138,14 @@ touch → mouse forwarding) — open it in Xcode and run on an iPad on the same
 LAN/Tailscale network. Phase 1 is a single display and a single client;
 hardware encode is required (it refuses to run a software encode).
 
+The same project has a second target, **ClamshellControl** (iPhone): the
+phone shows no video of its own — an external monitor plugged into the phone
+over USB-C (or AR glasses, which enumerate as ordinary external screens) is
+the only video output, showing whichever Mac display you pick, while the
+phone's screen is a laptop-style trackpad (pan = pointer, tap = click,
+two-finger tap = right click, two-finger pan = scroll) with a software
+keyboard toggle. Hardware Bluetooth keyboards/mice work like on the iPad.
+
 ## Remote client notes
 
 - **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
@@ -153,6 +161,12 @@ after macOS updates. Not sandboxable / not App Store eligible in its current
 form.
 
 ## Changelog
+
+### Unreleased
+- **ClamshellControl** (⚠ untested on real hardware): new iPhone target —
+  external monitor is the only video output (user-picked Mac display),
+  phone screen is a relative-movement trackpad + software-keyboard toggle.
+  Shares the entire protocol client with the iPad viewer.
 
 ### 0.8.0
 - **Virtual display robustness**: HiDPI mode is now verified and enforced
