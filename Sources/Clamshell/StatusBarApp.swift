@@ -7,6 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let coordinator = CollapseCoordinator()
     private let monitor = ConnectionMonitor()
     private let webServer = WebServer()
+    /// In-process native stream fleet (PROTOCOL.md). Same class the CLI
+    /// `stream` command uses — nil when the "Native Streaming" toggle is off.
+    private(set) var streamFleet: StreamFleet?
+    private var diagnosticsWC: NSWindowController?
+    private var qrWC: NSWindowController?
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
     // Remote-session state is the OR of the two signals: polled VNC/Jump
@@ -81,6 +86,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         webServer.clipboardToken = UserDefaults.standard.string(forKey: "clipboardToken")
         if UserDefaults.standard.bool(forKey: "webAccess") {
             webServer.start()
+        }
+        // Native streaming persists like Web Access / Start at Login: once
+        // enabled it survives relaunches and reboots with no terminal.
+        if UserDefaults.standard.bool(forKey: "nativeStreaming") {
+            startNativeStreaming()
         }
 
         // A system sleep kills any live remote stream. On wake, drop the
@@ -275,6 +285,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         web.target = self
         menu.addItem(web)
 
+        let stream = NSMenuItem(
+            title: streamFleet?.isServing == true
+                ? "Native Streaming On (port \(streamDefaultPort)+)"
+                : "Enable Native Streaming (iPad/iPhone apps)",
+            action: #selector(toggleNativeStreaming), keyEquivalent: ""
+        )
+        stream.state = streamFleet != nil ? .on : .off
+        stream.target = self
+        menu.addItem(stream)
+
         // Bind-address picker — only interesting with more than one LAN IP.
         // Multi-select: each interface toggles independently; "All Interfaces"
         // clears the selection (empty selection = bind everything).
@@ -315,6 +335,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Diagnostics…", action: #selector(openDiagnostics), keyEquivalent: "d")
+            .target = self
+        menu.addItem(withTitle: "Show Pairing QR Code…", action: #selector(openPairingQR), keyEquivalent: "")
+            .target = self
         menu.addItem(withTitle: "Open Log File", action: #selector(openLog), keyEquivalent: "l")
             .target = self
 
@@ -426,6 +450,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         UserDefaults.standard.set(webServer.isRunning, forKey: "webAccess")
         rebuildMenu()
+    }
+
+    private func startNativeStreaming() {
+        guard streamFleet == nil else { return }
+        let fleet = StreamFleet(basePort: streamDefaultPort)
+        fleet.rebuild()
+        streamFleet = fleet
+        clog("native streaming enabled from menu bar")
+    }
+
+    private func stopNativeStreaming() {
+        streamFleet?.stop()
+        streamFleet = nil
+        clog("native streaming disabled from menu bar")
+    }
+
+    @objc private func toggleNativeStreaming() {
+        if streamFleet != nil { stopNativeStreaming() } else { startNativeStreaming() }
+        UserDefaults.standard.set(streamFleet != nil, forKey: "nativeStreaming")
+        rebuildMenu()
+    }
+
+    @objc private func openDiagnostics() {
+        if diagnosticsWC == nil {
+            diagnosticsWC = DiagnosticsWindowController(appDelegate: self)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        diagnosticsWC?.showWindow(nil)
+        diagnosticsWC?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Disconnect All / Restart Streaming, driven from the Diagnostics window.
+    func disconnectAllClients() { streamFleet?.disconnectAllClients() }
+    func restartStreaming() {
+        guard streamFleet != nil else { return }
+        stopNativeStreaming()
+        startNativeStreaming()
+        UserDefaults.standard.set(true, forKey: "nativeStreaming")
+        rebuildMenu()
+    }
+
+    @objc private func openPairingQR() {
+        if qrWC == nil { qrWC = PairingQRWindowController() }
+        NSApp.activate(ignoringOtherApps: true)
+        qrWC?.showWindow(nil)
+        qrWC?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func selectBind(_ sender: NSMenuItem) {
