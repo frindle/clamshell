@@ -95,7 +95,11 @@ enum UpdateInstaller {
     private static func signingAuthority(_ path: String) -> String? {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        task.arguments = ["-dv", path]
+        // -dvv (not -dv): the Authority= line is only emitted at verbosity 2+.
+        // With a self-signed identity, -dv prints no Authority at all, which
+        // would make every self-signed build read as ad-hoc and break the
+        // update identity match.
+        task.arguments = ["-dvv", path]
         let pipe = Pipe()
         task.standardError = pipe // codesign prints to stderr
         task.standardOutput = FileHandle.nullDevice

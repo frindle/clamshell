@@ -131,6 +131,19 @@ struct VideoView: UIViewRepresentable {
     }
 }
 
+/// Warning shown whenever the connected host is encoding in software
+/// (no hardware encoder) — never degrade silently. Shared by both targets.
+struct SoftwareEncodingBanner: View {
+    var body: some View {
+        Label("Software encoding — expect higher CPU/battery use and possibly worse latency",
+              systemImage: "exclamationmark.triangle.fill")
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.black)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(.yellow.opacity(0.9), in: Capsule())
+    }
+}
+
 /// Root view hosted on the external UIWindowScene — output only.
 struct ExternalDisplayView: View {
     @ObservedObject var client: StreamClient

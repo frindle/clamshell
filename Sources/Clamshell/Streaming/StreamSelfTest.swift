@@ -39,7 +39,7 @@ enum StreamSelfTest {
 
         let encoder: VideoEncoder
         do {
-            encoder = try VideoEncoder.makeHardwareEncoder(width: width, height: height)
+            encoder = try VideoEncoder.makeEncoder(width: width, height: height)
         } catch {
             print("[\(label)] FAIL: \(error)")
             return false

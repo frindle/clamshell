@@ -44,7 +44,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | Type | Name             | Direction     | Payload |
 |------|------------------|---------------|---------|
 | 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) |
-| 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE) |
+| 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -58,7 +58,11 @@ Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
 host picks what its hardware encoder actually supports (HEVC preferred on
 Apple Silicon) and states the final choice in HELLO_ACK. Width/height in
 HELLO_ACK are the encoded pixel dimensions (capture is at the display's
-native pixel resolution, no scaling).
+native pixel resolution, no scaling). The trailing flags byte's bit 0 is 1
+when the host encoder is hardware-accelerated, 0 for the software fallback;
+the byte is trailing so clients that predate it parse unchanged (and a
+missing byte from an older host implies hardware, matching its
+refuse-to-start contract).
 
 ## VIDEO_FRAME payload
 
@@ -82,14 +86,18 @@ key codes (client is responsible for any translation).
 
 ## Encoder contract (host)
 
-Hardware encode is **required**, not preferred: the `VTCompressionSession` is
+Hardware encode is strongly preferred: the `VTCompressionSession` is first
 created with `kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder`
 and verified via `kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder`.
 HEVC hardware is tried first (Apple Silicon media engine), falling back to
-H.264 hardware with a loud log; if neither hardware path exists, the stream
-refuses to start rather than silently burning CPU. Low-latency tuning:
-real-time mode, frame reordering (B-frames) disabled, zero frame delay,
-speed prioritized over quality, ~20 Mbps.
+H.264 hardware with a loud log. If neither hardware path exists, the host
+falls back to a **software** session (same codec order, no Require flag)
+rather than refusing to start — but never silently: the fallback is logged
+loudly, reported in HELLO_ACK's flags byte, and the viewer shows a persistent
+warning banner ("Software encoding — expect higher CPU/battery use and
+possibly worse latency"). Low-latency tuning: real-time mode, frame
+reordering (B-frames) disabled, zero frame delay, speed prioritized over
+quality, ~20 Mbps.
 
 ## Audio (AUDIO_FRAME)
 
