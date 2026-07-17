@@ -12,6 +12,15 @@
 		BB0000000000000000000003 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
 		BB0000000000000000000005 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
 		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
+		BB0000000000000000000007 /* StreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000007 /* StreamClient.swift */; };
+		BB0000000000000000000008 /* VideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000008 /* VideoView.swift */; };
+		BB0000000000000000000011 /* ControlApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000009 /* ControlApp.swift */; };
+		BB0000000000000000000012 /* StreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000007 /* StreamClient.swift */; };
+		BB0000000000000000000013 /* VideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000008 /* VideoView.swift */; };
+		BB0000000000000000000014 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
+		BB0000000000000000000015 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
+		BB0000000000000000000016 /* StreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* StreamProtocol.swift */; };
+		BB0000000000000000000017 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -21,10 +30,21 @@
 		FF0000000000000000000002 /* StreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamProtocol.swift; path = "../Sources/Clamshell/Streaming/StreamProtocol.swift"; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000003 /* FrameAssembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FrameAssembler.swift; path = "../Sources/Clamshell/Streaming/FrameAssembler.swift"; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000004 /* ClamshellViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF0000000000000000000007 /* StreamClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamClient.swift; sourceTree = "<group>"; };
+		FF0000000000000000000008 /* VideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoView.swift; sourceTree = "<group>"; };
+		FF0000000000000000000009 /* ControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlApp.swift; sourceTree = "<group>"; };
+		FF000000000000000000000A /* ClamshellControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		AB0000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AB0000000000000000000002 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -38,6 +58,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000002 /* Sources */,
+				AA0000000000000000000005 /* ControlSources */,
 				AA0000000000000000000003 /* Shared */,
 				AA0000000000000000000004 /* Products */,
 			);
@@ -47,10 +68,20 @@
 			isa = PBXGroup;
 			children = (
 				FF0000000000000000000001 /* ViewerApp.swift */,
+				FF0000000000000000000007 /* StreamClient.swift */,
+				FF0000000000000000000008 /* VideoView.swift */,
 				FF0000000000000000000005 /* AudioPlayer.swift */,
 				FF0000000000000000000006 /* KeyMap.swift */,
 			);
 			path = Sources;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000005 /* ControlSources */ = {
+			isa = PBXGroup;
+			children = (
+				FF0000000000000000000009 /* ControlApp.swift */,
+			);
+			path = ControlSources;
 			sourceTree = "<group>";
 		};
 		AA0000000000000000000003 /* Shared */ = {
@@ -66,6 +97,7 @@
 			isa = PBXGroup;
 			children = (
 				FF0000000000000000000004 /* ClamshellViewer.app */,
+				FF000000000000000000000A /* ClamshellControl.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -87,6 +119,22 @@
 			name = ClamshellViewer;
 			productName = ClamshellViewer;
 			productReference = FF0000000000000000000004 /* ClamshellViewer.app */;
+			productType = "com.apple.product-type.application";
+		};
+		CC0000000000000000000002 /* ClamshellControl */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD0000000000000000000003 /* Build configuration list for PBXNativeTarget "ClamshellControl" */;
+			buildPhases = (
+				AC0000000000000000000002 /* Sources */,
+				AB0000000000000000000002 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ClamshellControl;
+			productName = ClamshellControl;
+			productReference = FF000000000000000000000A /* ClamshellControl.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -113,6 +161,7 @@
 			projectRoot = "";
 			targets = (
 				CC0000000000000000000001 /* ClamshellViewer */,
+				CC0000000000000000000002 /* ClamshellControl */,
 			);
 		};
 /* End PBXProject section */
@@ -123,10 +172,26 @@
 			buildActionMask = 2147483647;
 			files = (
 				BB0000000000000000000001 /* ViewerApp.swift in Sources */,
+				BB0000000000000000000007 /* StreamClient.swift in Sources */,
+				BB0000000000000000000008 /* VideoView.swift in Sources */,
 				BB0000000000000000000005 /* AudioPlayer.swift in Sources */,
 				BB0000000000000000000006 /* KeyMap.swift in Sources */,
 				BB0000000000000000000002 /* StreamProtocol.swift in Sources */,
 				BB0000000000000000000003 /* FrameAssembler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AC0000000000000000000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000011 /* ControlApp.swift in Sources */,
+				BB0000000000000000000012 /* StreamClient.swift in Sources */,
+				BB0000000000000000000013 /* VideoView.swift in Sources */,
+				BB0000000000000000000014 /* AudioPlayer.swift in Sources */,
+				BB0000000000000000000015 /* KeyMap.swift in Sources */,
+				BB0000000000000000000016 /* StreamProtocol.swift in Sources */,
+				BB0000000000000000000017 /* FrameAssembler.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -219,6 +284,54 @@
 			};
 			name = Release;
 		};
+		DC0000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.frindle.clamshell.control;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		DC0000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.frindle.clamshell.control;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -236,6 +349,15 @@
 			buildConfigurations = (
 				DC0000000000000000000003 /* Debug */,
 				DC0000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DD0000000000000000000003 /* Build configuration list for PBXNativeTarget "ClamshellControl" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000005 /* Debug */,
+				DC0000000000000000000006 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
