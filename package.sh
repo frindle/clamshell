@@ -98,6 +98,13 @@ tell application "Finder"
   end tell
 end tell
 EOF
+# Finder writes com.apple.FinderInfo onto the app bundle while laying out the
+# window, which trips `codesign --verify --strict` ("resource fork ... not
+# allowed") — and that same verify runs in the self-updater. Strip and re-sign
+# the copy that actually ships in the DMG. Icon positions live in the
+# container's .DS_Store, so this doesn't disturb the layout.
+xattr -cr "/Volumes/${VOL}/Clamshell.app"
+codesign --force --sign "${SIGN_ID}" "/Volumes/${VOL}/Clamshell.app"
 sync
 hdiutil detach "/Volumes/${VOL}" -quiet
 hdiutil convert "${RW}" -format UDZO -o "${DMG}" -ov -quiet
