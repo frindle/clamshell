@@ -76,6 +76,7 @@ final class Connection: ObservableObject {
     let external = StreamClient()
 
     private var params: (host: String, accessId: String, accessSecret: String)?
+    private var externalAttached = false
 
     init() { external.playsAudio = false }
 
@@ -96,11 +97,15 @@ final class Connection: ObservableObject {
     }
 
     // Called when the external UIWindowScene connects/disconnects.
-    func externalDisplayConnected() { connectExternalIfAttached() }
-    func externalDisplayDisconnected() { external.disconnect() }
+    func externalDisplayConnected() { externalAttached = true; connectExternalIfAttached() }
+    func externalDisplayDisconnected() { externalAttached = false; external.disconnect() }
 
+    /// Connect Display B only when a physical external screen is actually
+    /// attached — otherwise we'd waste a whole encode+stream pipeline (or spin
+    /// reconnecting to a port the Mac isn't serving).
     private func connectExternalIfAttached() {
-        guard let (host, id, secret) = params,
+        guard externalAttached,
+              let (host, id, secret) = params,
               let bHost = Self.secondDisplayEndpoint(from: host) else { return }
         external.connect(host: bHost, accessId: id, accessSecret: secret)
     }
