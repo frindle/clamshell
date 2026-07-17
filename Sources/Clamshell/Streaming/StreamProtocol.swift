@@ -7,6 +7,7 @@ import Foundation
 enum StreamMessageType: UInt8 {
     case hello = 0x01
     case helloAck = 0x02
+    case clientDisplays = 0x03 // client -> host: display size / second-screen update
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
@@ -64,8 +65,27 @@ enum StreamMessage {
         return d
     }
 
-    static func hello(requestedCodec: StreamCodec) -> Data {
-        frame(type: .hello, payload: Data([streamProtocolVersion, requestedCodec.rawValue]))
+    /// Trailing client-display info (optional — hosts that predate it ignore
+    /// the extra bytes): the client's video surface size in pixels, and
+    /// whether a second display surface is attached (flags bit 0), which
+    /// drives the host's auto dual-display mode.
+    static func hello(requestedCodec: StreamCodec,
+                      displayInfo: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool)? = nil) -> Data {
+        var p = Data([streamProtocolVersion, requestedCodec.rawValue])
+        if let info = displayInfo {
+            p.appendBE(info.widthPx); p.appendBE(info.heightPx)
+            p.append(info.secondDisplay ? 1 : 0)
+        }
+        return frame(type: .hello, payload: p)
+    }
+
+    /// Mid-session update of the same info HELLO carries — sent when the
+    /// client's external monitor is plugged/unplugged after connecting.
+    static func clientDisplays(widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool) -> Data {
+        var p = Data()
+        p.appendBE(widthPx); p.appendBE(heightPx)
+        p.append(secondDisplay ? 1 : 0)
+        return frame(type: .clientDisplays, payload: p)
     }
 
     /// `hardwareEncoder` becomes flags bit 0 (trailing byte; clients that
