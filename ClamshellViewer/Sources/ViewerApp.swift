@@ -1,5 +1,4 @@
 import SwiftUI
-import Network
 import AVFoundation
 import CoreMedia
 
@@ -30,56 +29,55 @@ final class StreamClient: ObservableObject {
     /// network queue; AVSampleBufferDisplayLayer enqueue is thread-safe.
     var onSampleBuffer: ((CMSampleBuffer) -> Void)?
 
-    private var connection: NWConnection?
+    private var task: URLSessionWebSocketTask?
     private var parser: StreamMessageParser?
     private var assembler: FrameAssembler?
-    private let queue = DispatchQueue(label: "clamshell.viewer.net")
 
+    /// Accepts a bare host ("10.0.1.5" -> ws://10.0.1.5:5903) or a full
+    /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
     func connect(host: String) {
         disconnect()
+        let urlString = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
+        guard let url = URL(string: urlString) else {
+            status = .failed("invalid address")
+            return
+        }
         status = .connecting
-        guard let port = NWEndpoint.Port(rawValue: streamDefaultPort) else { return }
-        let conn = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
-        connection = conn
 
         let parser = StreamMessageParser()
         parser.onMessage = { [weak self] type, payload in self?.handle(type: type, payload: payload) }
         self.parser = parser
 
-        conn.stateUpdateHandler = { [weak self] state in
-            switch state {
-            case .ready:
-                conn.send(content: StreamMessage.hello(requestedCodec: .hevc),
-                          completion: .contentProcessed { _ in })
-            case .failed(let error):
-                DispatchQueue.main.async { self?.status = .failed("\(error)") }
-            case .cancelled:
-                DispatchQueue.main.async { if self?.status != .idle { self?.status = .idle } }
-            default: break
-            }
+        let task = URLSession.shared.webSocketTask(with: url)
+        task.maximumMessageSize = 64 << 20 // keyframes at full display resolution
+        self.task = task
+        task.resume()
+        // URLSession queues sends until the handshake completes.
+        task.send(.data(StreamMessage.hello(requestedCodec: .hevc))) { [weak self] error in
+            if let error { DispatchQueue.main.async { self?.status = .failed("\(error.localizedDescription)") } }
         }
-        conn.start(queue: queue)
-        receiveLoop(conn)
+        receiveLoop(task)
     }
 
     func disconnect() {
-        connection?.cancel()
-        connection = nil
+        task?.cancel(with: .normalClosure, reason: nil)
+        task = nil
         parser = nil
         assembler = nil
         status = .idle
         videoSize = .zero
     }
 
-    private func receiveLoop(_ conn: NWConnection) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { [weak self] data, _, complete, error in
-            guard let self, self.connection === conn else { return }
-            if let data, !data.isEmpty { self.parser?.feed(data) }
-            if complete || error != nil {
-                DispatchQueue.main.async { self.status = .failed("connection closed") }
-                return
+    private func receiveLoop(_ task: URLSessionWebSocketTask) {
+        task.receive { [weak self] result in
+            guard let self, self.task === task else { return }
+            switch result {
+            case .success(let message):
+                if case .data(let data) = message { self.parser?.feed(data) }
+                self.receiveLoop(task)
+            case .failure(let error):
+                DispatchQueue.main.async { self.status = .failed(error.localizedDescription) }
             }
-            self.receiveLoop(conn)
         }
     }
 
@@ -105,7 +103,7 @@ final class StreamClient: ObservableObject {
     // MARK: Input (normalized 0..1 display coordinates)
 
     private func send(_ data: Data) {
-        connection?.send(content: data, completion: .contentProcessed { _ in })
+        task?.send(.data(data)) { _ in }
     }
 
     func sendMouseMove(x: Float, y: Float) { send(StreamMessage.mouseMove(x: x, y: y)) }
@@ -219,7 +217,7 @@ struct ContentView: View {
     private var connectForm: some View {
         VStack(spacing: 16) {
             Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
-            TextField("Mac address (e.g. 10.0.1.5 or mac.tailnet.ts.net)", text: $host)
+            TextField("Mac address (10.0.1.5) or wss:// URL", text: $host)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)

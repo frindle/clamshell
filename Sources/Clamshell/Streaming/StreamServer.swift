@@ -1,6 +1,6 @@
 import Foundation
 import Network
-import ScreenCaptureKit
+@preconcurrency import ScreenCaptureKit
 import CoreMedia
 import VideoToolbox
 
@@ -9,7 +9,8 @@ import VideoToolbox
 // Receives input messages on the same connection and injects them.
 // One client at a time; a new connection replaces the current one.
 
-final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate {
+// @unchecked Sendable: all mutable state is confined to the serial `queue`.
+final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let displayID: CGDirectDisplayID
     private let port: UInt16
 
@@ -36,8 +37,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     func start() throws {
+        // WebSocket over TCP (not raw TCP) so the stream can ride through a
+        // Cloudflare Tunnel's HTTP path; the binary framing inside is unchanged.
         let params = NWParameters.tcp
         params.allowLocalEndpointReuse = true
+        let ws = NWProtocolWebSocket.Options()
+        ws.autoReplyPing = true
+        params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         listener.newConnectionHandler = { [weak self] conn in
             self?.queue.async { self?.accept(conn) }
@@ -81,7 +87,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func receiveLoop(_ conn: NWConnection) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { [weak self] data, _, complete, error in
+        conn.receiveMessage { [weak self] data, _, complete, error in
             guard let self, self.connection === conn else { return }
             if let data, !data.isEmpty { self.parser?.feed(data) }
             if self.parser?.corrupt == true {
@@ -89,7 +95,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate {
                 self.teardownSession()
                 return
             }
-            if complete || error != nil {
+            if error != nil || (complete && data == nil) {
                 clog("STREAM: client disconnected (\(error.map(String.init(describing:)) ?? "eof"))")
                 self.teardownSession()
                 return
@@ -216,7 +222,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate {
     }
 
     private func send(_ data: Data, completion: (() -> Void)? = nil) {
-        connection?.send(content: data, completion: .contentProcessed { [weak self] error in
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
+        let context = NWConnection.ContentContext(identifier: "msg", metadata: [metadata])
+        connection?.send(content: data, contentContext: context, isComplete: true,
+                         completion: .contentProcessed { [weak self] error in
             self?.queue.async {
                 completion?()
                 if error != nil { self?.teardownSession() }

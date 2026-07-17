@@ -6,8 +6,10 @@ import VideoToolbox
 
 // `Clamshell stream-selftest` — verifies the pipeline end-to-end without a
 // display or an iPad: synthetic frames -> hardware encode -> wire framing ->
-// real TCP loopback -> parse -> FrameAssembler -> hardware decode. Exercises
-// everything except ScreenCaptureKit capture and input injection.
+// real WebSocket loopback (NWListener server, URLSessionWebSocketTask client,
+// exactly the transports the host and iPad use) -> parse -> FrameAssembler ->
+// hardware decode. Exercises everything except ScreenCaptureKit capture and
+// input injection.
 
 enum StreamSelfTest {
     static func run() -> Bool {
@@ -33,8 +35,12 @@ enum StreamSelfTest {
         let done = DispatchSemaphore(value: 0)
         let decodeLock = NSLock()
 
-        // TCP loopback: server sends encoded frames, client decodes.
-        let listener = try! NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: port)!)
+        // WebSocket loopback: server sends encoded frames, client decodes.
+        let params = NWParameters.tcp
+        let ws = NWProtocolWebSocket.Options()
+        ws.autoReplyPing = true
+        params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
+        let listener = try! NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
         let netQueue = DispatchQueue(label: "selftest.net")
         var serverConn: NWConnection?
         listener.newConnectionHandler = { conn in
@@ -88,26 +94,31 @@ enum StreamSelfTest {
             if s != noErr { print("FAIL: VTDecompressionSessionDecodeFrame \(s)") }
         }
 
-        let client = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!, using: .tcp)
+        // Client transport is the same one the iPad uses.
+        let client = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(port)")!)
+        client.maximumMessageSize = 64 << 20
         func receiveLoop() {
-            client.receive(minimumIncompleteLength: 1, maximumLength: 1 << 16) { data, _, complete, error in
-                if let data { parser.feed(data) }
-                if complete || error != nil { return }
+            client.receive { result in
+                guard case .success(let message) = result else { return }
+                if case .data(let data) = message { parser.feed(data) }
                 receiveLoop()
             }
         }
-        // Wait for the loopback connection before encoding.
-        let connected = DispatchSemaphore(value: 0)
-        client.stateUpdateHandler = { if case .ready = $0 { connected.signal() } }
-        client.start(queue: DispatchQueue(label: "selftest.client"))
+        client.resume()
         receiveLoop()
-        guard connected.wait(timeout: .now() + 5) == .success else {
+        // Wait for the server to see the loopback connection before encoding.
+        let deadline = Date().addingTimeInterval(5)
+        while serverConn == nil && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        guard serverConn != nil else {
             print("FAIL: loopback connection did not establish")
             return false
         }
 
         encoder.onEncodedFrame = { keyframe, pts, nalData in
+            let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
+            let context = NWConnection.ContentContext(identifier: "msg", metadata: [metadata])
             serverConn?.send(content: StreamMessage.videoFrame(keyframe: keyframe, ptsMicros: pts, nalData: nalData),
+                             contentContext: context, isComplete: true,
                              completion: .contentProcessed { _ in })
         }
 
@@ -126,7 +137,7 @@ enum StreamSelfTest {
         client.cancel()
         serverConn?.cancel()
         listener.cancel()
-        print(ok ? "PASS: \(decodedFrames)/\(frameCount) frames encoded (\(negotiatedCodec)) -> TCP -> decoded, keyframe seen"
+        print(ok ? "PASS: \(decodedFrames)/\(frameCount) frames encoded (\(negotiatedCodec)) -> WebSocket -> decoded, keyframe seen"
                  : "FAIL: decoded \(decodedFrames)/\(frameCount) frames, keyframe seen: \(sawKeyframe)")
         return ok
     }

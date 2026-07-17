@@ -123,9 +123,9 @@ no on-screen-keyboard button yet — use a hardware keyboard.
 ## Native streaming (experimental, Phase 1)
 
 A from-scratch replacement for the browser-VNC path: ScreenCaptureKit
-capture → VideoToolbox **hardware** HEVC/H.264 encode on the Mac → plain TCP
-on the LAN → hardware decode on an iPad. Wire format is documented in
-[PROTOCOL.md](PROTOCOL.md).
+capture → VideoToolbox **hardware** HEVC/H.264 encode on the Mac → binary
+WebSocket (`ws://` on LAN, `wss://` through a Cloudflare Tunnel) → hardware
+decode on an iPad. Wire format is documented in [PROTOCOL.md](PROTOCOL.md).
 
 ```
 .build/debug/Clamshell stream            # serve the main display on :5903
