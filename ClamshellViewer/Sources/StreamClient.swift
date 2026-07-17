@@ -20,6 +20,14 @@ final class StreamClient: ObservableObject {
     /// Whether audio plays through this client. Only the primary (iPad-screen)
     /// client plays audio; the external-display client stays muted.
     var playsAudio = true
+
+    /// This client's video surface size in pixels, reported to the host in
+    /// HELLO so it can auto-size its virtual display to the device (instead
+    /// of a manually picked preset). nil = report nothing (older behavior).
+    var reportedPixelSize: CGSize?
+    /// Whether a second display surface is attached client-side (external
+    /// monitor on the iPad) — drives the host's auto dual-display mode.
+    var reportsSecondDisplay = false
     /// Called with received clipboard text (main thread).
     var onClipboard: ((String) -> Void)?
 
@@ -74,8 +82,29 @@ final class StreamClient: ObservableObject {
         self.task = task
         task.resume()
         // URLSession queues sends until the handshake completes.
-        task.send(.data(StreamMessage.hello(requestedCodec: .hevc))) { _ in }
+        task.send(.data(StreamMessage.hello(requestedCodec: .hevc, displayInfo: displayInfoPayload))) { _ in }
         receiveLoop(task)
+    }
+
+    /// The wire form of the reported display situation. Mac virtual displays
+    /// are landscape, so the size is landscape-normalized regardless of how
+    /// the device is currently held.
+    private var displayInfoPayload: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool)? {
+        guard let s = reportedPixelSize, s.width > 0, s.height > 0 else { return nil }
+        return (UInt32(max(s.width, s.height)), UInt32(min(s.width, s.height)), reportsSecondDisplay)
+    }
+
+    /// Mid-session update (external monitor plugged/unplugged, or a new
+    /// surface size). Stores the values — they ride the next HELLO on
+    /// reconnect — and, when connected, tells the host now via
+    /// CLIENT_DISPLAYS so it can reshape its virtual display(s).
+    func updateReportedDisplay(pixelSize: CGSize? = nil, secondDisplay: Bool) {
+        if let pixelSize { reportedPixelSize = pixelSize }
+        reportsSecondDisplay = secondDisplay
+        guard task != nil, let info = displayInfoPayload else { return }
+        clogViewer("reporting display update: \(Int(info.widthPx))x\(Int(info.heightPx))px, second display \(secondDisplay)")
+        send(StreamMessage.clientDisplays(widthPx: info.widthPx, heightPx: info.heightPx,
+                                          secondDisplay: info.secondDisplay))
     }
 
     /// User-initiated disconnect: stop reconnecting and tear down.

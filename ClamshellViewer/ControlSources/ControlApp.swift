@@ -51,12 +51,12 @@ final class ControlExternalSceneDelegate: NSObject, UIWindowSceneDelegate {
             rootView: ExternalDisplayView(client: ControlSession.shared.client))
         window.isHidden = false
         self.window = window
-        ControlSession.shared.externalAttached = true
+        ControlSession.shared.externalScreenChanged(windowScene.screen)
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
         clogViewer("external display scene DISCONNECTED")
-        ControlSession.shared.externalAttached = false
+        ControlSession.shared.externalScreenChanged(nil)
         window = nil
     }
 }
@@ -85,6 +85,17 @@ final class ControlSession: ObservableObject {
     }
 
     func disconnect() { client.disconnect() }
+
+    /// The external monitor is this client's ONLY video surface, so its size
+    /// (never the phone's) is what the Mac should shape the virtual display
+    /// to — and there is never a *second* surface, so dual mode is never
+    /// requested from the phone. No size report until a monitor exists.
+    func externalScreenChanged(_ screen: UIScreen?) {
+        externalAttached = screen != nil
+        if let screen {
+            client.updateReportedDisplay(pixelSize: screen.nativeBounds.size, secondDisplay: false)
+        }
+    }
 }
 
 // MARK: - Trackpad surface (relative pointer, like a laptop trackpad)

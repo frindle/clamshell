@@ -37,6 +37,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var framesInFlight = 0
     private let maxFramesInFlight = 8
 
+    /// This session's client reported display info (and so may have driven a
+    /// collapse) — on teardown, schedule the matching restore request.
+    private var clientAnnounced = false
+
     // Adaptive bitrate (see PROTOCOL.md "Adaptive bitrate"): reactive, driven
     // purely by the send-queue backpressure above. A full send queue means the
     // network can't drain 20 Mbps — halve the encoder bitrate (min once per
@@ -122,6 +126,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     private func teardownSession() {
         guard connection != nil || stream != nil else { return }
+        if clientAnnounced {
+            clientAnnounced = false
+            scheduleRestorePost()
+        }
         connection?.cancel()
         connection = nil
         parser = nil
@@ -148,7 +156,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         case .hello:
             guard payload.count >= 2 else { return }
             let requested = StreamCodec(rawValue: payload[payload.startIndex + 1]) ?? .hevc
+            handleClientDisplayInfo(payload, at: 2)
             startSession(requestedCodec: requested)
+        case .clientDisplays:
+            handleClientDisplayInfo(payload, at: 0)
         case .keyframeRequest:
             encoder?.requestKeyframe()
         case .mouseMove:
@@ -169,6 +180,56 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
         case .helloAck, .videoFrame, .audioFrame:
             break // host never receives these
+        }
+    }
+
+    // MARK: - Client display info -> host auto-configuration (on `queue`)
+
+    /// The client reports its real screen size (and whether it has a second
+    /// display surface) in HELLO / CLIENT_DISPLAYS. Forward it to the menu
+    /// bar app over the same distributed-notification channel Sunshine's
+    /// prep-command uses, so the virtual display gets auto-sized to the
+    /// device (and dual mode auto-toggled) without a manual preset pick.
+    /// Only the primary connection speaks for the client; secondary display
+    /// connections would otherwise fight over the geometry.
+    private func handleClientDisplayInfo(_ payload: Data, at offset: Int) {
+        guard isPrimary, payload.count >= offset + 9 else { return }
+        let w = payload.beUInt32(at: offset), h = payload.beUInt32(at: offset + 4)
+        let secondDisplay = (payload[payload.startIndex + offset + 8] & 1) == 1
+        guard w >= 640, h >= 480 else { return }
+        clientAnnounced = true
+        clog("STREAM: client reports \(w)x\(h)px\(secondDisplay ? " + second display" : "") — requesting collapse")
+        DispatchQueue.main.async {
+            Self.pendingRestorePost?.cancel()
+            Self.pendingRestorePost = nil
+            DistributedNotificationCenter.default().postNotificationName(
+                Notification.Name("com.frindle.clamshell.collapse"), object: nil,
+                userInfo: ["width": String(w), "height": String(h),
+                           "external": secondDisplay ? "1" : "0", "source": "stream"],
+                deliverImmediately: true)
+        }
+    }
+
+    /// Restore is posted only after a grace period with no announcing client:
+    /// viewer reconnects (network blips, and this process rebuilding servers
+    /// on display-topology changes) must not thrash the collapse. Static
+    /// because a topology rebuild replaces server instances mid-session — the
+    /// reconnecting client's HELLO on the *new* primary must cancel the *old*
+    /// instance's scheduled restore. Main-queue confined.
+    private static var pendingRestorePost: DispatchWorkItem?
+
+    private func scheduleRestorePost() {
+        DispatchQueue.main.async {
+            Self.pendingRestorePost?.cancel()
+            let work = DispatchWorkItem {
+                Self.pendingRestorePost = nil
+                clog("STREAM: no client for 15s — requesting restore")
+                DistributedNotificationCenter.default().postNotificationName(
+                    Notification.Name("com.frindle.clamshell.restore"), object: nil,
+                    userInfo: ["source": "stream"], deliverImmediately: true)
+            }
+            Self.pendingRestorePost = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: work)
         }
     }
 
@@ -342,5 +403,79 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         clog("STREAM: capture stopped with error: \(error)")
         queue.async { self.teardownSession() }
+    }
+}
+
+// MARK: - Fleet: one server per active display, following topology changes
+
+/// Owns the per-display StreamServers for the `Clamshell stream` CLI and
+/// rebuilds them when the display topology changes. That matters because the
+/// client's HELLO can trigger a collapse (auto-sized virtual display, maybe
+/// dual) *after* this process started — virtual display A must take over the
+/// base port and B must get base+1 (where the iPad's external-screen client
+/// connects), and the physical displays drop off the active list while
+/// mirrored. Clients ride through the rebuild via their auto-reconnect.
+/// Main-queue confined.
+final class StreamFleet {
+    private let basePort: UInt16
+    private var servers: [StreamServer] = []
+    private var currentIDs: [CGDirectDisplayID] = []
+    private var pendingRebuild: DispatchWorkItem?
+
+    var isServing: Bool { !servers.isEmpty }
+
+    init(basePort: UInt16) {
+        self.basePort = basePort
+        let info = Unmanaged.passUnretained(self).toOpaque()
+        CGDisplayRegisterReconfigurationCallback({ _, flags, userInfo in
+            guard let userInfo,
+                  flags.contains(.addFlag) || flags.contains(.removeFlag) else { return }
+            let fleet = Unmanaged<StreamFleet>.fromOpaque(userInfo).takeUnretainedValue()
+            DispatchQueue.main.async { fleet.rebuildSoon() }
+        }, info)
+    }
+
+    /// Active displays, main display first (index 0 = base port = the primary
+    /// connection carrying audio/clipboard/display-info). Mirrored displays
+    /// are excluded by CGGetActiveDisplayList, so while collapsed the list is
+    /// just the virtual display(s).
+    private static func activeIDs() -> [CGDirectDisplayID] {
+        var list = [CGDirectDisplayID](repeating: 0, count: 16)
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(16, &list, &count)
+        var ids = Array(list.prefix(Int(count)))
+        if ids.isEmpty { ids = [CGMainDisplayID()] }
+        if let mainIdx = ids.firstIndex(of: CGMainDisplayID()), mainIdx != 0 { ids.swapAt(0, mainIdx) }
+        return ids
+    }
+
+    func rebuild() {
+        let ids = Self.activeIDs()
+        guard ids != currentIDs else { return }
+        for s in servers { s.stop() }
+        servers = []
+        currentIDs = ids
+        for (i, id) in ids.enumerated() {
+            let server = StreamServer(displayID: id, port: basePort + UInt16(i), isPrimary: i == 0)
+            do {
+                try server.start()
+                servers.append(server)
+            } catch {
+                clog("STREAM: failed to start server on port \(basePort + UInt16(i)): \(error)")
+            }
+        }
+        clog("STREAM: serving \(servers.count) display(s) on ports \(basePort)–\(basePort + UInt16(max(servers.count, 1) - 1))")
+    }
+
+    /// Collapse/restore reconfigures displays several times over ~2s;
+    /// debounce so we rebuild once, after the topology settles.
+    private func rebuildSoon() {
+        pendingRebuild?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.pendingRebuild = nil
+            self?.rebuild()
+        }
+        pendingRebuild = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
     }
 }

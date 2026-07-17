@@ -22,6 +22,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// returns to idle by any path.
     private var externallyCollapsed = false
 
+    /// The current collapse was driven by a native-stream client (source ==
+    /// "stream"); only then may a stream-side restore request tear it down.
+    private var streamCollapsed = false
+
+    /// When on (default), a native-stream client reporting a second display
+    /// surface auto-enables dual display mode for that session (and reporting
+    /// none auto-disables it). Off = the manual Dual Display Mode toggle
+    /// alone decides, exactly as before.
+    private var autoDualDetect = UserDefaults.standard.object(forKey: "autoDualDetect") as? Bool ?? true
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         if !WindowLayoutStore.hasAccessibilityPermission {
             WindowLayoutStore.requestAccessibilityPermission()
@@ -46,7 +56,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             guard let self else { return }
             if state == .idle {
                 self.externallyCollapsed = false
-                self.restoreSavedPreset() // undo any client-dimension override
+                self.streamCollapsed = false
+                self.restoreSavedPreset() // undo any client-dimension/dual override
             }
             self.updateIcon()
             self.rebuildMenu()
@@ -92,24 +103,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.collapse"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
             // Optional client pixel dimensions (Sunshine prep-command env
-            // vars) — size the virtual display to the connecting device.
+            // vars, or a native-stream client's HELLO report) — size the
+            // virtual display to the connecting device.
+            var preset = self.coordinator.preset
             if let w = (note.userInfo?["width"] as? String).flatMap(UInt32.init),
                let h = (note.userInfo?["height"] as? String).flatMap(UInt32.init),
                w >= 640, h >= 480 {
                 // Floor odd client dimensions to even so points * 2 == pixels.
                 let ew = w & ~1, eh = h & ~1
-                self.coordinator.preset = DisplayPreset(
+                preset = DisplayPreset(
                     name: "Client (\(ew)×\(eh))", pointsWide: ew / 2, pointsHigh: eh / 2
                 )
             }
-            clog("external collapse command (\(self.coordinator.preset.name))")
-            self.syncDualPresets() // client dimensions may have changed display A's size
-            self.externallyCollapsed = true
-            self.coordinator.collapse()
+            let fromStream = (note.userInfo?["source"] as? String) == "stream"
+            // A native-stream client also reports whether it has a second
+            // display surface (external monitor on the iPad) — auto-drive
+            // dual mode from that, unless the user turned auto-detect off.
+            var dual = UserDefaults.standard.bool(forKey: "dualMode")
+            if fromStream, self.autoDualDetect, let ext = note.userInfo?["external"] as? String {
+                dual = ext == "1"
+            }
+            clog("external collapse command (\(preset.name), dual \(dual)\(fromStream ? ", stream" : ""))")
+            self.applyExternalCollapse(preset: preset, dual: dual, fromStream: fromStream)
         }
-        dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.restore"), object: nil, queue: .main) { [weak self] _ in
-            clog("external restore command")
-            self?.coordinator.restore()
+        dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.restore"), object: nil, queue: .main) { [weak self] note in
+            guard let self else { return }
+            let fromStream = (note.userInfo?["source"] as? String) == "stream"
+            // A stream-side restore (client gone for the grace period) may
+            // only undo a collapse the stream itself drove — never one the
+            // user or Sunshine owns.
+            if fromStream && !self.streamCollapsed { return }
+            clog("external restore command\(fromStream ? " (stream client gone)" : "")")
+            self.coordinator.restore()
         }
 
         checkForUpdate()
@@ -210,6 +235,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dual.state = coordinator.dualMode ? .on : .off
         dual.target = self
         menu.addItem(dual)
+
+        let autoDual = NSMenuItem(title: "Auto-Detect Dual Display (native stream)", action: #selector(toggleAutoDual), keyEquivalent: "")
+        autoDual.state = autoDualDetect ? .on : .off
+        autoDual.target = self
+        menu.addItem(autoDual)
 
         if coordinator.dualMode {
             let presetBMenu = NSMenu()
@@ -356,6 +386,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         webServer.dualPresets = coordinator.dualMode ? (coordinator.preset, coordinator.presetB) : nil
     }
 
+    @objc private func toggleAutoDual() {
+        autoDualDetect.toggle()
+        UserDefaults.standard.set(autoDualDetect, forKey: "autoDualDetect")
+        rebuildMenu()
+    }
+
     @objc private func toggleDual() {
         coordinator.dualMode.toggle()
         UserDefaults.standard.set(coordinator.dualMode, forKey: "dualMode")
@@ -462,14 +498,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return .terminateLater
     }
 
-    /// Re-apply the user's saved preset after any collapse ends, so a
-    /// client-dimension override (Sunshine) doesn't stick for later
-    /// manual collapses.
+    /// Applies an externally-commanded collapse (Sunshine prep-command or a
+    /// native-stream client's display report). Already collapsed with the
+    /// same geometry: keep it (and cancel any pending grace-period restore).
+    /// Geometry changed mid-collapse (new client resolution, or a second
+    /// screen appeared/vanished): rebuild the collapse with the new shape.
+    private func applyExternalCollapse(preset: DisplayPreset, dual: Bool, fromStream: Bool) {
+        if coordinator.state != .idle {
+            if coordinator.preset == preset && coordinator.dualMode == dual {
+                externallyCollapsed = true
+                if fromStream { streamCollapsed = true }
+                coordinator.collapse() // no-op that cancels a pending restore
+                return
+            }
+            clog("external collapse geometry changed — recollapsing")
+            coordinator.restore { [weak self] in
+                self?.applyExternalCollapse(preset: preset, dual: dual, fromStream: fromStream)
+            }
+            return
+        }
+        coordinator.preset = preset
+        coordinator.dualMode = dual
+        syncDualPresets()
+        externallyCollapsed = true
+        if fromStream { streamCollapsed = true }
+        coordinator.collapse()
+    }
+
+    /// Re-apply the user's saved preset (and manual dual-mode choice) after
+    /// any collapse ends, so a client-dimension/auto-dual override doesn't
+    /// stick for later manual collapses.
     private func restoreSavedPreset() {
         let name = UserDefaults.standard.string(forKey: "preset")
         let saved = DisplayPreset.all.first { $0.name == name } ?? .iPadAir13
-        guard coordinator.preset != saved else { return }
+        let savedDual = UserDefaults.standard.bool(forKey: "dualMode")
+        guard coordinator.preset != saved || coordinator.dualMode != savedDual else { return }
         coordinator.preset = saved
+        coordinator.dualMode = savedDual
         syncDualPresets()
     }
 }

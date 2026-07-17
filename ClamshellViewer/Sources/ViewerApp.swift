@@ -82,7 +82,12 @@ final class Connection: ObservableObject {
     private var params: (host: String, accessId: String, accessSecret: String)?
     private var externalAttached = false
 
-    init() { external.playsAudio = false }
+    init() {
+        external.playsAudio = false
+        // Report the iPad's real screen size in HELLO so the Mac auto-sizes
+        // its virtual display to this device (no manual preset needed).
+        primary.reportedPixelSize = UIScreen.main.nativeBounds.size
+    }
 
     func connect(host: String, accessId: String, accessSecret: String) {
         params = (host, accessId, accessSecret)
@@ -100,9 +105,19 @@ final class Connection: ObservableObject {
         external.disconnect()
     }
 
-    // Called when the external UIWindowScene connects/disconnects.
-    func externalDisplayConnected() { externalAttached = true; connectExternalIfAttached() }
-    func externalDisplayDisconnected() { externalAttached = false; external.disconnect() }
+    // Called when the external UIWindowScene connects/disconnects. The
+    // primary connection tells the Mac about the second surface so it can
+    // auto-enter/leave dual display mode (Auto-Detect Dual Display).
+    func externalDisplayConnected() {
+        externalAttached = true
+        primary.updateReportedDisplay(secondDisplay: true)
+        connectExternalIfAttached()
+    }
+    func externalDisplayDisconnected() {
+        externalAttached = false
+        primary.updateReportedDisplay(secondDisplay: false)
+        external.disconnect()
+    }
 
     /// Connect Display B only when a physical external screen is actually
     /// attached — otherwise we'd waste a whole encode+stream pipeline (or spin
