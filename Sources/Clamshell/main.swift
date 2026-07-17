@@ -68,13 +68,19 @@ if args.count > 1 {
     case "stream-selftest":
         // Hardware encode -> TCP loopback -> hardware decode sanity check.
         exit(StreamSelfTest.run() ? 0 : 1)
+    case "reboot-readiness":
+        // Print the unattended-reboot pre-flight (autorestart / FileVault /
+        // Screen Sharing / login item). Same check as the menu item, usable
+        // over SSH before you travel.
+        print(RebootReadiness.summary(RebootReadiness.check()))
+        exit(0)
     case "test-detect":
         let trigger = ConnectionMonitor.detectActiveSession()
         print("Remote session: \(trigger.map { "ACTIVE via \($0.rawValue)" } ?? "none")")
         exit(0)
     default:
         print("Unknown command: \(args[1])")
-        print("Usage: clamshell [test-virtual-display | test-detect]")
+        print("Usage: clamshell [test-virtual-display | test-detect | reboot-readiness]")
         exit(64)
     }
 }

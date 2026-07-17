@@ -265,6 +265,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             login.target = self
             menu.addItem(login)
+
+            menu.addItem(withTitle: "Check Reboot Readiness…", action: #selector(checkRebootReadiness), keyEquivalent: "")
+                .target = self
         }
 
         menu.addItem(.separator())
@@ -403,6 +406,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             clog("start-at-login toggle failed: \(error)")
         }
         rebuildMenu()
+    }
+
+    @objc private func checkRebootReadiness() {
+        let report = RebootReadiness.check()
+        let alert = NSAlert()
+        alert.messageText = "Reboot Readiness"
+        alert.informativeText = RebootReadiness.summary(report)
+        alert.addButton(withTitle: "OK")
+        if !report.autorestartOn {
+            alert.addButton(withTitle: "Copy pmset command")
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertSecondButtonReturn {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(RebootReadiness.autorestartCommand, forType: .string)
+        }
     }
 
     @objc private func openLog() {
