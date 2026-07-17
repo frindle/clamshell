@@ -52,9 +52,12 @@ final class InputInjector {
 
     func scroll(dx: Float32, dy: Float32) {
         // Pixel-unit scroll wheel: dy is vertical, dx horizontal. CGEvent's
-        // wheel1 is vertical, wheel2 horizontal.
+        // wheel1 is vertical, wheel2 horizontal. Deltas come from the network
+        // trust boundary: Int32(NaN/±inf/huge) traps, so clamp non-finite to 0
+        // and cap magnitude before the conversion.
+        func sane(_ v: Float32) -> Int32 { v.isFinite ? Int32(min(max(v, -10000), 10000)) : 0 }
         CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
-                wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0)?.post(tap: .cghidEventTap)
+                wheel1: sane(dy), wheel2: sane(dx), wheel3: 0)?.post(tap: .cghidEventTap)
     }
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {

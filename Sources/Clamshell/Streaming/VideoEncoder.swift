@@ -70,6 +70,20 @@ final class VideoEncoder: @unchecked Sendable {
         throw VideoEncoderError.sessionCreationFailed(lastStatus)
     }
 
+    /// Best-effort probe for the Diagnostics view: which codec, if any, has a
+    /// working hardware encoder on this Mac. Creates and immediately discards a
+    /// tiny hardware-required session. nil means software-only.
+    static func hardwareCodec() -> StreamCodec? {
+        for codec in [StreamCodec.hevc, .h264] {
+            if let enc = try? VideoEncoder(codec: codec, width: 640, height: 480, requireHardware: true),
+               enc.isHardware {
+                enc.invalidate()
+                return codec
+            }
+        }
+        return nil
+    }
+
     init(codec: StreamCodec, width: Int32, height: Int32, requireHardware: Bool) throws {
         self.codec = codec
         self.width = width
