@@ -37,6 +37,15 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var framesInFlight = 0
     private let maxFramesInFlight = 8
 
+    // Adaptive bitrate (see PROTOCOL.md "Adaptive bitrate"): reactive, driven
+    // purely by the send-queue backpressure above. A full send queue means the
+    // network can't drain 20 Mbps — halve the encoder bitrate (min once per
+    // second, floor 2 Mbps). After 5 s without congestion, step back up by 25%
+    // (min 5 s between up-steps, ceiling 20 Mbps).
+    private var bitrate = VideoEncoder.maxBitrate
+    private var lastCongestionAt: CFAbsoluteTime = 0
+    private var lastStepAt: CFAbsoluteTime = 0
+
     init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
         self.displayID = displayID
         self.port = port
@@ -117,6 +126,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         connection = nil
         parser = nil
         framesInFlight = 0
+        bitrate = VideoEncoder.maxBitrate
+        lastCongestionAt = 0
+        lastStepAt = 0
         if let s = stream {
             s.stopCapture { _ in }
             stream = nil
@@ -266,12 +278,36 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         if framesInFlight >= maxFramesInFlight && !keyframe {
             // Network can't keep up: drop the delta and resync on a keyframe.
             encoder?.requestKeyframe()
+            stepBitrateDown()
             return
         }
+        maybeStepBitrateUp()
         framesInFlight += 1
         send(StreamMessage.videoFrame(keyframe: keyframe, ptsMicros: ptsMicros, nalData: nalData)) { [weak self] in
             self?.framesInFlight -= 1
         }
+    }
+
+    // MARK: - Adaptive bitrate (on `queue`)
+
+    private func stepBitrateDown() {
+        let now = CFAbsoluteTimeGetCurrent()
+        lastCongestionAt = now
+        guard bitrate > VideoEncoder.minBitrate, now - lastStepAt >= 1 else { return }
+        bitrate = max(bitrate / 2, VideoEncoder.minBitrate)
+        lastStepAt = now
+        encoder?.setBitrate(bitrate)
+        clog("STREAM: congestion (send queue full, dropping frames) — bitrate down to \(bitrate / 1_000_000) Mbps")
+    }
+
+    private func maybeStepBitrateUp() {
+        guard bitrate < VideoEncoder.maxBitrate else { return }
+        let now = CFAbsoluteTimeGetCurrent()
+        guard now - lastCongestionAt >= 5, now - lastStepAt >= 5 else { return }
+        bitrate = min(bitrate * 5 / 4, VideoEncoder.maxBitrate)
+        lastStepAt = now
+        encoder?.setBitrate(bitrate)
+        clog("STREAM: healthy for 5s — bitrate up to \(bitrate / 1_000_000) Mbps")
     }
 
     private func send(_ data: Data, completion: (() -> Void)? = nil) {
