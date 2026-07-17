@@ -15,3 +15,8 @@ jobs:
         run: .build/debug/Clamshell test-detect
       - name: Package (release build, ad-hoc signed DMG)
         run: ./package.sh 0.0.0
+      - name: Build iOS viewer (simulator, compile check only)
+        run: |
+          cd ClamshellViewer
+          xcodebuild -project ClamshellViewer.xcodeproj -target ClamshellViewer \
+            -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build

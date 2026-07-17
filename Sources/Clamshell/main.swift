@@ -41,6 +41,21 @@ if args.count > 1 {
         guard server.isRunning else { print("FAILED to start web server"); exit(1) }
         print("Serving noVNC on http://localhost:\(server.httpPort) — ctrl-C to stop")
         RunLoop.main.run()
+    case "stream":
+        // Clamshell stream [port] — serve the custom video stream protocol
+        // (PROTOCOL.md) for the main display. Requires Screen Recording
+        // permission. Phase 1: single display, one client.
+        let port = args.count > 2 ? (UInt16(args[2]) ?? streamDefaultPort) : streamDefaultPort
+        let server = StreamServer(displayID: CGMainDisplayID(), port: port)
+        do { try server.start() } catch {
+            print("FAILED to start stream server: \(error)")
+            exit(1)
+        }
+        print("Streaming main display on port \(port) — ctrl-C to stop")
+        RunLoop.main.run()
+    case "stream-selftest":
+        // Hardware encode -> TCP loopback -> hardware decode sanity check.
+        exit(StreamSelfTest.run() ? 0 : 1)
     case "test-detect":
         let trigger = ConnectionMonitor.detectActiveSession()
         print("Remote session: \(trigger.map { "ACTIVE via \($0.rawValue)" } ?? "none")")

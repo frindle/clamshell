@@ -1,6 +1,9 @@
 .build/
 .DS_Store
 *.xcodeproj
+!ClamshellViewer/ClamshellViewer.xcodeproj
+xcuserdata/
+ClamshellViewer/build/
 TODO.md
 AI_CONTEXT.md
 dist/

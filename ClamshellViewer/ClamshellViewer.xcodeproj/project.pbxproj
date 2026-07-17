@@ -1,0 +1,238 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		BB0000000000000000000001 /* ViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000001 /* ViewerApp.swift */; };
+		BB0000000000000000000002 /* StreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* StreamProtocol.swift */; };
+		BB0000000000000000000003 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		FF0000000000000000000001 /* ViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerApp.swift; sourceTree = "<group>"; };
+		FF0000000000000000000002 /* StreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamProtocol.swift; path = "../Sources/Clamshell/Streaming/StreamProtocol.swift"; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000003 /* FrameAssembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FrameAssembler.swift; path = "../Sources/Clamshell/Streaming/FrameAssembler.swift"; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000004 /* ClamshellViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AB0000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		AA0000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				AA0000000000000000000002 /* Sources */,
+				AA0000000000000000000003 /* Shared */,
+				AA0000000000000000000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000002 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				FF0000000000000000000001 /* ViewerApp.swift */,
+			);
+			path = Sources;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000003 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				FF0000000000000000000002 /* StreamProtocol.swift */,
+				FF0000000000000000000003 /* FrameAssembler.swift */,
+			);
+			name = Shared;
+			sourceTree = "<group>";
+		};
+		AA0000000000000000000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				FF0000000000000000000004 /* ClamshellViewer.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		CC0000000000000000000001 /* ClamshellViewer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD0000000000000000000002 /* Build configuration list for PBXNativeTarget "ClamshellViewer" */;
+			buildPhases = (
+				AC0000000000000000000001 /* Sources */,
+				AB0000000000000000000001 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ClamshellViewer;
+			productName = ClamshellViewer;
+			productReference = FF0000000000000000000004 /* ClamshellViewer.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		EE0000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+			};
+			buildConfigurationList = DD0000000000000000000001 /* Build configuration list for PBXProject "ClamshellViewer" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = AA0000000000000000000001;
+			productRefGroup = AA0000000000000000000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				CC0000000000000000000001 /* ClamshellViewer */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AC0000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BB0000000000000000000001 /* ViewerApp.swift in Sources */,
+				BB0000000000000000000002 /* StreamProtocol.swift in Sources */,
+				BB0000000000000000000003 /* FrameAssembler.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		DC0000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_TESTABILITY = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		DC0000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.0;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		DC0000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.frindle.clamshell.viewer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DC0000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.frindle.clamshell.viewer;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		DD0000000000000000000001 /* Build configuration list for PBXProject "ClamshellViewer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000001 /* Debug */,
+				DC0000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DD0000000000000000000002 /* Build configuration list for PBXNativeTarget "ClamshellViewer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DC0000000000000000000003 /* Debug */,
+				DC0000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = EE0000000000000000000001 /* Project object */;
+}
