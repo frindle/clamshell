@@ -25,6 +25,12 @@ final class StreamClient: ObservableObject {
     @Published var status: Status = .idle
     @Published var videoSize: CGSize = .zero
 
+    /// Whether audio plays through this client. Only the primary (iPad-screen)
+    /// client plays audio; the external-display client stays muted.
+    var playsAudio = true
+    /// Called with received clipboard text (main thread).
+    var onClipboard: ((String) -> Void)?
+
     /// Decoded-ready compressed samples for the display layer. Called on the
     /// network queue; AVSampleBufferDisplayLayer enqueue is thread-safe.
     var onSampleBuffer: ((CMSampleBuffer) -> Void)?
@@ -34,10 +40,25 @@ final class StreamClient: ObservableObject {
     private var assembler: FrameAssembler?
     private let audio = AudioPlayer()
 
+    // Retained connection parameters for automatic reconnection.
+    private var connectParams: (host: String, accessId: String, accessSecret: String)?
+    private var wantConnection = false
+    private var reconnectAttempt = 0
+    /// Last clipboard text seen in either direction — breaks the echo loop.
+    private var lastClipboard: String?
+
     /// Accepts a bare host ("10.0.1.5" -> ws://10.0.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
-    func connect(host: String) {
-        disconnect()
+    /// Cloudflare Access service-token headers are attached when provided.
+    func connect(host: String, accessId: String = "", accessSecret: String = "") {
+        wantConnection = true
+        connectParams = (host, accessId, accessSecret)
+        openSocket()
+    }
+
+    private func openSocket() {
+        teardownSocket()
+        guard let (host, accessId, accessSecret) = connectParams else { return }
         let urlString = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
         guard let url = URL(string: urlString) else {
             status = .failed("invalid address")
@@ -49,25 +70,50 @@ final class StreamClient: ObservableObject {
         parser.onMessage = { [weak self] type, payload in self?.handle(type: type, payload: payload) }
         self.parser = parser
 
-        let task = URLSession.shared.webSocketTask(with: url)
+        var request = URLRequest(url: url)
+        // Cloudflare Access service token — validated at Cloudflare's edge.
+        if !accessId.isEmpty { request.setValue(accessId, forHTTPHeaderField: "CF-Access-Client-Id") }
+        if !accessSecret.isEmpty { request.setValue(accessSecret, forHTTPHeaderField: "CF-Access-Client-Secret") }
+
+        let task = URLSession.shared.webSocketTask(with: request)
         task.maximumMessageSize = 64 << 20 // keyframes at full display resolution
         self.task = task
         task.resume()
         // URLSession queues sends until the handshake completes.
-        task.send(.data(StreamMessage.hello(requestedCodec: .hevc))) { [weak self] error in
-            if let error { DispatchQueue.main.async { self?.status = .failed("\(error.localizedDescription)") } }
-        }
+        task.send(.data(StreamMessage.hello(requestedCodec: .hevc))) { _ in }
         receiveLoop(task)
     }
 
+    /// User-initiated disconnect: stop reconnecting and tear down.
     func disconnect() {
+        wantConnection = false
+        connectParams = nil
+        reconnectAttempt = 0
+        teardownSocket()
+        status = .idle
+        videoSize = .zero
+    }
+
+    private func teardownSocket() {
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         parser = nil
         assembler = nil
         audio?.stop()
-        status = .idle
-        videoSize = .zero
+    }
+
+    /// Drop detected: retry with capped exponential backoff unless the user
+    /// asked to disconnect.
+    private func scheduleReconnect() {
+        guard wantConnection else { return }
+        teardownSocket()
+        reconnectAttempt += 1
+        let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 10) // 1,2,4,8,10,10…
+        DispatchQueue.main.async { self.status = .connecting }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.wantConnection else { return }
+            self.openSocket()
+        }
     }
 
     private func receiveLoop(_ task: URLSessionWebSocketTask) {
@@ -75,10 +121,12 @@ final class StreamClient: ObservableObject {
             guard let self, self.task === task else { return }
             switch result {
             case .success(let message):
+                self.reconnectAttempt = 0
                 if case .data(let data) = message { self.parser?.feed(data) }
                 self.receiveLoop(task)
             case .failure(let error):
-                DispatchQueue.main.async { self.status = .failed(error.localizedDescription) }
+                clogViewer("stream dropped: \(error.localizedDescription) — reconnecting")
+                self.scheduleReconnect()
             }
         }
     }
@@ -98,9 +146,14 @@ final class StreamClient: ObservableObject {
             guard let sample = assembler?.assemble(payload: payload) else { return }
             onSampleBuffer?(sample)
         case .audioFrame:
-            audio?.play(aac: payload)
+            if playsAudio { audio?.play(aac: payload) }
+        case .clipboard:
+            if let text = String(data: payload, encoding: .utf8) {
+                lastClipboard = text
+                DispatchQueue.main.async { self.onClipboard?(text) }
+            }
         default:
-            break // client never receives input/hello/keyframeRequest
+            break // client never receives hello/keyframeRequest
         }
     }
 
@@ -114,7 +167,23 @@ final class StreamClient: ObservableObject {
     func sendMouseButton(button: UInt8, down: Bool, x: Float, y: Float) {
         send(StreamMessage.mouseButton(button: button, down: down, x: x, y: y))
     }
+    func sendScroll(dx: Float, dy: Float) { send(StreamMessage.scroll(dx: dx, dy: dy)) }
+    func sendKey(macKeyCode: UInt16, down: Bool, flags: UInt64) {
+        send(StreamMessage.key(macKeyCode: macKeyCode, down: down, flags: flags))
+    }
+    /// Push local pasteboard text to the Mac, skipping text we just received.
+    func syncClipboard(_ text: String) {
+        guard !text.isEmpty, text != lastClipboard else { return }
+        lastClipboard = text
+        send(StreamMessage.clipboard(text: text))
+    }
     func requestKeyframe() { send(StreamMessage.frame(type: .keyframeRequest)) }
+}
+
+func clogViewer(_ message: String) {
+    #if DEBUG
+    print("[ClamshellViewer] \(message)")
+    #endif
 }
 
 // MARK: - Video view (render + touch capture)
@@ -193,6 +262,15 @@ struct VideoView: UIViewRepresentable {
 struct ContentView: View {
     @StateObject private var client = StreamClient()
     @AppStorage("hostAddress") private var host = ""
+    @AppStorage("cfAccessClientId") private var accessId = ""
+    @AppStorage("cfAccessClientSecret") private var accessSecret = ""
+
+    private func startConnection() {
+        client.onClipboard = { text in UIPasteboard.general.string = text }
+        client.connect(host: host.trimmingCharacters(in: .whitespaces),
+                       accessId: accessId.trimmingCharacters(in: .whitespaces),
+                       accessSecret: accessSecret.trimmingCharacters(in: .whitespaces))
+    }
 
     var body: some View {
         ZStack {
@@ -216,6 +294,9 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
+            if let text = UIPasteboard.general.string { client.syncClipboard(text) }
+        }
     }
 
     private var connectForm: some View {
@@ -227,7 +308,16 @@ struct ContentView: View {
                 .textInputAutocapitalization(.never)
                 .keyboardType(.URL)
                 .frame(maxWidth: 420)
-            Button("Connect") { client.connect(host: host.trimmingCharacters(in: .whitespaces)) }
+            // Cloudflare Access service token (optional — leave blank on LAN).
+            TextField("CF-Access-Client-Id (optional)", text: $accessId)
+                .textFieldStyle(.roundedBorder)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .frame(maxWidth: 420)
+            SecureField("CF-Access-Client-Secret (optional)", text: $accessSecret)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+            Button("Connect") { startConnection() }
                 .buttonStyle(.borderedProminent)
                 .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
             switch client.status {
