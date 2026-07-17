@@ -4,9 +4,20 @@ Custom LAN streaming protocol replacing browser VNC: ScreenCaptureKit capture �
 VideoToolbox hardware encode on the Mac → TCP → VideoToolbox hardware decode on
 the iPad. Phase 1 is a single-display walking skeleton.
 
+## Displays
+
+The host serves one WebSocket endpoint **per display**, at `basePort + index`
+(main display = index 0 = base port). Each is an independent
+capture→encode→stream pipeline with its own `SCStream` + `VTCompressionSession`.
+Only the primary (index 0) endpoint carries audio and clipboard. The iPad
+client connects Display A (index 0) to its own screen and, when a physical
+external screen is attached, connects Display B (index 1) to that screen — see
+"External display" in ViewerApp.
+
 ## Transport
 
-One WebSocket connection, client-initiated, default port **5903** (plain `ws://`
+One WebSocket connection per display, client-initiated, default base port
+**5903** (plain `ws://`
 on LAN/Tailscale; `wss://` through a Cloudflare Tunnel for remote use — WS was
 chosen over raw TCP precisely so the tunnel's zero-config HTTP path carries it,
 matching how Clamshell's noVNC web access is already tunneled). No NAT
