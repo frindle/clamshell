@@ -12,5 +12,15 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<!-- Plain ws:// to a bare LAN host (e.g. 192.168.1.5:5903) is blocked by
+	     App Transport Security by default — NSAllowsLocalNetworking scopes the
+	     exception to local-network/literal-IP hosts only; wss:// tunnel
+	     connections to real internet hostnames are unaffected and still get
+	     full ATS/TLS enforcement. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>
