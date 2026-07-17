@@ -120,6 +120,24 @@ don't switch it on or off automatically; there's no reliable Mac-side signal
 for "iPad with an external monitor attached". The minimal viewer pages have
 no on-screen-keyboard button yet — use a hardware keyboard.
 
+## Native streaming (experimental, Phase 1)
+
+A from-scratch replacement for the browser-VNC path: ScreenCaptureKit
+capture → VideoToolbox **hardware** HEVC/H.264 encode on the Mac → plain TCP
+on the LAN → hardware decode on an iPad. Wire format is documented in
+[PROTOCOL.md](PROTOCOL.md).
+
+```
+.build/debug/Clamshell stream            # serve the main display on :5903
+.build/debug/Clamshell stream-selftest   # encode → TCP loopback → decode check
+```
+
+`stream` needs **Screen Recording** permission. The iPad client is the
+`ClamshellViewer/` Xcode project (SwiftUI, `AVSampleBufferDisplayLayer`,
+touch → mouse forwarding) — open it in Xcode and run on an iPad on the same
+LAN/Tailscale network. Phase 1 is a single display and a single client;
+hardware encode is required (it refuses to run a software encode).
+
 ## Remote client notes
 
 - **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
