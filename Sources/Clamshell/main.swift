@@ -42,17 +42,29 @@ if args.count > 1 {
         print("Serving noVNC on http://localhost:\(server.httpPort) — ctrl-C to stop")
         RunLoop.main.run()
     case "stream":
-        // Clamshell stream [port] — serve the custom video stream protocol
-        // (PROTOCOL.md) for the main display. Requires Screen Recording
-        // permission. Phase 1: single display, one client.
-        let port = args.count > 2 ? (UInt16(args[2]) ?? streamDefaultPort) : streamDefaultPort
-        let server = StreamServer(displayID: CGMainDisplayID(), port: port)
-        do { try server.start() } catch {
-            print("FAILED to start stream server: \(error)")
-            exit(1)
+        // Clamshell stream [basePort] — serve the custom video stream protocol
+        // (PROTOCOL.md) for every active display, one server per display at
+        // basePort+index. The main display is always index 0 (the base port);
+        // it is the "primary" connection that also carries audio + clipboard.
+        // Requires Screen Recording permission.
+        let basePort = args.count > 2 ? (UInt16(args[2]) ?? streamDefaultPort) : streamDefaultPort
+        var list = [CGDirectDisplayID](repeating: 0, count: 16)
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(16, &list, &count)
+        var ids = Array(list.prefix(Int(count)))
+        if ids.isEmpty { ids = [CGMainDisplayID()] }
+        if let mainIdx = ids.firstIndex(of: CGMainDisplayID()), mainIdx != 0 { ids.swapAt(0, mainIdx) }
+        var servers: [StreamServer] = []
+        for (i, id) in ids.enumerated() {
+            let server = StreamServer(displayID: id, port: basePort + UInt16(i), isPrimary: i == 0)
+            do { try server.start() } catch {
+                print("FAILED to start stream server on port \(basePort + UInt16(i)): \(error)")
+                exit(1)
+            }
+            servers.append(server)
         }
-        print("Streaming main display on port \(port) — ctrl-C to stop")
-        RunLoop.main.run()
+        print("Streaming \(ids.count) display(s) on ports \(basePort)–\(basePort + UInt16(ids.count - 1)) — ctrl-C to stop")
+        withExtendedLifetime(servers) { RunLoop.main.run() }
     case "stream-selftest":
         // Hardware encode -> TCP loopback -> hardware decode sanity check.
         exit(StreamSelfTest.run() ? 0 : 1)

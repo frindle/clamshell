@@ -12,19 +12,43 @@ import VideoToolbox
 // input injection.
 
 enum StreamSelfTest {
+    /// Runs TWO full pipelines concurrently — the dual-display case. The real
+    /// risk of a second display is the second simultaneous VTCompressionSession
+    /// falling back to software or hitting a session limit, so both encoders
+    /// must confirm the hardware path engaged.
     static func run() -> Bool {
-        let width: Int32 = 1280, height: Int32 = 720
+        let group = DispatchGroup()
+        var resultA = false, resultB = false
+        DispatchQueue.global().async(group: group) {
+            resultA = runPipeline(label: "A", width: 1920, height: 1080, port: 5998)
+        }
+        DispatchQueue.global().async(group: group) {
+            resultB = runPipeline(label: "B", width: 1280, height: 720, port: 5999)
+        }
+        guard group.wait(timeout: .now() + 60) == .success else {
+            print("FAIL: dual-pipeline selftest timed out")
+            return false
+        }
+        print(resultA && resultB ? "PASS: both concurrent pipelines hardware-encoded and decoded"
+                                 : "FAIL: pipeline A=\(resultA) B=\(resultB)")
+        return resultA && resultB
+    }
+
+    private static func runPipeline(label: String, width: Int32, height: Int32, port: UInt16) -> Bool {
         let frameCount = 60
-        let port: UInt16 = 5999
 
         let encoder: VideoEncoder
         do {
             encoder = try VideoEncoder.makeHardwareEncoder(width: width, height: height)
         } catch {
-            print("FAIL: \(error)")
+            print("[\(label)] FAIL: \(error)")
             return false
         }
-        print("encoder: \(encoder.codec) (hardware)")
+        guard encoder.isHardware else {
+            print("[\(label)] FAIL: encoder created but hardware path did NOT engage (software fallback)")
+            return false
+        }
+        print("[\(label)] encoder: \(encoder.codec) (hardware)")
 
         // Decode side state.
         let negotiatedCodec = encoder.codec
@@ -51,7 +75,7 @@ enum StreamSelfTest {
         listener.stateUpdateHandler = { if case .ready = $0 { listening.signal() } }
         listener.start(queue: netQueue)
         guard listening.wait(timeout: .now() + 5) == .success else {
-            print("FAIL: listener did not become ready")
+            print("[\(label)] FAIL: listener did not become ready")
             return false
         }
 
@@ -61,7 +85,7 @@ enum StreamSelfTest {
             let keyframe = payload[payload.startIndex] & 1 == 1
             if keyframe { sawKeyframe = true }
             guard let sample = assembler.assemble(payload: payload) else {
-                print("FAIL: could not assemble sample buffer (keyframe=\(keyframe))")
+                print("[\(label)] FAIL: could not assemble sample buffer (keyframe=\(keyframe))")
                 return
             }
             decodeLock.lock(); defer { decodeLock.unlock() }
@@ -73,11 +97,11 @@ enum StreamSelfTest {
                     decoderSpecification: spec, imageBufferAttributes: nil,
                     outputCallback: nil, decompressionSessionOut: &session)
                 guard s == noErr, let session else {
-                    print("FAIL: no hardware decoder (status \(s))")
+                    print("[\(label)] FAIL: no hardware decoder (status \(s))")
                     done.signal()
                     return
                 }
-                print("decoder: hardware \(negotiatedCodec) session created")
+                print("[\(label)] decoder: hardware \(negotiatedCodec) session created")
                 decodeSession = session
             }
             guard let session = decodeSession else { return }
@@ -88,10 +112,10 @@ enum StreamSelfTest {
                     decodedFrames += 1
                     if decodedFrames == frameCount { done.signal() }
                 } else {
-                    print("FAIL: decode error \(status)")
+                    print("[\(label)] FAIL: decode error \(status)")
                 }
             }
-            if s != noErr { print("FAIL: VTDecompressionSessionDecodeFrame \(s)") }
+            if s != noErr { print("[\(label)] FAIL: VTDecompressionSessionDecodeFrame \(s)") }
         }
 
         // Client transport is the same one the iPad uses.
@@ -110,7 +134,7 @@ enum StreamSelfTest {
         let deadline = Date().addingTimeInterval(5)
         while serverConn == nil && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
         guard serverConn != nil else {
-            print("FAIL: loopback connection did not establish")
+            print("[\(label)] FAIL: loopback connection did not establish")
             return false
         }
 
@@ -125,7 +149,7 @@ enum StreamSelfTest {
         // Synthetic moving-gradient NV12 frames.
         for i in 0..<frameCount {
             guard let pb = makeNV12Frame(width: width, height: height, seed: i) else {
-                print("FAIL: could not create pixel buffer")
+                print("[\(label)] FAIL: could not create pixel buffer")
                 return false
             }
             encoder.encode(pb, pts: CMTime(value: CMTimeValue(i), timescale: 60))
@@ -137,8 +161,8 @@ enum StreamSelfTest {
         client.cancel()
         serverConn?.cancel()
         listener.cancel()
-        print(ok ? "PASS: \(decodedFrames)/\(frameCount) frames encoded (\(negotiatedCodec)) -> WebSocket -> decoded, keyframe seen"
-                 : "FAIL: decoded \(decodedFrames)/\(frameCount) frames, keyframe seen: \(sawKeyframe)")
+        print(ok ? "[\(label)] PASS: \(decodedFrames)/\(frameCount) frames encoded (\(negotiatedCodec)) -> WebSocket -> decoded, keyframe seen"
+                 : "[\(label)] FAIL: decoded \(decodedFrames)/\(frameCount) frames, keyframe seen: \(sawKeyframe)")
         return ok
     }
 

@@ -13,6 +13,9 @@ import VideoToolbox
 final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let displayID: CGDirectDisplayID
     private let port: UInt16
+    /// The primary server (main display, base port) also carries system audio
+    /// and clipboard sync; secondary displays are video+input only.
+    private let isPrimary: Bool
 
     private var listener: NWListener?
     private var connection: NWConnection?
@@ -31,9 +34,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var framesInFlight = 0
     private let maxFramesInFlight = 8
 
-    init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort) {
+    init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
         self.displayID = displayID
         self.port = port
+        self.isPrimary = isPrimary
     }
 
     func start() throws {

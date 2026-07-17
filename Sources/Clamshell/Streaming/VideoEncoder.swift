@@ -23,6 +23,8 @@ final class VideoEncoder: @unchecked Sendable {
     let codec: StreamCodec
     let width: Int32
     let height: Int32
+    /// True when VideoToolbox confirms the hardware path actually engaged.
+    private(set) var isHardware = false
     private var session: VTCompressionSession
 
     /// Called with a wire-ready AVCC frame. Keyframes include in-band
@@ -83,6 +85,7 @@ final class VideoEncoder: @unchecked Sendable {
         VTSessionCopyProperty(session, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder,
                               allocator: kCFAllocatorDefault, valueOut: UnsafeMutableRawPointer(valueOut))
         let hw = (valueOut.pointee as? Bool) ?? false
+        isHardware = hw
         clog("STREAM: encoder created: \(codec) \(width)x\(height), hardware=\(hw)")
         if !hw {
             clog("STREAM: WARNING — encoder reports NOT hardware accelerated despite Require flag")
