@@ -6,19 +6,27 @@ the iPad. Phase 1 is a single-display walking skeleton.
 
 ## Transport
 
-One plain TCP connection, client-initiated, default port **5903**. LAN or
-Tailscale/WireGuard only (same assumption as the rest of Clamshell — no NAT
-traversal, no TLS; put a VPN in front for remote use). TCP head-of-line
-blocking is an accepted tradeoff for simplicity. One client at a time; a new
-connection replaces the old one.
+One WebSocket connection, client-initiated, default port **5903** (plain `ws://`
+on LAN/Tailscale; `wss://` through a Cloudflare Tunnel for remote use — WS was
+chosen over raw TCP precisely so the tunnel's zero-config HTTP path carries it,
+matching how Clamshell's noVNC web access is already tunneled). No NAT
+traversal, no custom TLS. TCP head-of-line blocking is an accepted tradeoff
+for simplicity. One client at a time; a new connection replaces the old one.
+
+Host side is an `NWListener` with `NWProtocolWebSocket`; client side is
+`URLSessionWebSocketTask`. Every protocol message is sent as one **binary**
+WebSocket message.
 
 ## Message framing
 
-Every message, both directions:
+Every message, both directions, inside binary WebSocket frames:
 
 ```
 [1 byte type] [4-byte big-endian payload length] [payload]
 ```
+
+(The explicit length is redundant with WS message boundaries but kept so the
+framing survives any transport — the parser accepts arbitrary byte chunks.)
 
 ## Message types
 
@@ -73,4 +81,7 @@ speed prioritized over quality, ~20 Mbps.
 
 Second display (one connection per display), scroll/multi-touch input, audio,
 adaptive bitrate, clipboard, reconnection/backoff, H.264/HEVC negotiation
-beyond the single byte, encryption (currently: VPN or trusted LAN only).
+beyond the single byte, auth on the WS endpoint (currently: VPN, trusted LAN,
+or Cloudflare Access in front of the tunnel). Also on the roadmap, explicitly
+deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
+VNC/RDP/SSH, so real support means a custom guacd protocol plugin.

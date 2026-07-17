@@ -17,7 +17,9 @@ enum VideoEncoderError: Error, CustomStringConvertible {
     }
 }
 
-final class VideoEncoder {
+// @unchecked Sendable: the VTCompressionSession serializes internally; the
+// only cross-thread state is the forceNextKeyframe flag (benign flag race).
+final class VideoEncoder: @unchecked Sendable {
     let codec: StreamCodec
     let width: Int32
     let height: Int32
