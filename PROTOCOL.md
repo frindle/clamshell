@@ -43,8 +43,9 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 
 | Type | Name             | Direction     | Payload |
 |------|------------------|---------------|---------|
-| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) |
+| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached)] |
 | 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
+| 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -63,6 +64,26 @@ when the host encoder is hardware-accelerated, 0 for the software fallback;
 the byte is trailing so clients that predate it parse unchanged (and a
 missing byte from an older host implies hardware, matching its
 refuse-to-start contract).
+
+## Client display reporting (HELLO trailing bytes / CLIENT_DISPLAYS)
+
+The client optionally reports its real display situation: its video surface
+size in pixels (landscape-normalized — Mac virtual displays are landscape)
+and whether a *second* display surface is attached (flags bit 0). The iPad
+viewer reports its own screen and sets the flag while an external monitor is
+attached; the iPhone control app reports the external monitor's size (its
+only video surface) and never sets the flag. The trailing HELLO bytes are
+optional both ways: an old client omits them, an old host ignores them.
+CLIENT_DISPLAYS carries the same fields mid-session (monitor plugged or
+unplugged after connecting).
+
+Only the **primary** connection's report is honored. The host forwards it to
+the Clamshell menu bar app (same distributed-notification channel as the
+Sunshine prep-command), which auto-sizes the virtual display to the client
+and auto-enables/disables dual display mode ("Auto-Detect Dual Display",
+default on). The collapse is restored 15 s after the last reporting client
+disconnects; reconnects within the grace period keep it. Sizes below 640×480
+are ignored.
 
 ## VIDEO_FRAME payload
 
