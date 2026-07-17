@@ -62,7 +62,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.recomputeSessionState()
         }
         monitor.start()
-        webServer.bindHost = UserDefaults.standard.string(forKey: "bindHost")
+        webServer.bindHosts = UserDefaults.standard.stringArray(forKey: "bindHosts")
+            ?? UserDefaults.standard.string(forKey: "bindHost").map { [$0] } // migrate pre-multi-select key
+            ?? []
         // Optional token gating the /clipboard endpoint (see README):
         //   defaults write com.frindle.clamshell clipboardToken <secret>
         webServer.clipboardToken = UserDefaults.standard.string(forKey: "clipboardToken")
@@ -234,17 +236,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(web)
 
         // Bind-address picker — only interesting with more than one LAN IP.
+        // Multi-select: each interface toggles independently; "All Interfaces"
+        // clears the selection (empty selection = bind everything).
         let ips = WebServer.lanIPv4s()
         if ips.count > 1 {
             let bindMenu = NSMenu()
             let all = NSMenuItem(title: "All Interfaces", action: #selector(selectBind(_:)), keyEquivalent: "")
-            all.state = webServer.bindHost == nil ? .on : .off
+            all.state = webServer.bindHosts.isEmpty ? .on : .off
             all.target = self
             bindMenu.addItem(all)
             for (name, ip) in ips {
                 let item = NSMenuItem(title: "\(ip) (\(name))", action: #selector(selectBind(_:)), keyEquivalent: "")
                 item.representedObject = ip
-                item.state = webServer.bindHost == ip ? .on : .off
+                item.state = webServer.bindHosts.contains(ip) ? .on : .off
                 item.target = self
                 bindMenu.addItem(item)
             }
@@ -379,9 +383,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func selectBind(_ sender: NSMenuItem) {
-        let ip = sender.representedObject as? String // nil = all interfaces
-        webServer.bindHost = ip
-        UserDefaults.standard.set(ip, forKey: "bindHost")
+        if let ip = sender.representedObject as? String {
+            // Toggle this interface in/out of the selection.
+            if let idx = webServer.bindHosts.firstIndex(of: ip) {
+                webServer.bindHosts.remove(at: idx)
+            } else {
+                webServer.bindHosts.append(ip)
+            }
+        } else {
+            webServer.bindHosts = [] // All Interfaces
+        }
+        UserDefaults.standard.set(webServer.bindHosts, forKey: "bindHosts")
+        UserDefaults.standard.removeObject(forKey: "bindHost") // superseded single-choice key
         if webServer.isRunning { // rebind live
             webServer.stop()
             webServer.start()
