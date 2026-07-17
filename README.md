@@ -87,6 +87,105 @@ WebSocket). Two good options:
   Put Cloudflare Access in front of the hostname — the VNC password is the
   only other lock on the door.
 
+## Surviving an unattended reboot
+
+If the Mac reboots while you're away — a power outage came back, or a macOS
+update restarted it — you want it to power back up and become remotely
+reachable **with nobody at the machine**. That's a chain of OS-level settings,
+most of them privileged or physical decisions Clamshell can't make for you.
+Run the pre-flight check before you travel:
+
+```
+.build/release/Clamshell reboot-readiness   # or menu: "Check Reboot Readiness…"
+```
+
+It reports go/no-go for the two real scenarios. Here's the honest picture.
+
+### The hard constraints (what's actually true)
+
+- **Clamshell itself cannot run before someone logs in.** "Start at Login" is
+  a per-user launchd agent (`SMAppService`) — it fires *after* a GUI login, in
+  that user's session. There is no way to run the menu-bar app, the virtual
+  display, ScreenCaptureKit capture, or the native stream at the login window:
+  those need a logged-in WindowServer session and per-user Screen Recording /
+  Accessibility grants. A LaunchDaemon (true boot, session 0) has no
+  WindowServer at all, so it can't help here. *This is by macOS design —
+  confirmed by the platform architecture, not something to work around.*
+- **Apple Screen Sharing (`screensharingd`) is different — it's a system
+  daemon that runs at the login window.** When "Screen Sharing" is on in
+  System Settings, macOS can show and control the **login window** remotely,
+  before any user logs in, with **zero extra Clamshell code**. Connect with a
+  native VNC client to port **5900** (the browser path at `:5901` won't work
+  pre-login — that's Clamshell's bridge and Clamshell isn't running yet). Log
+  in remotely, and *then* Clamshell's login item starts and you get the full
+  collapse/stream experience.
+
+So the achievable flow after an unattended reboot is: **Mac powers on → reaches
+the login window → you connect to `:5900` and log in remotely → Clamshell
+starts.** Three things gate whether that chain completes:
+
+### 1. Does the Mac even power back on? (`pmset autorestart`)
+
+After a **power outage**, a Mac stays *off* until this is set:
+
+```
+sudo pmset -a autorestart 1     # "Start up automatically after a power failure"
+```
+
+Needs admin, so it's a one-time manual step (Clamshell runs unprivileged and
+can't set it for you — the readiness check copies the command for you). Not
+needed for update reboots (macOS powers itself back on for those). Desktop Macs
+like the Mac mini support it; the readiness check confirms it's on.
+
+### 2. FileVault: the power-outage wall
+
+If **FileVault** disk encryption is on, a cold boot stops at the **pre-boot
+unlock screen** — an EFI environment *before* macOS, before the network stack,
+before `screensharingd`. Nothing can reach it remotely; the FileVault password
+has to be typed at the physical machine. This means:
+
+- **macOS-update reboot → recovers unattended even with FileVault on.** The
+  updater stores a one-shot *authenticated-restart* key so the Mac boots
+  straight through FileVault to the login window. (`fdesetup supportsauthrestart`
+  is true on modern hardware; the readiness check confirms it.)
+- **Power outage → does NOT recover unattended while FileVault is on.** A real
+  outage gives macOS no chance to stash that key, and a full power loss wipes
+  it anyway. The Mac comes back up and sits at the pre-boot unlock screen until
+  someone's physically there.
+
+There is no software fix for this — it's the whole point of FileVault. If
+unattended **power-outage** recovery matters more to you than at-rest disk
+encryption, **turn FileVault off** (System Settings → Privacy & Security →
+FileVault). That's a real security tradeoff (anyone who steals the Mac gets the
+disk); only you can make it.
+
+### 3. Getting in once it reaches the login window
+
+- **Enable Apple Screen Sharing** (System Settings → General → Sharing → Screen
+  Sharing) and set a VNC password. This is what lets you log in remotely at the
+  login window. Already required for the browser/VNC path, so it's likely on.
+- **Auto-login vs. remote-login:** you have two ways to end up on the desktop:
+  - *Remote-login* (recommended, and the only option with FileVault on): sit at
+    the login window over Screen Sharing and type your password. Then the
+    Clamshell login item starts.
+  - *Auto-login* (System Settings → Users & Groups → Automatically log in as):
+    the Mac boots straight to the desktop and Clamshell starts with no remote
+    step. Smoothest, but **macOS disables auto-login whenever FileVault is on**,
+    and it means anyone with physical access lands on your desktop. Only worth
+    it if FileVault is already off and physical security isn't a concern.
+
+### Bottom line
+
+| Scenario | FileVault ON | FileVault OFF |
+|---|---|---|
+| **macOS update reboot** | ✅ recovers to login window (authenticated restart) | ✅ recovers (auto-login optional) |
+| **Power outage** | ❌ stuck at pre-boot unlock — needs a person | ✅ if `pmset autorestart 1` is set |
+
+Make sure "Start at Login" is on so Clamshell comes back the moment you're
+logged in either way. Everything above (autorestart, FileVault, Screen Sharing,
+auto-login) is a setting only you can decide — the readiness check just tells
+you where you stand.
+
 ## Dual Display Mode (UNTESTED on real hardware)
 
 > **⚠ Untested** — built ahead of the target Mac mini being set up. The
@@ -163,6 +262,14 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Unattended-reboot readiness**: new "Check Reboot Readiness…" menu item
+  (and `Clamshell reboot-readiness` CLI, usable over SSH) reports whether the
+  Mac will power back on and be remotely reachable after a power outage or
+  update reboot — checks `pmset autorestart`, FileVault, Screen Sharing, and
+  the login item, with a go/no-go verdict per scenario. New README section
+  "Surviving an unattended reboot" documents the FileVault power-outage wall
+  and the settings only the user can change. No new automation — these are all
+  privileged/physical decisions Clamshell surfaces rather than makes.
 - **ClamshellControl** (⚠ untested on real hardware): new iPhone target —
   external monitor is the only video output (user-picked Mac display),
   phone screen is a relative-movement trackpad + software-keyboard toggle.
