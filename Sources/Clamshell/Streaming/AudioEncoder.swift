@@ -58,7 +58,17 @@ final class AudioEncoder: @unchecked Sendable {
             if let err { clog("STREAM: AAC encode error \(err)") }
             return
         }
-        onEncodedPacket?(Data(bytes: out.data, count: Int(out.byteLength)))
+        // A single convert() can yield several AAC access units; emit each one
+        // separately so the iPad decodes one packet per AUDIO_FRAME.
+        let base = out.data
+        if let pd = out.packetDescriptions, out.packetCount > 1 {
+            for i in 0..<Int(out.packetCount) {
+                let d = pd[i]
+                onEncodedPacket?(Data(bytes: base + Int(d.mStartOffset), count: Int(d.mDataByteSize)))
+            }
+        } else {
+            onEncodedPacket?(Data(bytes: base, count: Int(out.byteLength)))
+        }
     }
 
     private static func pcmBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
