@@ -46,8 +46,9 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | Type | Name             | Direction     | Payload |
 |------|------------------|---------------|---------|
 | 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set]] |
-| 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) [, currentBitrateMbps(1) — see "Connection quality"] |
+| 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
 | 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
+| 0x04 | STREAM_STATUS    | host → client | currentBitrateKbps(2 BE) — see "Connection quality" |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -143,6 +144,19 @@ Bitrate resets to the 20 Mbps ceiling on every new connection. Hardware
 encoders track the new target within a GOP or two; on a constrained link
 (hotel wifi, cellular through the Cloudflare Tunnel) the stream converges to
 what the path drains instead of stuttering at a fixed 20 Mbps.
+
+## Connection quality (STREAM_STATUS)
+
+The adaptive bitrate above is otherwise invisible to the user, so the host
+sends STREAM_STATUS (host → client) carrying the current encoder target in
+kbps: once right after HELLO_ACK, then again on every up/down step. The client
+turns it into an unobtrusive quality dot alongside the software-encoding
+banner (green near the 20 Mbps ceiling, yellow reduced, orange near the 2 Mbps
+floor) — a status light, not a stats overlay. An optional client-side "Nerd
+Mode" expands the dot into a one-line readout (codec, resolution, hardware vs.
+software, current Mbps) built from HELLO_ACK plus this message. Pre-status
+hosts simply never send it; the client shows no dot until the first one
+arrives.
 
 ## Audio (AUDIO_FRAME)
 

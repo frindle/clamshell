@@ -285,6 +285,31 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Native streaming from the menu bar**: a new "Native Streaming" toggle runs
+  the stream servers in-process (same `StreamFleet` the CLI `stream` command
+  uses), persisted and auto-restored on launch like Web Access / Start at
+  Login — no terminal needed. CLI `stream` / `stream-selftest` still work.
+- **Diagnostics… window**: Screen Recording / Accessibility permission status,
+  hardware-encoder availability, per-display native-stream client counts, and
+  Disconnect All Clients / Restart Streaming actions.
+- **QR pairing + saved machines** (⚠ untested on real hardware): "Show Pairing
+  QR Code…" renders the Mac's connection info (host + optional Cloudflare
+  Access token) as a `clamshell://pair` QR via Core Image; the iPad/iPhone
+  connect screens gain a "Scan QR to Pair" button (AVFoundation, no third-party
+  library) and a "Saved Machines" list (select / add / delete). Format is
+  documented in PROTOCOL.md.
+- **Connection-quality indicator + Nerd Mode**: the host reports its live
+  adaptive bitrate (new STREAM_STATUS message); the clients show an
+  unobtrusive colored dot (green/yellow/orange) beside the software-encoding
+  banner, expandable via an opt-in "Nerd Mode" toggle into a codec /
+  resolution / HW-SW / Mbps readout.
+- **Human-readable connection errors**: dropped/rejected connections now
+  surface a specific on-screen reason (unreachable host vs. Cloudflare Access
+  rejection vs. wrong URL vs. timeout) while auto-reconnect keeps retrying,
+  instead of spinning silently on "connecting".
+- **Display B sized to the real external monitor**: the iPad viewer now reports
+  its attached monitor's pixel size on the primary stream connection, so the
+  Mac sizes Display B to it instead of the fixed preset.
 - **Auto-sized virtual display for native streaming** (⚠ untested on real
   hardware): the iPad/iPhone client reports its actual pixel resolution in
   the stream HELLO handshake (and mid-session via a new CLIENT_DISPLAYS

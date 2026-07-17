@@ -12,5 +12,8 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<true/>
 	</dict>
+	<!-- QR pairing: scan the Mac's pairing code to auto-fill the connection. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Scan the pairing QR code shown by Clamshell on your Mac to fill in the connection automatically.</string>
 </dict>
 </plist>

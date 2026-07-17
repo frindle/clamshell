@@ -188,7 +188,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
         case .clipboard:
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
-        case .helloAck, .videoFrame, .audioFrame:
+        case .helloAck, .videoFrame, .audioFrame, .streamStatus:
             break // host never receives these
         }
     }
@@ -351,6 +351,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     self.send(StreamMessage.helloAck(codec: encoder.codec,
                                                      width: UInt32(pxWidth), height: UInt32(pxHeight),
                                                      hardwareEncoder: encoder.isHardware))
+                    self.sendStreamStatus() // initial bitrate for the quality indicator
                     clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))\(encoder.isHardware ? "" : " [SOFTWARE ENCODE]")")
                 }
             } catch {
@@ -379,6 +380,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     // MARK: - Adaptive bitrate (on `queue`)
 
+    /// Current encoder target, for the client's quality indicator.
+    private func sendStreamStatus() {
+        guard connection != nil else { return }
+        send(StreamMessage.streamStatus(bitrateKbps: UInt16(min(bitrate / 1000, Int(UInt16.max)))))
+    }
+
     private func stepBitrateDown() {
         let now = CFAbsoluteTimeGetCurrent()
         lastCongestionAt = now
@@ -386,6 +393,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         bitrate = max(bitrate / 2, VideoEncoder.minBitrate)
         lastStepAt = now
         encoder?.setBitrate(bitrate)
+        sendStreamStatus()
         clog("STREAM: congestion (send queue full, dropping frames) — bitrate down to \(bitrate / 1_000_000) Mbps")
     }
 
@@ -396,6 +404,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         bitrate = min(bitrate * 5 / 4, VideoEncoder.maxBitrate)
         lastStepAt = now
         encoder?.setBitrate(bitrate)
+        sendStreamStatus()
         clog("STREAM: healthy for 5s — bitrate up to \(bitrate / 1_000_000) Mbps")
     }
 

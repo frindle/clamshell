@@ -8,6 +8,7 @@ enum StreamMessageType: UInt8 {
     case hello = 0x01
     case helloAck = 0x02
     case clientDisplays = 0x03 // client -> host: display size / second-screen update
+    case streamStatus = 0x04   // host -> client: live status (current bitrate)
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
@@ -140,6 +141,13 @@ enum StreamMessage {
     }
 
     static func audioFrame(_ aac: Data) -> Data { frame(type: .audioFrame, payload: aac) }
+
+    /// Live stream status for the client's quality indicator: current encoder
+    /// target bitrate in kbps (see PROTOCOL.md "Connection quality").
+    static func streamStatus(bitrateKbps: UInt16) -> Data {
+        var p = Data(); p.appendBE(bitrateKbps)
+        return frame(type: .streamStatus, payload: p)
+    }
 
     static func clipboard(text: String) -> Data {
         frame(type: .clipboard, payload: Data(text.utf8))
