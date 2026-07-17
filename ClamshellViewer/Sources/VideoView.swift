@@ -7,6 +7,14 @@ import CoreMedia
 // in interactive mode it also forwards touches (absolute touch-as-mouse),
 // trackpad/mouse hover, indirect scroll, and hardware key presses.
 
+/// One-line description of an external screen for the diagnostic log —
+/// resolution/scale as actually detected, since "does the monitor/glasses
+/// enumerate sanely" is exactly what needs verifying on real hardware.
+func describeScreen(_ screen: UIScreen) -> String {
+    let b = screen.bounds.size, n = screen.nativeBounds.size
+    return "\(Int(b.width))x\(Int(b.height))pt @\(screen.scale)x (native \(Int(n.width))x\(Int(n.height))px, maxFPS \(screen.maximumFramesPerSecond))"
+}
+
 final class VideoUIView: UIView {
     override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
     var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
@@ -67,6 +75,9 @@ final class VideoUIView: UIView {
 
     func enqueue(_ sample: CMSampleBuffer) {
         if displayLayer.status == .failed {
+            // The layer wraps the hardware VTDecompressionSession; its error is
+            // the only decode diagnostic iOS exposes. Log it before recovering.
+            clogViewer("decode: AVSampleBufferDisplayLayer FAILED: \(displayLayer.error?.localizedDescription ?? "unknown error") — flushing and requesting keyframe")
             displayLayer.flush()
             client?.requestKeyframe()
         }

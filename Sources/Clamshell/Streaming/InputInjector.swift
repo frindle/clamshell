@@ -12,6 +12,11 @@ final class InputInjector {
 
     init(displayID: CGDirectDisplayID) {
         self.displayID = displayID
+        // CGEventPost silently no-ops without Accessibility permission — the
+        // stream would look healthy while every click/key vanishes. Say so.
+        if !CGPreflightPostEventAccess() {
+            clog("STREAM: WARNING — Accessibility permission NOT granted; injected mouse/keyboard events will be silently ignored. Grant it in System Settings > Privacy & Security > Accessibility.")
+        }
     }
 
     private func map(_ x: Float32, _ y: Float32) -> CGPoint {

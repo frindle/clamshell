@@ -50,9 +50,11 @@ final class StreamClient: ObservableObject {
         guard let (host, accessId, accessSecret) = connectParams else { return }
         let urlString = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
         guard let url = URL(string: urlString) else {
+            clogViewer("connect FAILED: invalid address '\(urlString)'")
             status = .failed("invalid address")
             return
         }
+        clogViewer("connecting to \(urlString)\(accessId.isEmpty ? "" : " (with CF Access service token)")")
         status = .connecting
 
         let parser = StreamMessageParser()
@@ -75,6 +77,7 @@ final class StreamClient: ObservableObject {
 
     /// User-initiated disconnect: stop reconnecting and tear down.
     func disconnect() {
+        if wantConnection { clogViewer("disconnect requested by user") }
         wantConnection = false
         connectParams = nil
         reconnectAttempt = 0
@@ -98,6 +101,7 @@ final class StreamClient: ObservableObject {
         teardownSocket()
         reconnectAttempt += 1
         let delay = min(pow(2.0, Double(reconnectAttempt - 1)), 10) // 1,2,4,8,10,10…
+        clogViewer("reconnect attempt \(reconnectAttempt) in \(Int(delay))s (retries forever until user disconnects)")
         DispatchQueue.main.async { self.status = .connecting }
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self, self.wantConnection else { return }
@@ -114,7 +118,18 @@ final class StreamClient: ObservableObject {
                 if case .data(let data) = message { self.parser?.feed(data) }
                 self.receiveLoop(task)
             case .failure(let error):
-                clogViewer("stream dropped: \(error.localizedDescription) — reconnecting")
+                // A rejected WS upgrade (Cloudflare Access, wrong path) carries
+                // an HTTP status; a dead host/port doesn't. Log both so they're
+                // distinguishable after the fact.
+                var detail = error.localizedDescription
+                if let http = task.response as? HTTPURLResponse {
+                    detail += " (HTTP \(http.statusCode)"
+                    if http.statusCode == 403 || http.statusCode == 401 || http.statusCode == 302 {
+                        detail += " — WS upgrade rejected, likely Cloudflare Access auth"
+                    }
+                    detail += ")"
+                }
+                clogViewer("stream dropped: \(detail) — reconnecting")
                 self.scheduleReconnect()
             }
         }
@@ -126,6 +141,7 @@ final class StreamClient: ObservableObject {
             guard payload.count >= 10,
                   let codec = StreamCodec(rawValue: payload[payload.startIndex + 1]) else { return }
             let width = payload.beUInt32(at: 2), height = payload.beUInt32(at: 6)
+            clogViewer("HELLO_ACK: \(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height) — streaming")
             assembler = FrameAssembler(codec: codec)
             DispatchQueue.main.async {
                 self.videoSize = CGSize(width: Double(width), height: Double(height))
@@ -169,7 +185,16 @@ final class StreamClient: ObservableObject {
     func requestKeyframe() { send(StreamMessage.frame(type: .keyframeRequest)) }
 }
 
+import os
+
+/// Client-side diagnostic log, mirroring the Mac host's `clog` convention.
+/// Goes to the unified log — readable live in Console.app with the device
+/// attached, or after the fact via `log collect --device` /
+/// `log stream --predicate 'subsystem == "com.frindle.clamshell.viewer"'`.
+private let viewerLogger = Logger(subsystem: "com.frindle.clamshell.viewer", category: "stream")
+
 func clogViewer(_ message: String) {
+    viewerLogger.notice("\(message, privacy: .public)")
     #if DEBUG
     print("[ClamshellViewer] \(message)")
     #endif

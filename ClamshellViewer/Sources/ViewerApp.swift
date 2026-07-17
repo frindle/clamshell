@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
         // .windowExternalDisplayNonInteractive is the iOS 16+ replacement for the
         // deprecated .windowExternalDisplay; deployment target is iOS 17.
+        clogViewer("scene connecting with role \(connectingSceneSession.role.rawValue)")
         if connectingSceneSession.role == .windowExternalDisplayNonInteractive {
             config.delegateClass = ExternalDisplaySceneDelegate.self
         }
@@ -47,7 +48,11 @@ final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
                options: UIScene.ConnectionOptions) {
-        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let windowScene = scene as? UIWindowScene else {
+            clogViewer("external scene connected but is not a UIWindowScene — ignoring")
+            return
+        }
+        clogViewer("external display scene CONNECTED: \(describeScreen(windowScene.screen))")
         let window = UIWindow(windowScene: windowScene) // sized to the external screen's own bounds
         window.rootViewController = UIHostingController(
             rootView: ExternalDisplayView(client: Connection.shared.external))
@@ -57,6 +62,7 @@ final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
+        clogViewer("external display scene DISCONNECTED")
         Connection.shared.externalDisplayDisconnected()
         window = nil
     }
