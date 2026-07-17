@@ -13,6 +13,9 @@ final class StreamClient: ObservableObject {
 
     @Published var status: Status = .idle
     @Published var videoSize: CGSize = .zero
+    /// True when HELLO_ACK reported the host is encoding in SOFTWARE (no
+    /// hardware encoder) — surfaced as a warning banner in the UI.
+    @Published var softwareEncoding = false
 
     /// Whether audio plays through this client. Only the primary (iPad-screen)
     /// client plays audio; the external-display client stays muted.
@@ -36,7 +39,7 @@ final class StreamClient: ObservableObject {
     /// Last clipboard text seen in either direction — breaks the echo loop.
     private var lastClipboard: String?
 
-    /// Accepts a bare host ("10.0.1.5" -> ws://10.0.1.5:5903) or a full
+    /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
     /// Cloudflare Access service-token headers are attached when provided.
     func connect(host: String, accessId: String = "", accessSecret: String = "") {
@@ -84,6 +87,7 @@ final class StreamClient: ObservableObject {
         teardownSocket()
         status = .idle
         videoSize = .zero
+        softwareEncoding = false
     }
 
     private func teardownSocket() {
@@ -141,10 +145,14 @@ final class StreamClient: ObservableObject {
             guard payload.count >= 10,
                   let codec = StreamCodec(rawValue: payload[payload.startIndex + 1]) else { return }
             let width = payload.beUInt32(at: 2), height = payload.beUInt32(at: 6)
-            clogViewer("HELLO_ACK: \(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height) — streaming")
+            // flags byte (bit 0 = hardware encoder) is trailing; an older host
+            // omits it — assume hardware, matching its refuse-to-start contract.
+            let hardware = payload.count >= 11 ? (payload[payload.startIndex + 10] & 1) == 1 : true
+            clogViewer("HELLO_ACK: \(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height)\(hardware ? "" : " [SOFTWARE ENCODE on host]") — streaming")
             assembler = FrameAssembler(codec: codec)
             DispatchQueue.main.async {
                 self.videoSize = CGSize(width: Double(width), height: Double(height))
+                self.softwareEncoding = !hardware
                 self.status = .streaming("\(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height)")
             }
         case .videoFrame:

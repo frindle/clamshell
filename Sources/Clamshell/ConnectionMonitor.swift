@@ -115,7 +115,7 @@ final class ConnectionMonitor {
     }
 
     /// Parses `netstat -an` for ESTABLISHED TCP connections. netstat prints
-    /// addresses as `10.0.12.5.5900` (port joined by the final dot).
+    /// addresses as `192.168.1.5.5900` (port joined by the final dot).
     static func establishedConnections() -> [Connection] {
         guard let output = run("/usr/sbin/netstat", ["-an", "-p", "tcp"]) else { return [] }
         var result: [Connection] = []

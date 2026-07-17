@@ -149,6 +149,11 @@ struct ContentView: View {
             if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
+                    .overlay(alignment: .top) {
+                        if client.softwareEncoding {
+                            SoftwareEncodingBanner().padding(.top, 8)
+                        }
+                    }
                     .overlay(alignment: .topTrailing) {
                         Button {
                             connection.disconnect()
@@ -175,7 +180,7 @@ struct ContentView: View {
             Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
             // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
             // append "|wss://displayB..." to place a second screen externally.
-            TextField("Mac address (10.0.1.5) or wss:// URL", text: $host)
+            TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)

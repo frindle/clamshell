@@ -308,28 +308,35 @@ struct ControlContentView: View {
         ControlSurface(client: client, keyboardVisible: $keyboardVisible)
             .ignoresSafeArea()
             .overlay(alignment: .top) {
-                HStack {
-                    Button {
-                        keyboardVisible = false
-                        session.disconnect()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    Spacer()
-                    Text(statusLine)
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.35))
-                    Spacer()
-                    Button {
-                        keyboardVisible.toggle()
-                    } label: {
-                        Image(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-                    }
+                VStack(spacing: 8) {
+                    topBar
+                    if client.softwareEncoding { SoftwareEncodingBanner() }
                 }
-                .font(.title2)
-                .foregroundStyle(.white.opacity(0.35))
                 .padding()
             }
+    }
+
+    private var topBar: some View {
+        HStack {
+            Button {
+                keyboardVisible = false
+                session.disconnect()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            Spacer()
+            Text(statusLine)
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.35))
+            Spacer()
+            Button {
+                keyboardVisible.toggle()
+            } label: {
+                Image(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
+            }
+        }
+        .font(.title2)
+        .foregroundStyle(.white.opacity(0.35))
     }
 
     private var statusLine: String {
@@ -347,7 +354,7 @@ struct ControlContentView: View {
             Text("Clamshell Control").font(.title2).foregroundStyle(.white)
             Text("Video goes to the external monitor; this screen is the trackpad.")
                 .font(.footnote).foregroundStyle(.gray)
-            TextField("Mac address (10.0.1.5) or wss:// URL", text: $host)
+            TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
