@@ -276,6 +276,27 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Auto-sized virtual display for native streaming** (⚠ untested on real
+  hardware): the iPad/iPhone client reports its actual pixel resolution in
+  the stream HELLO handshake (and mid-session via a new CLIENT_DISPLAYS
+  message), and the Mac auto-collapses to a virtual display of exactly that
+  size — no manual "Remote Screen Size" pick needed for native-stream
+  sessions. The menu preset remains the fallback/override for the VNC/browser
+  path (which can't report resolution) and for Sunshine (which keeps its
+  prep-command env-var sizing). The collapse restores 15s after the last
+  client disconnects; `Clamshell stream` now re-enumerates displays on
+  topology changes so the collapse-created virtual display(s) take over the
+  stream ports.
+- **Auto-detect dual display** (⚠ untested on real hardware): an iPad viewer
+  with an external monitor attached reports the second surface, and the Mac
+  automatically collapses in dual display mode (single when it's unplugged) —
+  new "Auto-Detect Dual Display (native stream)" menu toggle, default on;
+  turning it off restores the purely manual Dual Display Mode behavior. The
+  browser/VNC dual path stays manual (a browser can't report this).
+- **Multi-select "Listen On"**: the Web Access interface picker is now a real
+  multi-select — check any set of interfaces (e.g. Ethernet + Tailscale but
+  not Wi-Fi), one listener per selected address; "All Interfaces" clears the
+  selection. The old single-choice setting migrates automatically.
 - **CI-built signed releases restored**: pushing a `v*` tag again builds and
   code-signs the DMG in GitHub Actions, using the stable "Clamshell Dev"
   identity from repo secrets (imported into a temp keychain — no
