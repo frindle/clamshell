@@ -16,8 +16,11 @@ final class WebServer {
     let httpPort: NWEndpoint.Port = 5901
     let wsPort: NWEndpoint.Port = 5902
 
-    /// Specific LAN IP to bind to, or nil for all interfaces.
-    var bindHost: String?
+    /// Specific LAN IPs to bind to; empty = all interfaces. Multiple entries
+    /// mean "these interfaces and no others" (e.g. Ethernet + Tailscale but
+    /// not Wi-Fi) — one listener per address, since an NWListener binds a
+    /// single local endpoint.
+    var bindHosts: [String] = []
 
     /// Optional token gating the /clipboard endpoint. nil (the default)
     /// leaves it open — fine on a trusted LAN, but set this if the server
@@ -30,10 +33,10 @@ final class WebServer {
     /// /display-b cropped views. nil keeps the classic single-display flow.
     var dualPresets: (a: DisplayPreset, b: DisplayPreset)?
 
-    /// The address to advertise in URLs: the bind IP if set, else the
+    /// The address to advertise in URLs: the first bound IP if set, else the
     /// first LAN IPv4.
     var displayHost: String {
-        bindHost ?? Self.lanIPv4s().first?.ip ?? "localhost"
+        bindHosts.first ?? Self.lanIPv4s().first?.ip ?? "localhost"
     }
 
     /// Non-loopback IPv4 addresses with their interface names (en0, en1…).
@@ -60,8 +63,8 @@ final class WebServer {
     /// transitions between zero and non-zero.
     var onSessionChange: ((Bool) -> Void)?
 
-    private var httpListener: NWListener?
-    private var wsListener: NWListener?
+    private var httpListeners: [NWListener] = []
+    private var wsListeners: [NWListener] = []
     private let queue = DispatchQueue(label: "clamshell.web")
     private var activeSessions = 0
 
@@ -75,7 +78,8 @@ final class WebServer {
             try startHTTP()
             try startWS()
             isRunning = true
-            clog("web access ON: http://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bindHost ?? "all interfaces"))")
+            let bound = bindHosts.isEmpty ? "all interfaces" : bindHosts.joined(separator: ", ")
+            clog("web access ON: http://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bound))")
         } catch {
             clog("web access failed to start: \(error)")
             stop()
@@ -83,30 +87,39 @@ final class WebServer {
     }
 
     func stop() {
-        httpListener?.cancel(); httpListener = nil
-        wsListener?.cancel(); wsListener = nil
+        for l in httpListeners { l.cancel() }
+        httpListeners = []
+        for l in wsListeners { l.cancel() }
+        wsListeners = []
         isRunning = false
         clog("web access OFF")
     }
 
     // MARK: - HTTP static server (noVNC assets)
 
-    private func makeListener(_ base: NWParameters, port: NWEndpoint.Port) throws -> NWListener {
-        if let host = bindHost {
-            base.requiredLocalEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
-            return try NWListener(using: base)
+    /// One listener when binding all interfaces, else one per selected IP.
+    /// `makeParams` is a factory because NWParameters is a reference type —
+    /// each listener needs its own requiredLocalEndpoint.
+    private func makeListeners(port: NWEndpoint.Port,
+                               makeParams: () -> NWParameters) throws -> [NWListener] {
+        guard !bindHosts.isEmpty else { return [try NWListener(using: makeParams(), on: port)] }
+        return try bindHosts.map { host in
+            let params = makeParams()
+            params.requiredLocalEndpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: port)
+            return try NWListener(using: params)
         }
-        return try NWListener(using: base, on: port)
     }
 
     private func startHTTP() throws {
-        let listener = try makeListener(.tcp, port: httpPort)
-        listener.newConnectionHandler = { [weak self] conn in
-            conn.start(queue: self?.queue ?? .global())
-            self?.receiveRequest(conn, buffer: Data())
+        let listeners = try makeListeners(port: httpPort) { .tcp }
+        for listener in listeners {
+            listener.newConnectionHandler = { [weak self] conn in
+                conn.start(queue: self?.queue ?? .global())
+                self?.receiveRequest(conn, buffer: Data())
+            }
+            listener.start(queue: queue)
         }
-        listener.start(queue: queue)
-        httpListener = listener
+        httpListeners = listeners
     }
 
     private func receiveRequest(_ conn: NWConnection, buffer: Data) {
@@ -454,17 +467,20 @@ final class WebServer {
     // MARK: - WebSocket → VNC bridge
 
     private func startWS() throws {
-        let wsParams = NWParameters.tcp
-        let wsOptions = NWProtocolWebSocket.Options()
-        wsOptions.autoReplyPing = true
-        wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
-
-        let listener = try makeListener(wsParams, port: wsPort)
-        listener.newConnectionHandler = { [weak self] ws in
-            self?.bridge(ws)
+        let listeners = try makeListeners(port: wsPort) {
+            let wsParams = NWParameters.tcp
+            let wsOptions = NWProtocolWebSocket.Options()
+            wsOptions.autoReplyPing = true
+            wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+            return wsParams
         }
-        listener.start(queue: queue)
-        wsListener = listener
+        for listener in listeners {
+            listener.newConnectionHandler = { [weak self] ws in
+                self?.bridge(ws)
+            }
+            listener.start(queue: queue)
+        }
+        wsListeners = listeners
     }
 
     private func bridge(_ ws: NWConnection) {
