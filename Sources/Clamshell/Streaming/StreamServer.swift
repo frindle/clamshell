@@ -84,6 +84,16 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
     }
 
+    /// Force-disconnect the current client (Diagnostics "Disconnect All").
+    func disconnectClient() {
+        queue.async { [self] in teardownSession() }
+    }
+
+    /// Snapshot for the Diagnostics view (read from the main queue).
+    var portNumber: UInt16 { port }
+    var primary: Bool { isPrimary }
+    var isClientConnected: Bool { queue.sync { connection != nil } }
+
     // MARK: - Connection lifecycle (on `queue`)
 
     private func accept(_ conn: NWConnection) {
@@ -442,15 +452,47 @@ final class StreamFleet {
 
     var isServing: Bool { !servers.isEmpty }
 
+    /// Per-display connection snapshot for the Diagnostics view.
+    var clientStatus: [(port: UInt16, primary: Bool, connected: Bool)] {
+        servers.map { ($0.portNumber, $0.primary, $0.isClientConnected) }
+    }
+
+    /// Stored so it can be removed on stop() — the same function pointer must
+    /// be passed to register and remove, and a live callback holding an
+    /// unretained pointer to a deallocated fleet would dangle.
+    private let reconfigCallback: CGDisplayReconfigurationCallBack = { _, flags, userInfo in
+        guard let userInfo,
+              flags.contains(.addFlag) || flags.contains(.removeFlag) else { return }
+        let fleet = Unmanaged<StreamFleet>.fromOpaque(userInfo).takeUnretainedValue()
+        DispatchQueue.main.async { fleet.rebuildSoon() }
+    }
+    private var callbackRegistered = false
+
     init(basePort: UInt16) {
         self.basePort = basePort
-        let info = Unmanaged.passUnretained(self).toOpaque()
-        CGDisplayRegisterReconfigurationCallback({ _, flags, userInfo in
-            guard let userInfo,
-                  flags.contains(.addFlag) || flags.contains(.removeFlag) else { return }
-            let fleet = Unmanaged<StreamFleet>.fromOpaque(userInfo).takeUnretainedValue()
-            DispatchQueue.main.async { fleet.rebuildSoon() }
-        }, info)
+        CGDisplayRegisterReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
+        callbackRegistered = true
+    }
+
+    /// Stop every server and unregister the topology callback. Lets the
+    /// menu-bar app toggle native streaming on and off in-process.
+    func stop() {
+        pendingRebuild?.cancel()
+        pendingRebuild = nil
+        for s in servers { s.stop() }
+        servers = []
+        currentIDs = []
+        if callbackRegistered {
+            CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
+            callbackRegistered = false
+        }
+        clog("STREAM: fleet stopped")
+    }
+
+    /// Disconnect every connected client without tearing down the listeners —
+    /// forces stuck reconnect-looping clients to re-handshake cleanly.
+    func disconnectAllClients() {
+        for s in servers { s.disconnectClient() }
     }
 
     /// Active displays, main display first (index 0 = base port = the primary
