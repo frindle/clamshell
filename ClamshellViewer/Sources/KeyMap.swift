@@ -45,4 +45,51 @@ enum KeyMap {
         if mods.contains(.command)    { f |= 0x10_0000 }
         return f
     }
+
+    /// Forwards mappable hardware key presses as INPUT_KEY messages.
+    /// Returns true if at least one press was sent (caller skips super).
+    static func forward(_ presses: Set<UIPress>, down: Bool, to client: StreamClient?) -> Bool {
+        var handled = false
+        for press in presses {
+            guard let key = press.key,
+                  let macVK = hidToMacVK[key.keyCode.rawValue] else { continue }
+            client?.sendKey(macKeyCode: macVK, down: down, flags: cgFlags(from: key.modifierFlags))
+            handled = true
+        }
+        return handled
+    }
+
+    /// Character -> (macOS virtual keycode, needs shift), for software-keyboard
+    /// typing on the iPhone control surface (UIKeyInput gives characters, not
+    /// HID codes). ANSI US layout, matching the InputInjector's assumption.
+    static func macVK(for char: Character) -> (vk: UInt16, shift: Bool)? {
+        if let lower = char.lowercased().first, let vk = charToVK[lower] {
+            return (vk, char.isUppercase)
+        }
+        if let vk = charToVK[char] { return (vk, false) }
+        if let (base, _) = shiftedToBase[char], let vk = charToVK[base] { return (vk, true) }
+        return nil
+    }
+
+    private static let charToVK: [Character: UInt16] = [
+        "a": 0, "b": 11, "c": 8, "d": 2, "e": 14, "f": 3, "g": 5, "h": 4,
+        "i": 34, "j": 38, "k": 40, "l": 37, "m": 46, "n": 45, "o": 31, "p": 35,
+        "q": 12, "r": 15, "s": 1, "t": 17, "u": 32, "v": 9, "w": 13, "x": 7,
+        "y": 16, "z": 6,
+        "1": 18, "2": 19, "3": 20, "4": 21, "5": 23, "6": 22, "7": 26,
+        "8": 28, "9": 25, "0": 29,
+        "\n": 36, "\t": 48, " ": 49,
+        "-": 27, "=": 24, "[": 33, "]": 30, "\\": 42, ";": 41, "'": 39,
+        "`": 50, ",": 43, ".": 47, "/": 44,
+    ]
+
+    /// Shifted ANSI symbols -> their unshifted base key.
+    private static let shiftedToBase: [Character: (Character, Bool)] = [
+        "!": ("1", true), "@": ("2", true), "#": ("3", true), "$": ("4", true),
+        "%": ("5", true), "^": ("6", true), "&": ("7", true), "*": ("8", true),
+        "(": ("9", true), ")": ("0", true), "_": ("-", true), "+": ("=", true),
+        "{": ("[", true), "}": ("]", true), "|": ("\\", true), ":": (";", true),
+        "\"": ("'", true), "~": ("`", true), "<": (",", true), ">": (".", true),
+        "?": ("/", true),
+    ]
 }
