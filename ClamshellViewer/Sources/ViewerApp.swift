@@ -10,8 +10,112 @@ import CoreMedia
 
 @main
 struct ViewerApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
         WindowGroup { ContentView() }
+    }
+}
+
+// MARK: - Scene wiring for an external display
+//
+// SwiftUI's WindowGroup only ever fills the device's own screen. A physical
+// external display (monitor over USB-C, or Phase 3 AR glasses — Viture/XREAL/
+// Rokid, which enumerate as ordinary external UIScreens) arrives as a separate
+// UIWindowScene with the external-display role. We keep the SwiftUI structure
+// for the main screen and only hand-place the external one via a UISceneDelegate.
+//
+// Detection is entirely role/UIScreen-driven — there is NO device-model or
+// resolution assumption anywhere. Whatever the OS reports as an external screen
+// gets Display B, at whatever bounds/aspect it advertises, aspect-fit by the
+// video layer. That is exactly why glasses with nonstandard resolutions work
+// on this path unchanged.
+
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     configurationForConnecting connectingSceneSession: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        // .windowExternalDisplayNonInteractive is the iOS 16+ replacement for the
+        // deprecated .windowExternalDisplay; deployment target is iOS 17.
+        if connectingSceneSession.role == .windowExternalDisplayNonInteractive {
+            config.delegateClass = ExternalDisplaySceneDelegate.self
+        }
+        return config
+    }
+}
+
+final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
+               options: UIScene.ConnectionOptions) {
+        guard let windowScene = scene as? UIWindowScene else { return }
+        let window = UIWindow(windowScene: windowScene) // sized to the external screen's own bounds
+        window.rootViewController = UIHostingController(
+            rootView: ExternalDisplayView(client: Connection.shared.external))
+        window.isHidden = false
+        self.window = window
+        Connection.shared.externalDisplayConnected()
+    }
+
+    func sceneDidDisconnect(_ scene: UIScene) {
+        Connection.shared.externalDisplayDisconnected()
+        window = nil
+    }
+}
+
+// MARK: - Connection model (shared across the SwiftUI scene and external scene)
+
+/// Owns both stream clients: `primary` (Display A, iPad screen, audio) and
+/// `external` (Display B, external screen, muted). Display B only connects
+/// while an external screen is actually attached.
+final class Connection: ObservableObject {
+    static let shared = Connection()
+
+    let primary = StreamClient()
+    let external = StreamClient()
+
+    private var params: (host: String, accessId: String, accessSecret: String)?
+
+    init() { external.playsAudio = false }
+
+    func connect(host: String, accessId: String, accessSecret: String) {
+        params = (host, accessId, accessSecret)
+        // A leading "A|B" carries an explicit Display B address; the primary
+        // connects only to the A part.
+        let primaryHost = host.contains("|") ? String(host.split(separator: "|", maxSplits: 1)[0]) : host
+        primary.onClipboard = { text in UIPasteboard.general.string = text }
+        primary.connect(host: primaryHost, accessId: accessId, accessSecret: accessSecret)
+        connectExternalIfAttached()
+    }
+
+    func disconnect() {
+        params = nil
+        primary.disconnect()
+        external.disconnect()
+    }
+
+    // Called when the external UIWindowScene connects/disconnects.
+    func externalDisplayConnected() { connectExternalIfAttached() }
+    func externalDisplayDisconnected() { external.disconnect() }
+
+    private func connectExternalIfAttached() {
+        guard let (host, id, secret) = params,
+              let bHost = Self.secondDisplayEndpoint(from: host) else { return }
+        external.connect(host: bHost, accessId: id, accessSecret: secret)
+    }
+
+    /// Display B's endpoint. For a bare LAN host the Mac serves display index 1
+    /// at streamDefaultPort+1; a full ws(s):// URL (tunnel) can't be derived, so
+    /// the external screen stays dark unless the user gives an explicit B URL
+    /// (a `|`-separated second address in the host field).
+    static func secondDisplayEndpoint(from host: String) -> String? {
+        if host.contains("|") { // "A|B" — explicit second address
+            let parts = host.split(separator: "|", maxSplits: 1)
+            return parts.count == 2 ? String(parts[1]) : nil
+        }
+        if host.contains("://") { return nil } // tunnel URL, can't derive port
+        return "ws://\(host):\(streamDefaultPort + 1)"
     }
 }
 
@@ -194,12 +298,16 @@ final class VideoUIView: UIView {
 
     weak var client: StreamClient?
     var videoSize: CGSize = .zero
+    /// Display B on an external screen is output-only — no input capture.
+    private let interactive: Bool
 
-    override init(frame: CGRect) {
+    init(frame: CGRect, interactive: Bool) {
+        self.interactive = interactive
         super.init(frame: frame)
         displayLayer.videoGravity = .resizeAspect
         isMultipleTouchEnabled = false
         backgroundColor = .black
+        guard interactive else { return }
 
         // Trackpad / mouse hover drives the pointer position without a button.
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(onHover))
@@ -213,11 +321,11 @@ final class VideoUIView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     // Physical keyboard: capture key presses while this view is first responder.
-    override var canBecomeFirstResponder: Bool { true }
+    override var canBecomeFirstResponder: Bool { interactive }
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { becomeFirstResponder() }
+        if window != nil && interactive { becomeFirstResponder() }
     }
 
     @objc private func onHover(_ g: UIHoverGestureRecognizer) {
@@ -295,9 +403,10 @@ final class VideoUIView: UIView {
 
 struct VideoView: UIViewRepresentable {
     @ObservedObject var client: StreamClient
+    var interactive = true
 
     func makeUIView(context: Context) -> VideoUIView {
-        let view = VideoUIView(frame: .zero)
+        let view = VideoUIView(frame: .zero, interactive: interactive)
         view.client = client
         client.onSampleBuffer = { [weak view] sample in view?.enqueue(sample) }
         return view
@@ -308,19 +417,33 @@ struct VideoView: UIViewRepresentable {
     }
 }
 
+/// Root view hosted on the external UIWindowScene — Display B, output only.
+struct ExternalDisplayView: View {
+    @ObservedObject var client: StreamClient
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if case .streaming = client.status {
+                VideoView(client: client, interactive: false).ignoresSafeArea()
+            }
+        }
+    }
+}
+
 // MARK: - UI
 
 struct ContentView: View {
-    @StateObject private var client = StreamClient()
+    private let connection = Connection.shared
+    @ObservedObject private var client = Connection.shared.primary
     @AppStorage("hostAddress") private var host = ""
     @AppStorage("cfAccessClientId") private var accessId = ""
     @AppStorage("cfAccessClientSecret") private var accessSecret = ""
 
     private func startConnection() {
-        client.onClipboard = { text in UIPasteboard.general.string = text }
-        client.connect(host: host.trimmingCharacters(in: .whitespaces),
-                       accessId: accessId.trimmingCharacters(in: .whitespaces),
-                       accessSecret: accessSecret.trimmingCharacters(in: .whitespaces))
+        connection.connect(host: host.trimmingCharacters(in: .whitespaces),
+                           accessId: accessId.trimmingCharacters(in: .whitespaces),
+                           accessSecret: accessSecret.trimmingCharacters(in: .whitespaces))
     }
 
     var body: some View {
@@ -331,7 +454,7 @@ struct ContentView: View {
                     .ignoresSafeArea()
                     .overlay(alignment: .topTrailing) {
                         Button {
-                            client.disconnect()
+                            connection.disconnect()
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.title)
@@ -353,6 +476,8 @@ struct ContentView: View {
     private var connectForm: some View {
         VStack(spacing: 16) {
             Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
+            // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
+            // append "|wss://displayB..." to place a second screen externally.
             TextField("Mac address (10.0.1.5) or wss:// URL", text: $host)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()

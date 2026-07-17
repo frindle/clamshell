@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Enables the external-display UIWindowScene. The main scene's default
+	     configuration is still provided by SwiftUI's WindowGroup; the external
+	     role is handled by AppDelegate.configurationForConnecting. Everything
+	     else in Info.plist is generated from the INFOPLIST_KEY_* build settings
+	     and merged onto this base. -->
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
