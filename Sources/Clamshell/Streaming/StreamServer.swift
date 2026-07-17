@@ -166,6 +166,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         let displayID = self.displayID
         Task {
             do {
+                // Distinguish "permission denied" from other capture failures up
+                // front — SCShareableContent's error alone is cryptic.
+                if !CGPreflightScreenCaptureAccess() {
+                    clog("STREAM: WARNING — Screen Recording permission NOT granted; capture will fail. Grant it in System Settings > Privacy & Security > Screen Recording.")
+                }
                 let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
                 guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else {
                     clog("STREAM: display \(displayID) not found in shareable content")

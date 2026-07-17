@@ -22,10 +22,18 @@ final class AudioPlayer {
             mFormatFlags: 0, mBytesPerPacket: 0, mFramesPerPacket: 1024,
             mBytesPerFrame: 0, mChannelsPerFrame: 2, mBitsPerChannel: 0, mReserved: 0)
         guard let aac = AVAudioFormat(streamDescription: &desc),
-              let pcm = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2) else { return nil }
+              let pcm = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2) else {
+            clogViewer("audio: FAILED to derive AAC/PCM formats — audio disabled for this session")
+            return nil
+        }
         aacFormat = aac
         pcmFormat = pcm
         converter = AVAudioConverter(from: aac, to: pcm)
+        if converter == nil {
+            // The no-magic-cookie AAC path is the untested risk area; make its
+            // failure unmissable rather than silently dropping every packet.
+            clogViewer("audio: AVAudioConverter creation FAILED for cookie-less AAC-LC 48kHz stereo — audio disabled")
+        }
         engine.attach(player)
         engine.connect(player, to: engine.mainMixerNode, format: pcm)
     }
@@ -35,8 +43,8 @@ final class AudioPlayer {
         started = true
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
-        do { try engine.start(); player.play() }
-        catch { started = false }
+        do { try engine.start(); player.play(); clogViewer("audio: engine started (AAC-LC 48kHz stereo -> PCM)") }
+        catch { started = false; clogViewer("audio: engine start FAILED: \(error.localizedDescription)") }
     }
 
     /// Decodes and schedules one AAC packet. Called on the network queue.
@@ -65,9 +73,17 @@ final class AudioPlayer {
             outStatus.pointee = .haveData
             return compressed
         }
-        guard status != .error, pcm.frameLength > 0 else { return }
+        guard status != .error, pcm.frameLength > 0 else {
+            // Runs per packet (~46/s), so throttle: first few, then 1-per-500.
+            decodeErrors += 1
+            if decodeErrors <= 5 || decodeErrors % 500 == 0 {
+                clogViewer("audio: AAC decode error #\(decodeErrors): \(err?.localizedDescription ?? "no PCM produced (status \(status.rawValue))")")
+            }
+            return
+        }
         player.scheduleBuffer(pcm, completionHandler: nil)
     }
+    private var decodeErrors = 0
 
     func stop() {
         player.stop()

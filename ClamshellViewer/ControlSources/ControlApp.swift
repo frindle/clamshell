@@ -28,6 +28,7 @@ final class ControlAppDelegate: NSObject, UIApplicationDelegate {
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
+        clogViewer("scene connecting with role \(connectingSceneSession.role.rawValue)")
         if connectingSceneSession.role == .windowExternalDisplayNonInteractive {
             config.delegateClass = ControlExternalSceneDelegate.self
         }
@@ -40,7 +41,11 @@ final class ControlExternalSceneDelegate: NSObject, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
                options: UIScene.ConnectionOptions) {
-        guard let windowScene = scene as? UIWindowScene else { return }
+        guard let windowScene = scene as? UIWindowScene else {
+            clogViewer("external scene connected but is not a UIWindowScene — ignoring")
+            return
+        }
+        clogViewer("external display scene CONNECTED: \(describeScreen(windowScene.screen))")
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = UIHostingController(
             rootView: ExternalDisplayView(client: ControlSession.shared.client))
@@ -50,6 +55,7 @@ final class ControlExternalSceneDelegate: NSObject, UIWindowSceneDelegate {
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
+        clogViewer("external display scene DISCONNECTED")
         ControlSession.shared.externalAttached = false
         window = nil
     }
