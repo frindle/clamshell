@@ -23,6 +23,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var stream: SCStream?
     private var encoder: VideoEncoder?
     private var audioEncoder: AudioEncoder?
+    private var clipboard: ClipboardBridge?
     private var injector: InputInjector?
     private let audioQueue = DispatchQueue(label: "clamshell.stream.audio")
 
@@ -123,6 +124,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         encoder?.invalidate()
         encoder = nil
         audioEncoder = nil
+        clipboard?.stop()
+        clipboard = nil
         injector = nil
     }
 
@@ -151,7 +154,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             guard payload.count >= 8 else { return }
             injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
         case .clipboard:
-            break // wired up in the clipboard-sync commit
+            if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
         case .helloAck, .videoFrame, .audioFrame:
             break // host never receives these
         }
@@ -226,6 +229,17 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                             }
                         }
                         self.audioEncoder = audioEncoder
+                    }
+                    if self.isPrimary {
+                        let clipboard = ClipboardBridge()
+                        clipboard.onLocalChange = { [weak self] text in
+                            self?.queue.async {
+                                guard self?.connection != nil else { return }
+                                self?.send(StreamMessage.clipboard(text: text))
+                            }
+                        }
+                        clipboard.start()
+                        self.clipboard = clipboard
                     }
                     self.injector = InputInjector(displayID: displayID)
                     self.send(StreamMessage.helloAck(codec: encoder.codec,
