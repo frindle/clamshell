@@ -185,7 +185,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 let pxHeight = mode?.pixelHeight ?? scDisplay.height
                 let refresh = (mode?.refreshRate ?? 0) > 0 ? mode!.refreshRate : 60
 
-                let encoder = try VideoEncoder.makeHardwareEncoder(
+                let encoder = try VideoEncoder.makeEncoder(
                     width: Int32(pxWidth), height: Int32(pxHeight), preferred: requestedCodec)
 
                 let config = SCStreamConfiguration()
@@ -248,8 +248,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     }
                     self.injector = InputInjector(displayID: displayID)
                     self.send(StreamMessage.helloAck(codec: encoder.codec,
-                                                     width: UInt32(pxWidth), height: UInt32(pxHeight)))
-                    clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))")
+                                                     width: UInt32(pxWidth), height: UInt32(pxHeight),
+                                                     hardwareEncoder: encoder.isHardware))
+                    clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))\(encoder.isHardware ? "" : " [SOFTWARE ENCODE]")")
                 }
             } catch {
                 clog("STREAM: failed to start capture session: \(error)")

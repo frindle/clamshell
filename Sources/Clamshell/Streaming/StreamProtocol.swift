@@ -68,9 +68,13 @@ enum StreamMessage {
         frame(type: .hello, payload: Data([streamProtocolVersion, requestedCodec.rawValue]))
     }
 
-    static func helloAck(codec: StreamCodec, width: UInt32, height: UInt32) -> Data {
+    /// `hardwareEncoder` becomes flags bit 0 (trailing byte; clients that
+    /// predate it just ignore the extra byte).
+    static func helloAck(codec: StreamCodec, width: UInt32, height: UInt32,
+                         hardwareEncoder: Bool) -> Data {
         var p = Data([streamProtocolVersion, codec.rawValue])
         p.appendBE(width); p.appendBE(height)
+        p.append(hardwareEncoder ? 1 : 0)
         return frame(type: .helloAck, payload: p)
     }
 

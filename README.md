@@ -262,6 +262,11 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Software-encode fallback, loudly surfaced**: with no hardware HEVC/H.264
+  encoder the host now falls back to software encoding instead of refusing to
+  start. The state is logged, carried in HELLO_ACK (new trailing flags byte),
+  and both iOS clients show a persistent warning banner while streaming from
+  a software-encoding host.
 - **Unattended-reboot readiness**: new "Check Reboot Readiness…" menu item
   (and `Clamshell reboot-readiness` CLI, usable over SSH) reports whether the
   Mac will power back on and be remotely reachable after a power outage or

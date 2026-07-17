@@ -2,17 +2,18 @@ import Foundation
 import CoreMedia
 import VideoToolbox
 
-// Host-side hardware encoder. Hardware acceleration is REQUIRED — the whole
-// point of this pipeline is the media engine, so we refuse to run a software
-// encode rather than silently burning CPU. HEVC is tried first (Apple Silicon
-// media engines handle it efficiently), falling back to hardware H.264.
+// Host-side encoder. Hardware acceleration is strongly preferred — HEVC is
+// tried first (Apple Silicon media engines handle it efficiently), then
+// hardware H.264. If neither hardware path exists we fall back to a SOFTWARE
+// VTCompressionSession rather than refusing to start, but loudly: the state
+// is logged, carried in HELLO_ACK, and surfaced as a warning in the viewer UI.
 
 enum VideoEncoderError: Error, CustomStringConvertible {
-    case noHardwareEncoder(OSStatus)
+    case sessionCreationFailed(OSStatus)
     var description: String {
         switch self {
-        case .noHardwareEncoder(let s):
-            return "no hardware video encoder available (VTCompressionSessionCreate: \(s))"
+        case .sessionCreationFailed(let s):
+            return "could not create video encoder (VTCompressionSessionCreate: \(s))"
         }
     }
 }
@@ -33,48 +34,63 @@ final class VideoEncoder: @unchecked Sendable {
 
     private var forceNextKeyframe = true // first frame after connect is always a keyframe
 
-    /// Tries HEVC hardware first, then H.264 hardware. Throws if neither exists.
-    static func makeHardwareEncoder(width: Int32, height: Int32,
-                                    preferred: StreamCodec = .hevc) throws -> VideoEncoder {
+    /// Tries HEVC hardware first, then H.264 hardware, then — loudly — a
+    /// software session for the same codec order. Only throws if VideoToolbox
+    /// can't create any session at all.
+    static func makeEncoder(width: Int32, height: Int32,
+                            preferred: StreamCodec = .hevc) throws -> VideoEncoder {
         let order: [StreamCodec] = preferred == .hevc ? [.hevc, .h264] : [.h264, .hevc]
         var lastStatus: OSStatus = 0
         for codec in order {
             do {
-                let enc = try VideoEncoder(codec: codec, width: width, height: height)
+                let enc = try VideoEncoder(codec: codec, width: width, height: height, requireHardware: true)
                 if codec != preferred {
                     clog("STREAM: preferred codec \(preferred) has no hardware encoder — fell back to \(codec)")
                 }
                 return enc
-            } catch VideoEncoderError.noHardwareEncoder(let s) {
+            } catch VideoEncoderError.sessionCreationFailed(let s) {
                 lastStatus = s
                 clog("STREAM: no hardware \(codec) encoder (status \(s))")
             }
         }
-        clog("STREAM: REFUSING to start — no hardware encoder for HEVC or H.264. Software fallback is disabled by design.")
-        throw VideoEncoderError.noHardwareEncoder(lastStatus)
+        clog("""
+            STREAM: *** NO HARDWARE VIDEO ENCODER AVAILABLE (HEVC and H.264 both \
+            failed, last status \(lastStatus)) — falling back to SOFTWARE encoding. \
+            Expect much higher CPU use on this Mac and possibly worse latency. \
+            The viewer will show a warning banner. ***
+            """)
+        for codec in order {
+            do {
+                return try VideoEncoder(codec: codec, width: width, height: height, requireHardware: false)
+            } catch VideoEncoderError.sessionCreationFailed(let s) {
+                lastStatus = s
+                clog("STREAM: software \(codec) encoder also failed (status \(s))")
+            }
+        }
+        throw VideoEncoderError.sessionCreationFailed(lastStatus)
     }
 
-    init(codec: StreamCodec, width: Int32, height: Int32) throws {
+    init(codec: StreamCodec, width: Int32, height: Int32, requireHardware: Bool) throws {
         self.codec = codec
         self.width = width
         self.height = height
 
-        let spec: [CFString: Any] = [
-            kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
-        ]
+        let spec: CFDictionary? = requireHardware
+            ? [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true] as CFDictionary
+            : nil
         var s: VTCompressionSession?
         let status = VTCompressionSessionCreate(
             allocator: kCFAllocatorDefault,
             width: width, height: height,
             codecType: codec == .hevc ? kCMVideoCodecType_HEVC : kCMVideoCodecType_H264,
-            encoderSpecification: spec as CFDictionary,
+            encoderSpecification: spec,
             imageBufferAttributes: nil,
             compressedDataAllocator: nil,
             outputCallback: nil, refcon: nil,
             compressionSessionOut: &s
         )
         guard status == noErr, let session = s else {
-            throw VideoEncoderError.noHardwareEncoder(status)
+            throw VideoEncoderError.sessionCreationFailed(status)
         }
         self.session = session
 
@@ -87,7 +103,7 @@ final class VideoEncoder: @unchecked Sendable {
         let hw = (valueOut.pointee as? Bool) ?? false
         isHardware = hw
         clog("STREAM: encoder created: \(codec) \(width)x\(height), hardware=\(hw)")
-        if !hw {
+        if requireHardware && !hw {
             clog("STREAM: WARNING — encoder reports NOT hardware accelerated despite Require flag")
         }
 
@@ -100,8 +116,8 @@ final class VideoEncoder: @unchecked Sendable {
         setProp(kVTCompressionPropertyKey_ExpectedFrameRate, 60 as CFNumber)
         setProp(kVTCompressionPropertyKey_MaxKeyFrameInterval, 120 as CFNumber)
         setProp(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 2 as CFNumber)
-        // ponytail: fixed 20 Mbps, adaptive bitrate is a future phase
-        setProp(kVTCompressionPropertyKey_AverageBitRate, 20_000_000 as CFNumber)
+        // Starting bitrate; StreamServer adapts it live via setBitrate(_:).
+        setProp(kVTCompressionPropertyKey_AverageBitRate, VideoEncoder.maxBitrate as CFNumber)
         setProp(kVTCompressionPropertyKey_ProfileLevel,
                 codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel
                                : kVTProfileLevel_H264_High_AutoLevel)
@@ -114,6 +130,17 @@ final class VideoEncoder: @unchecked Sendable {
     }
 
     func requestKeyframe() { forceNextKeyframe = true }
+
+    /// Adaptive-bitrate bounds (bits/sec) — see PROTOCOL.md "Adaptive bitrate".
+    static let maxBitrate = 20_000_000
+    static let minBitrate = 2_000_000
+
+    /// Changes the target bitrate on the live session. AverageBitRate is a
+    /// dynamic VT property — settable while encoding, no session recreation.
+    /// Apple Silicon hardware encoders honor it within a GOP or two.
+    func setBitrate(_ bps: Int) {
+        setProp(kVTCompressionPropertyKey_AverageBitRate, bps as CFNumber)
+    }
 
     func encode(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
         var props: CFDictionary?
