@@ -308,28 +308,35 @@ struct ControlContentView: View {
         ControlSurface(client: client, keyboardVisible: $keyboardVisible)
             .ignoresSafeArea()
             .overlay(alignment: .top) {
-                HStack {
-                    Button {
-                        keyboardVisible = false
-                        session.disconnect()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                    }
-                    Spacer()
-                    Text(statusLine)
-                        .font(.footnote)
-                        .foregroundStyle(.white.opacity(0.35))
-                    Spacer()
-                    Button {
-                        keyboardVisible.toggle()
-                    } label: {
-                        Image(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
-                    }
+                VStack(spacing: 8) {
+                    topBar
+                    if client.softwareEncoding { SoftwareEncodingBanner() }
                 }
-                .font(.title2)
-                .foregroundStyle(.white.opacity(0.35))
                 .padding()
             }
+    }
+
+    private var topBar: some View {
+        HStack {
+            Button {
+                keyboardVisible = false
+                session.disconnect()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+            }
+            Spacer()
+            Text(statusLine)
+                .font(.footnote)
+                .foregroundStyle(.white.opacity(0.35))
+            Spacer()
+            Button {
+                keyboardVisible.toggle()
+            } label: {
+                Image(systemName: keyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
+            }
+        }
+        .font(.title2)
+        .foregroundStyle(.white.opacity(0.35))
     }
 
     private var statusLine: String {

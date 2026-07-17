@@ -149,6 +149,11 @@ struct ContentView: View {
             if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
+                    .overlay(alignment: .top) {
+                        if client.softwareEncoding {
+                            SoftwareEncodingBanner().padding(.top, 8)
+                        }
+                    }
                     .overlay(alignment: .topTrailing) {
                         Button {
                             connection.disconnect()
