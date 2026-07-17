@@ -237,6 +237,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     private func startSession(requestedCodec: StreamCodec) {
         let displayID = self.displayID
+        // Pin this session to the connection that sent HELLO. A second client
+        // can connect (tearing down `connection` and installing a new one)
+        // during the awaits below; without this check the new connection would
+        // inherit this session's stream/encoder while the old one leaks.
+        let sessionConn = self.connection
         Task {
             do {
                 // Distinguish "permission denied" from other capture failures up
@@ -289,7 +294,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 try await stream.startCapture()
 
                 self.queue.async {
-                    guard self.connection != nil else { // client vanished during setup
+                    // Require the *same* connection that started this session:
+                    // nil means the client vanished, a different object means a
+                    // second client replaced it mid-setup. Either way this
+                    // stream/encoder is orphaned — tear it down, don't attach.
+                    guard self.connection === sessionConn, self.connection != nil else {
                         stream.stopCapture { _ in }
                         encoder.invalidate()
                         return

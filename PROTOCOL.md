@@ -2,7 +2,9 @@
 
 Custom LAN streaming protocol replacing browser VNC: ScreenCaptureKit capture →
 VideoToolbox hardware encode on the Mac → TCP → VideoToolbox hardware decode on
-the iPad. Phase 1 is a single-display walking skeleton.
+the iPad. Every active display is served independently (one endpoint per
+display, see below); hardware encode is strongly preferred but the host falls
+back to a software encoder rather than refusing to start.
 
 ## Displays
 
