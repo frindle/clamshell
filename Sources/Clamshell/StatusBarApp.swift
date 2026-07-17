@@ -7,6 +7,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let coordinator = CollapseCoordinator()
     private let monitor = ConnectionMonitor()
     private let webServer = WebServer()
+    /// In-process native stream fleet (PROTOCOL.md). Same class the CLI
+    /// `stream` command uses — nil when the "Native Streaming" toggle is off.
+    private(set) var streamFleet: StreamFleet?
+    private var diagnosticsWC: NSWindowController?
+    private var qrWC: NSWindowController?
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
     // Remote-session state is the OR of the two signals: polled VNC/Jump
@@ -82,6 +87,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if UserDefaults.standard.bool(forKey: "webAccess") {
             webServer.start()
         }
+        // Native streaming persists like Web Access / Start at Login: once
+        // enabled it survives relaunches and reboots with no terminal.
+        if UserDefaults.standard.bool(forKey: "nativeStreaming") {
+            startNativeStreaming()
+        }
 
         // A system sleep kills any live remote stream. On wake, drop the
         // external-collapse latch (Sunshine can't send its undo command for
@@ -123,8 +133,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if fromStream, self.autoDualDetect, let ext = note.userInfo?["external"] as? String {
                 dual = ext == "1"
             }
-            clog("external collapse command (\(preset.name), dual \(dual)\(fromStream ? ", stream" : ""))")
-            self.applyExternalCollapse(preset: preset, dual: dual, fromStream: fromStream)
+            // When the client reports the external monitor's real pixel size,
+            // size Display B to it (same treatment as Display A above) instead
+            // of the fixed presetB.
+            var presetB: DisplayPreset? = nil
+            if dual, let bw = (note.userInfo?["widthB"] as? String).flatMap(UInt32.init),
+               let bh = (note.userInfo?["heightB"] as? String).flatMap(UInt32.init),
+               bw >= 640, bh >= 480 {
+                let ew = bw & ~1, eh = bh & ~1
+                presetB = DisplayPreset(name: "Client B (\(ew)×\(eh))", pointsWide: ew / 2, pointsHigh: eh / 2)
+            }
+            clog("external collapse command (\(preset.name), dual \(dual)\(presetB.map { ", B \($0.name)" } ?? "")\(fromStream ? ", stream" : ""))")
+            self.applyExternalCollapse(preset: preset, presetB: presetB, dual: dual, fromStream: fromStream)
         }
         dnc.addObserver(forName: Notification.Name("com.frindle.clamshell.restore"), object: nil, queue: .main) { [weak self] note in
             guard let self else { return }
@@ -265,6 +285,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         web.target = self
         menu.addItem(web)
 
+        let stream = NSMenuItem(
+            title: streamFleet?.isServing == true
+                ? "Native Streaming On (port \(streamDefaultPort)+)"
+                : "Enable Native Streaming (iPad/iPhone apps)",
+            action: #selector(toggleNativeStreaming), keyEquivalent: ""
+        )
+        stream.state = streamFleet != nil ? .on : .off
+        stream.target = self
+        menu.addItem(stream)
+
         // Bind-address picker — only interesting with more than one LAN IP.
         // Multi-select: each interface toggles independently; "All Interfaces"
         // clears the selection (empty selection = bind everything).
@@ -305,6 +335,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(withTitle: "Diagnostics…", action: #selector(openDiagnostics), keyEquivalent: "d")
+            .target = self
+        menu.addItem(withTitle: "Show Pairing QR Code…", action: #selector(openPairingQR), keyEquivalent: "")
+            .target = self
         menu.addItem(withTitle: "Open Log File", action: #selector(openLog), keyEquivalent: "l")
             .target = self
 
@@ -418,6 +452,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         rebuildMenu()
     }
 
+    private func startNativeStreaming() {
+        guard streamFleet == nil else { return }
+        let fleet = StreamFleet(basePort: streamDefaultPort)
+        fleet.rebuild()
+        streamFleet = fleet
+        clog("native streaming enabled from menu bar")
+    }
+
+    private func stopNativeStreaming() {
+        streamFleet?.stop()
+        streamFleet = nil
+        clog("native streaming disabled from menu bar")
+    }
+
+    @objc private func toggleNativeStreaming() {
+        if streamFleet != nil { stopNativeStreaming() } else { startNativeStreaming() }
+        UserDefaults.standard.set(streamFleet != nil, forKey: "nativeStreaming")
+        rebuildMenu()
+    }
+
+    @objc private func openDiagnostics() {
+        if diagnosticsWC == nil {
+            diagnosticsWC = DiagnosticsWindowController(appDelegate: self)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        diagnosticsWC?.showWindow(nil)
+        diagnosticsWC?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Disconnect All / Restart Streaming, driven from the Diagnostics window.
+    func disconnectAllClients() { streamFleet?.disconnectAllClients() }
+    func restartStreaming() {
+        guard streamFleet != nil else { return }
+        stopNativeStreaming()
+        startNativeStreaming()
+        UserDefaults.standard.set(true, forKey: "nativeStreaming")
+        rebuildMenu()
+    }
+
+    @objc private func openPairingQR() {
+        if qrWC == nil { qrWC = PairingQRWindowController() }
+        NSApp.activate(ignoringOtherApps: true)
+        qrWC?.showWindow(nil)
+        qrWC?.window?.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func selectBind(_ sender: NSMenuItem) {
         if let ip = sender.representedObject as? String {
             // Toggle this interface in/out of the selection.
@@ -503,9 +583,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// same geometry: keep it (and cancel any pending grace-period restore).
     /// Geometry changed mid-collapse (new client resolution, or a second
     /// screen appeared/vanished): rebuild the collapse with the new shape.
-    private func applyExternalCollapse(preset: DisplayPreset, dual: Bool, fromStream: Bool) {
+    private func applyExternalCollapse(preset: DisplayPreset, presetB: DisplayPreset? = nil, dual: Bool, fromStream: Bool) {
         if coordinator.state != .idle {
-            if coordinator.preset == preset && coordinator.dualMode == dual {
+            if coordinator.preset == preset && coordinator.dualMode == dual
+                && (presetB == nil || coordinator.presetB == presetB) {
                 externallyCollapsed = true
                 if fromStream { streamCollapsed = true }
                 coordinator.collapse() // no-op that cancels a pending restore
@@ -513,11 +594,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             clog("external collapse geometry changed — recollapsing")
             coordinator.restore { [weak self] in
-                self?.applyExternalCollapse(preset: preset, dual: dual, fromStream: fromStream)
+                self?.applyExternalCollapse(preset: preset, presetB: presetB, dual: dual, fromStream: fromStream)
             }
             return
         }
         coordinator.preset = preset
+        if let presetB { coordinator.presetB = presetB }
         coordinator.dualMode = dual
         syncDualPresets()
         externallyCollapsed = true

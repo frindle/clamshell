@@ -49,7 +49,7 @@ final class AudioPlayer {
 
     /// Decodes and schedules one AAC packet. Called on the network queue.
     func play(aac: Data) {
-        guard let converter else { return }
+        guard let converter, !aac.isEmpty else { return } // empty AUDIO_FRAME: nothing to decode
         startIfNeeded()
 
         let compressed = AVAudioCompressedBuffer(

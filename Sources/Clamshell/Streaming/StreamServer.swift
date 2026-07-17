@@ -84,6 +84,16 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
     }
 
+    /// Force-disconnect the current client (Diagnostics "Disconnect All").
+    func disconnectClient() {
+        queue.async { [self] in teardownSession() }
+    }
+
+    /// Snapshot for the Diagnostics view (read from the main queue).
+    var portNumber: UInt16 { port }
+    var primary: Bool { isPrimary }
+    var isClientConnected: Bool { queue.sync { connection != nil } }
+
     // MARK: - Connection lifecycle (on `queue`)
 
     private func accept(_ conn: NWConnection) {
@@ -178,7 +188,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
         case .clipboard:
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
-        case .helloAck, .videoFrame, .audioFrame:
+        case .helloAck, .videoFrame, .audioFrame, .streamStatus:
             break // host never receives these
         }
     }
@@ -197,16 +207,25 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         let w = payload.beUInt32(at: offset), h = payload.beUInt32(at: offset + 4)
         let secondDisplay = (payload[payload.startIndex + offset + 8] & 1) == 1
         guard w >= 640, h >= 480 else { return }
+        // Optional trailing Display B size (present only when a second display
+        // is attached) — lets the host size Display B to the real external
+        // monitor instead of the fixed presetB.
+        var secondInfo: (w: UInt32, h: UInt32)?
+        if secondDisplay, payload.count >= offset + 17 {
+            let bw = payload.beUInt32(at: offset + 9), bh = payload.beUInt32(at: offset + 13)
+            if bw >= 640, bh >= 480 { secondInfo = (bw, bh) }
+        }
         clientAnnounced = true
-        clog("STREAM: client reports \(w)x\(h)px\(secondDisplay ? " + second display" : "") — requesting collapse")
+        clog("STREAM: client reports \(w)x\(h)px\(secondDisplay ? " + second display\(secondInfo.map { " \($0.w)x\($0.h)px" } ?? "")" : "") — requesting collapse")
         DispatchQueue.main.async {
             Self.pendingRestorePost?.cancel()
             Self.pendingRestorePost = nil
+            var info: [String: String] = ["width": String(w), "height": String(h),
+                                          "external": secondDisplay ? "1" : "0", "source": "stream"]
+            if let s = secondInfo { info["widthB"] = String(s.w); info["heightB"] = String(s.h) }
             DistributedNotificationCenter.default().postNotificationName(
                 Notification.Name("com.frindle.clamshell.collapse"), object: nil,
-                userInfo: ["width": String(w), "height": String(h),
-                           "external": secondDisplay ? "1" : "0", "source": "stream"],
-                deliverImmediately: true)
+                userInfo: info, deliverImmediately: true)
         }
     }
 
@@ -237,6 +256,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     private func startSession(requestedCodec: StreamCodec) {
         let displayID = self.displayID
+        // Pin this session to the connection that sent HELLO. A second client
+        // can connect (tearing down `connection` and installing a new one)
+        // during the awaits below; without this check the new connection would
+        // inherit this session's stream/encoder while the old one leaks.
+        let sessionConn = self.connection
         Task {
             do {
                 // Distinguish "permission denied" from other capture failures up
@@ -289,7 +313,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 try await stream.startCapture()
 
                 self.queue.async {
-                    guard self.connection != nil else { // client vanished during setup
+                    // Require the *same* connection that started this session:
+                    // nil means the client vanished, a different object means a
+                    // second client replaced it mid-setup. Either way this
+                    // stream/encoder is orphaned — tear it down, don't attach.
+                    guard self.connection === sessionConn, self.connection != nil else {
                         stream.stopCapture { _ in }
                         encoder.invalidate()
                         return
@@ -323,6 +351,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     self.send(StreamMessage.helloAck(codec: encoder.codec,
                                                      width: UInt32(pxWidth), height: UInt32(pxHeight),
                                                      hardwareEncoder: encoder.isHardware))
+                    self.sendStreamStatus() // initial bitrate for the quality indicator
                     clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))\(encoder.isHardware ? "" : " [SOFTWARE ENCODE]")")
                 }
             } catch {
@@ -351,6 +380,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     // MARK: - Adaptive bitrate (on `queue`)
 
+    /// Current encoder target, for the client's quality indicator.
+    private func sendStreamStatus() {
+        guard connection != nil else { return }
+        send(StreamMessage.streamStatus(bitrateKbps: UInt16(min(bitrate / 1000, Int(UInt16.max)))))
+    }
+
     private func stepBitrateDown() {
         let now = CFAbsoluteTimeGetCurrent()
         lastCongestionAt = now
@@ -358,6 +393,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         bitrate = max(bitrate / 2, VideoEncoder.minBitrate)
         lastStepAt = now
         encoder?.setBitrate(bitrate)
+        sendStreamStatus()
         clog("STREAM: congestion (send queue full, dropping frames) — bitrate down to \(bitrate / 1_000_000) Mbps")
     }
 
@@ -368,6 +404,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         bitrate = min(bitrate * 5 / 4, VideoEncoder.maxBitrate)
         lastStepAt = now
         encoder?.setBitrate(bitrate)
+        sendStreamStatus()
         clog("STREAM: healthy for 5s — bitrate up to \(bitrate / 1_000_000) Mbps")
     }
 
@@ -424,15 +461,47 @@ final class StreamFleet {
 
     var isServing: Bool { !servers.isEmpty }
 
+    /// Per-display connection snapshot for the Diagnostics view.
+    var clientStatus: [(port: UInt16, primary: Bool, connected: Bool)] {
+        servers.map { ($0.portNumber, $0.primary, $0.isClientConnected) }
+    }
+
+    /// Stored so it can be removed on stop() — the same function pointer must
+    /// be passed to register and remove, and a live callback holding an
+    /// unretained pointer to a deallocated fleet would dangle.
+    private let reconfigCallback: CGDisplayReconfigurationCallBack = { _, flags, userInfo in
+        guard let userInfo,
+              flags.contains(.addFlag) || flags.contains(.removeFlag) else { return }
+        let fleet = Unmanaged<StreamFleet>.fromOpaque(userInfo).takeUnretainedValue()
+        DispatchQueue.main.async { fleet.rebuildSoon() }
+    }
+    private var callbackRegistered = false
+
     init(basePort: UInt16) {
         self.basePort = basePort
-        let info = Unmanaged.passUnretained(self).toOpaque()
-        CGDisplayRegisterReconfigurationCallback({ _, flags, userInfo in
-            guard let userInfo,
-                  flags.contains(.addFlag) || flags.contains(.removeFlag) else { return }
-            let fleet = Unmanaged<StreamFleet>.fromOpaque(userInfo).takeUnretainedValue()
-            DispatchQueue.main.async { fleet.rebuildSoon() }
-        }, info)
+        CGDisplayRegisterReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
+        callbackRegistered = true
+    }
+
+    /// Stop every server and unregister the topology callback. Lets the
+    /// menu-bar app toggle native streaming on and off in-process.
+    func stop() {
+        pendingRebuild?.cancel()
+        pendingRebuild = nil
+        for s in servers { s.stop() }
+        servers = []
+        currentIDs = []
+        if callbackRegistered {
+            CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
+            callbackRegistered = false
+        }
+        clog("STREAM: fleet stopped")
+    }
+
+    /// Disconnect every connected client without tearing down the listeners —
+    /// forces stuck reconnect-looping clients to re-handshake cleanly.
+    func disconnectAllClients() {
+        for s in servers { s.disconnectClient() }
     }
 
     /// Active displays, main display first (index 0 = base port = the primary

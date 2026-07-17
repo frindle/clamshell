@@ -2,7 +2,9 @@
 
 Custom LAN streaming protocol replacing browser VNC: ScreenCaptureKit capture →
 VideoToolbox hardware encode on the Mac → TCP → VideoToolbox hardware decode on
-the iPad. Phase 1 is a single-display walking skeleton.
+the iPad. Every active display is served independently (one endpoint per
+display, see below); hardware encode is strongly preferred but the host falls
+back to a software encoder rather than refusing to start.
 
 ## Displays
 
@@ -43,9 +45,10 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 
 | Type | Name             | Direction     | Payload |
 |------|------------------|---------------|---------|
-| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached)] |
+| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set]] |
 | 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
-| 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) |
+| 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
+| 0x04 | STREAM_STATUS    | host → client | currentBitrateKbps(2 BE) — see "Connection quality" |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -69,12 +72,15 @@ refuse-to-start contract).
 
 The client optionally reports its real display situation: its video surface
 size in pixels (landscape-normalized — Mac virtual displays are landscape)
-and whether a *second* display surface is attached (flags bit 0). The iPad
-viewer reports its own screen and sets the flag while an external monitor is
-attached; the iPhone control app reports the external monitor's size (its
-only video surface) and never sets the flag. The trailing HELLO bytes are
-optional both ways: an old client omits them, an old host ignores them.
-CLIENT_DISPLAYS carries the same fields mid-session (monitor plugged or
+and whether a *second* display surface is attached (flags bit 0). When the
+flag is set the second surface's own pixel size follows (secondWidthPx,
+secondHeightPx), so the host sizes Display B to the real external monitor
+instead of a fixed preset. The iPad viewer reports its own screen, sets the
+flag while an external monitor is attached, and appends that monitor's size;
+the iPhone control app reports the external monitor's size (its only video
+surface) as the primary size and never sets the flag. The trailing HELLO
+bytes are optional both ways: an old client omits them, an old host ignores
+them. CLIENT_DISPLAYS carries the same fields mid-session (monitor plugged or
 unplugged after connecting).
 
 Only the **primary** connection's report is honored. The host forwards it to
@@ -138,6 +144,19 @@ Bitrate resets to the 20 Mbps ceiling on every new connection. Hardware
 encoders track the new target within a GOP or two; on a constrained link
 (hotel wifi, cellular through the Cloudflare Tunnel) the stream converges to
 what the path drains instead of stuttering at a fixed 20 Mbps.
+
+## Connection quality (STREAM_STATUS)
+
+The adaptive bitrate above is otherwise invisible to the user, so the host
+sends STREAM_STATUS (host → client) carrying the current encoder target in
+kbps: once right after HELLO_ACK, then again on every up/down step. The client
+turns it into an unobtrusive quality dot alongside the software-encoding
+banner (green near the 20 Mbps ceiling, yellow reduced, orange near the 2 Mbps
+floor) — a status light, not a stats overlay. An optional client-side "Nerd
+Mode" expands the dot into a one-line readout (codec, resolution, hardware vs.
+software, current Mbps) built from HELLO_ACK plus this message. Pre-status
+hosts simply never send it; the client shows no dot until the first one
+arrives.
 
 ## Audio (AUDIO_FRAME)
 

@@ -14,6 +14,8 @@
 		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
 		BB0000000000000000000007 /* StreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000007 /* StreamClient.swift */; };
 		BB0000000000000000000008 /* VideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000008 /* VideoView.swift */; };
+		BB0000000000000000000020 /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000020 /* SharedUI.swift */; };
+		BB0000000000000000000021 /* SharedUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000020 /* SharedUI.swift */; };
 		BB0000000000000000000011 /* ControlApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000009 /* ControlApp.swift */; };
 		BB0000000000000000000012 /* StreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000007 /* StreamClient.swift */; };
 		BB0000000000000000000013 /* VideoView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000008 /* VideoView.swift */; };
@@ -32,6 +34,7 @@
 		FF0000000000000000000004 /* ClamshellViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FF0000000000000000000007 /* StreamClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamClient.swift; sourceTree = "<group>"; };
 		FF0000000000000000000008 /* VideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoView.swift; sourceTree = "<group>"; };
+		FF0000000000000000000020 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
 		FF0000000000000000000009 /* ControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlApp.swift; sourceTree = "<group>"; };
 		FF000000000000000000000A /* ClamshellControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -70,6 +73,7 @@
 				FF0000000000000000000001 /* ViewerApp.swift */,
 				FF0000000000000000000007 /* StreamClient.swift */,
 				FF0000000000000000000008 /* VideoView.swift */,
+				FF0000000000000000000020 /* SharedUI.swift */,
 				FF0000000000000000000005 /* AudioPlayer.swift */,
 				FF0000000000000000000006 /* KeyMap.swift */,
 			);
@@ -174,6 +178,7 @@
 				BB0000000000000000000001 /* ViewerApp.swift in Sources */,
 				BB0000000000000000000007 /* StreamClient.swift in Sources */,
 				BB0000000000000000000008 /* VideoView.swift in Sources */,
+				BB0000000000000000000020 /* SharedUI.swift in Sources */,
 				BB0000000000000000000005 /* AudioPlayer.swift in Sources */,
 				BB0000000000000000000006 /* KeyMap.swift in Sources */,
 				BB0000000000000000000002 /* StreamProtocol.swift in Sources */,
@@ -188,6 +193,7 @@
 				BB0000000000000000000011 /* ControlApp.swift in Sources */,
 				BB0000000000000000000012 /* StreamClient.swift in Sources */,
 				BB0000000000000000000013 /* VideoView.swift in Sources */,
+				BB0000000000000000000021 /* SharedUI.swift in Sources */,
 				BB0000000000000000000014 /* AudioPlayer.swift in Sources */,
 				BB0000000000000000000015 /* KeyMap.swift in Sources */,
 				BB0000000000000000000016 /* StreamProtocol.swift in Sources */,

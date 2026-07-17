@@ -8,6 +8,7 @@ enum StreamMessageType: UInt8 {
     case hello = 0x01
     case helloAck = 0x02
     case clientDisplays = 0x03 // client -> host: display size / second-screen update
+    case streamStatus = 0x04   // host -> client: live status (current bitrate)
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
@@ -68,24 +69,36 @@ enum StreamMessage {
     /// Trailing client-display info (optional — hosts that predate it ignore
     /// the extra bytes): the client's video surface size in pixels, and
     /// whether a second display surface is attached (flags bit 0), which
-    /// drives the host's auto dual-display mode.
+    /// drives the host's auto dual-display mode. When a second display is
+    /// attached its own pixel size is appended too (secondSize), so the host
+    /// sizes Display B to the real external monitor instead of a fixed preset.
     static func hello(requestedCodec: StreamCodec,
-                      displayInfo: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool)? = nil) -> Data {
+                      displayInfo: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool)? = nil,
+                      secondSize: (widthPx: UInt32, heightPx: UInt32)? = nil) -> Data {
         var p = Data([streamProtocolVersion, requestedCodec.rawValue])
         if let info = displayInfo {
-            p.appendBE(info.widthPx); p.appendBE(info.heightPx)
-            p.append(info.secondDisplay ? 1 : 0)
+            appendDisplayInfo(&p, info, secondSize)
         }
         return frame(type: .hello, payload: p)
     }
 
     /// Mid-session update of the same info HELLO carries — sent when the
     /// client's external monitor is plugged/unplugged after connecting.
-    static func clientDisplays(widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool) -> Data {
+    static func clientDisplays(widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool,
+                               secondSize: (widthPx: UInt32, heightPx: UInt32)? = nil) -> Data {
         var p = Data()
-        p.appendBE(widthPx); p.appendBE(heightPx)
-        p.append(secondDisplay ? 1 : 0)
+        appendDisplayInfo(&p, (widthPx, heightPx, secondDisplay), secondSize)
         return frame(type: .clientDisplays, payload: p)
+    }
+
+    private static func appendDisplayInfo(_ p: inout Data,
+                                          _ info: (widthPx: UInt32, heightPx: UInt32, secondDisplay: Bool),
+                                          _ secondSize: (widthPx: UInt32, heightPx: UInt32)?) {
+        p.appendBE(info.widthPx); p.appendBE(info.heightPx)
+        p.append(info.secondDisplay ? 1 : 0)
+        if info.secondDisplay, let s = secondSize {
+            p.appendBE(s.widthPx); p.appendBE(s.heightPx)
+        }
     }
 
     /// `hardwareEncoder` becomes flags bit 0 (trailing byte; clients that
@@ -129,8 +142,53 @@ enum StreamMessage {
 
     static func audioFrame(_ aac: Data) -> Data { frame(type: .audioFrame, payload: aac) }
 
+    /// Live stream status for the client's quality indicator: current encoder
+    /// target bitrate in kbps (see PROTOCOL.md "Connection quality").
+    static func streamStatus(bitrateKbps: UInt16) -> Data {
+        var p = Data(); p.appendBE(bitrateKbps)
+        return frame(type: .streamStatus, payload: p)
+    }
+
     static func clipboard(text: String) -> Data {
         frame(type: .clipboard, payload: Data(text.utf8))
+    }
+}
+
+// MARK: - QR pairing payload
+
+/// Connection info encoded in the pairing QR code the Mac displays and the
+/// iOS apps scan. Format is a custom URL so a generic QR reader shows
+/// something recognizable: `clamshell://pair?host=<h>&id=<i>&secret=<s>`.
+/// id/secret are the optional Cloudflare Access service-token pair.
+struct ClamshellPairing: Equatable {
+    var host: String
+    var accessId: String = ""
+    var accessSecret: String = ""
+
+    var url: String {
+        var c = URLComponents()
+        c.scheme = "clamshell"
+        c.host = "pair"
+        var items = [URLQueryItem(name: "host", value: host)]
+        if !accessId.isEmpty { items.append(URLQueryItem(name: "id", value: accessId)) }
+        if !accessSecret.isEmpty { items.append(URLQueryItem(name: "secret", value: accessSecret)) }
+        c.queryItems = items
+        return c.string ?? "clamshell://pair?host=\(host)"
+    }
+
+    /// Parses a scanned string; nil if it isn't a clamshell pairing URL with a host.
+    init?(url string: String) {
+        guard let c = URLComponents(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
+              c.scheme == "clamshell" else { return nil }
+        let items = c.queryItems ?? []
+        guard let h = items.first(where: { $0.name == "host" })?.value, !h.isEmpty else { return nil }
+        host = h
+        accessId = items.first(where: { $0.name == "id" })?.value ?? ""
+        accessSecret = items.first(where: { $0.name == "secret" })?.value ?? ""
+    }
+
+    init(host: String, accessId: String = "", accessSecret: String = "") {
+        self.host = host; self.accessId = accessId; self.accessSecret = accessSecret
     }
 }
 

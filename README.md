@@ -47,7 +47,7 @@ swift build -c release
 .build/release/Clamshell            # menu bar app
 .build/release/Clamshell test-virtual-display   # 10s smoke test
 .build/release/Clamshell test-detect            # print detection state
-./package.sh 0.1.0                  # build signed .app + .dmg into dist/
+./package.sh 0.8.0                  # build signed .app + .dmg into dist/
 ```
 
 **Stable signing for local builds (recommended).** Raw `swift build` produces an
@@ -227,29 +227,38 @@ window on the external monitor: two real, independent Mac monitors. The
 pages use noVNC's core API with a panned, clipped viewport, so mouse/touch
 input maps correctly within each region.
 
-Not yet: dual mode is a manual menu toggle only — remote connections
-(including `Clamshell collapse` from Sunshine, which still sizes Display A)
-don't switch it on or off automatically; there's no reliable Mac-side signal
-for "iPad with an external monitor attached". The minimal viewer pages have
-no on-screen-keyboard button yet — use a hardware keyboard.
+Dual mode can be a manual menu toggle, but native-stream sessions drive it
+automatically: an iPad viewer with an external monitor attached reports the
+second surface in its stream handshake, and the Mac collapses in dual mode
+for that session (single when unplugged) — the "Auto-Detect Dual Display
+(native stream)" menu toggle (default on) controls this. The browser/VNC dual
+path stays manual (a browser can't report an attached monitor), and Sunshine's
+`Clamshell collapse` still sizes Display A only. The minimal browser viewer
+pages have no on-screen-keyboard button yet — use a hardware keyboard.
 
-## Native streaming (experimental, Phase 1)
+## Native streaming (experimental)
 
 A from-scratch replacement for the browser-VNC path: ScreenCaptureKit
-capture → VideoToolbox **hardware** HEVC/H.264 encode on the Mac → binary
+capture → VideoToolbox HEVC/H.264 encode on the Mac → binary
 WebSocket (`ws://` on LAN, `wss://` through a Cloudflare Tunnel) → hardware
 decode on an iPad. Wire format is documented in [PROTOCOL.md](PROTOCOL.md).
 
+Turn it on from the menu bar with **Native Streaming** (persists across
+relaunches/reboots, same as Web Access and Start at Login), or run it from a
+terminal for debugging:
+
 ```
-.build/debug/Clamshell stream            # serve the main display on :5903
+.build/debug/Clamshell stream            # serve every active display from :5903
 .build/debug/Clamshell stream-selftest   # encode → TCP loopback → decode check
 ```
 
 `stream` needs **Screen Recording** permission. The iPad client is the
 `ClamshellViewer/` Xcode project (SwiftUI, `AVSampleBufferDisplayLayer`,
 touch → mouse forwarding) — open it in Xcode and run on an iPad on the same
-LAN/Tailscale network. Phase 1 is a single display and a single client;
-hardware encode is required (it refuses to run a software encode).
+LAN/Tailscale network. Every active display is served independently (one port
+per display, main display first at the base port); hardware encode is strongly
+preferred, but the host falls back to a **software** encoder rather than
+refusing to start — the viewer shows a warning banner when it does.
 
 The same project has a second target, **ClamshellControl** (iPhone): the
 phone shows no video of its own — an external monitor plugged into the phone
@@ -276,6 +285,31 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Native streaming from the menu bar**: a new "Native Streaming" toggle runs
+  the stream servers in-process (same `StreamFleet` the CLI `stream` command
+  uses), persisted and auto-restored on launch like Web Access / Start at
+  Login — no terminal needed. CLI `stream` / `stream-selftest` still work.
+- **Diagnostics… window**: Screen Recording / Accessibility permission status,
+  hardware-encoder availability, per-display native-stream client counts, and
+  Disconnect All Clients / Restart Streaming actions.
+- **QR pairing + saved machines** (⚠ untested on real hardware): "Show Pairing
+  QR Code…" renders the Mac's connection info (host + optional Cloudflare
+  Access token) as a `clamshell://pair` QR via Core Image; the iPad/iPhone
+  connect screens gain a "Scan QR to Pair" button (AVFoundation, no third-party
+  library) and a "Saved Machines" list (select / add / delete). Format is
+  documented in PROTOCOL.md.
+- **Connection-quality indicator + Nerd Mode**: the host reports its live
+  adaptive bitrate (new STREAM_STATUS message); the clients show an
+  unobtrusive colored dot (green/yellow/orange) beside the software-encoding
+  banner, expandable via an opt-in "Nerd Mode" toggle into a codec /
+  resolution / HW-SW / Mbps readout.
+- **Human-readable connection errors**: dropped/rejected connections now
+  surface a specific on-screen reason (unreachable host vs. Cloudflare Access
+  rejection vs. wrong URL vs. timeout) while auto-reconnect keeps retrying,
+  instead of spinning silently on "connecting".
+- **Display B sized to the real external monitor**: the iPad viewer now reports
+  its attached monitor's pixel size on the primary stream connection, so the
+  Mac sizes Display B to it instead of the fixed preset.
 - **Auto-sized virtual display for native streaming** (⚠ untested on real
   hardware): the iPad/iPhone client reports its actual pixel resolution in
   the stream HELLO handshake (and mid-session via a new CLIENT_DISPLAYS
