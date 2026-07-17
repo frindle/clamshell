@@ -294,11 +294,14 @@ struct ControlContentView: View {
     private let session = ControlSession.shared
     @ObservedObject private var sessionState = ControlSession.shared
     @ObservedObject private var client = ControlSession.shared.client
+    @StateObject private var store = MachineStore()
     @AppStorage("hostAddress") private var host = ""
     @AppStorage("displayIndex") private var displayIndex = 0
     @AppStorage("cfAccessClientId") private var accessId = ""
     @AppStorage("cfAccessClientSecret") private var accessSecret = ""
+    @AppStorage("nerdMode") private var nerdMode = false
     @State private var keyboardVisible = false
+    @State private var showScanner = false
 
     var body: some View {
         ZStack {
@@ -310,9 +313,36 @@ struct ControlContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .fullScreenCover(isPresented: $showScanner) {
+            QRScannerView(onScan: applyScan, onCancel: { showScanner = false })
+                .ignoresSafeArea()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             if let text = UIPasteboard.general.string { client.syncClipboard(text) }
         }
+    }
+
+    private func connectNow(host h: String, displayIndex idx: Int, accessId id: String, accessSecret secret: String) {
+        guard !h.isEmpty else { return }
+        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h,
+                                    accessId: id, accessSecret: secret, displayIndex: idx))
+        session.connect(host: h, displayIndex: idx, accessId: id, accessSecret: secret)
+    }
+
+    private func select(_ m: MachineProfile) {
+        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret; displayIndex = m.displayIndex
+        session.connect(host: m.host, displayIndex: m.displayIndex, accessId: m.accessId, accessSecret: m.accessSecret)
+    }
+
+    private func applyScan(_ code: String) {
+        showScanner = false
+        guard let pairing = ClamshellPairing(url: code) else {
+            clogViewer("QR scan ignored: not a clamshell pairing code"); return
+        }
+        host = pairing.host; accessId = pairing.accessId; accessSecret = pairing.accessSecret
+        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(pairing.host), host: pairing.host,
+                                    accessId: pairing.accessId, accessSecret: pairing.accessSecret, displayIndex: displayIndex))
+        clogViewer("QR scan filled connection for \(pairing.host)")
     }
 
     private var controlSurface: some View {
@@ -322,6 +352,7 @@ struct ControlContentView: View {
                 VStack(spacing: 8) {
                     topBar
                     if client.softwareEncoding { SoftwareEncodingBanner() }
+                    QualityIndicator(client: client)
                 }
                 .padding()
             }
@@ -354,52 +385,67 @@ struct ControlContentView: View {
         switch client.status {
         case .streaming(let desc):
             return sessionState.externalAttached ? desc : "\(desc) — no external display"
-        case .connecting: return "connecting…"
+        case .connecting: return client.lastError ?? "connecting…"
         case .failed(let reason): return reason
         case .idle: return ""
         }
     }
 
     private var connectForm: some View {
-        VStack(spacing: 16) {
-            Text("Clamshell Control").font(.title2).foregroundStyle(.white)
-            Text("Video goes to the external monitor; this screen is the trackpad.")
-                .font(.footnote).foregroundStyle(.gray)
-            TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
-                .frame(maxWidth: 420)
-            // Which Mac display to mirror (bare host only; a wss:// tunnel URL
-            // already addresses one display's endpoint).
-            if !host.contains("://") {
-                Picker("Display", selection: $displayIndex) {
-                    ForEach(0..<4, id: \.self) { Text("Display \($0 + 1)").tag($0) }
+        ScrollView {
+            VStack(spacing: 16) {
+                Text("Clamshell Control").font(.title2).foregroundStyle(.white)
+                Text("Video goes to the external monitor; this screen is the trackpad.")
+                    .font(.footnote).foregroundStyle(.gray)
+
+                SavedMachinesView(store: store, onSelect: select)
+
+                Button { showScanner = true } label: {
+                    Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
+                .buttonStyle(.bordered)
+
+                TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .frame(maxWidth: 420)
+                // Which Mac display to mirror (bare host only; a wss:// tunnel URL
+                // already addresses one display's endpoint).
+                if !host.contains("://") {
+                    Picker("Display", selection: $displayIndex) {
+                        ForEach(0..<4, id: \.self) { Text("Display \($0 + 1)").tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 420)
+                }
+                TextField("CF-Access-Client-Id (optional)", text: $accessId)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .frame(maxWidth: 420)
+                SecureField("CF-Access-Client-Secret (optional)", text: $accessSecret)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 420)
+                Button("Connect") {
+                    connectNow(host: host.trimmingCharacters(in: .whitespaces),
+                               displayIndex: displayIndex,
+                               accessId: accessId.trimmingCharacters(in: .whitespaces),
+                               accessSecret: accessSecret.trimmingCharacters(in: .whitespaces))
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
+                Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
+                    .frame(maxWidth: 420)
+                    .foregroundStyle(.gray)
+                if case .failed(let reason) = client.status {
+                    Text(reason).font(.footnote).foregroundStyle(.red)
+                } else if let e = client.lastError {
+                    Text(e).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
+                }
             }
-            TextField("CF-Access-Client-Id (optional)", text: $accessId)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .frame(maxWidth: 420)
-            SecureField("CF-Access-Client-Secret (optional)", text: $accessSecret)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
-            Button("Connect") {
-                session.connect(host: host.trimmingCharacters(in: .whitespaces),
-                                displayIndex: displayIndex,
-                                accessId: accessId.trimmingCharacters(in: .whitespaces),
-                                accessSecret: accessSecret.trimmingCharacters(in: .whitespaces))
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
-            if case .failed(let reason) = client.status {
-                Text(reason).font(.footnote).foregroundStyle(.red)
-            }
+            .padding()
         }
-        .padding()
     }
 }

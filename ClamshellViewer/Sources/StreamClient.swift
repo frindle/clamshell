@@ -16,6 +16,14 @@ final class StreamClient: ObservableObject {
     /// True when HELLO_ACK reported the host is encoding in SOFTWARE (no
     /// hardware encoder) — surfaced as a warning banner in the UI.
     @Published var softwareEncoding = false
+    /// Host's current encoder target (kbps) from STREAM_STATUS; 0 = not yet
+    /// reported. Drives the connection-quality dot / Nerd Mode readout.
+    @Published var currentBitrateKbps: UInt16 = 0
+    /// Negotiated codec name ("HEVC"/"H.264") from HELLO_ACK, for Nerd Mode.
+    @Published var codecName = ""
+    /// Human-readable reason for the most recent connection failure, surfaced
+    /// on-screen while auto-reconnect keeps retrying. nil once streaming.
+    @Published var lastError: String?
 
     /// Whether audio plays through this client. Only the primary (iPad-screen)
     /// client plays audio; the external-display client stays muted.
@@ -56,8 +64,39 @@ final class StreamClient: ObservableObject {
     /// Cloudflare Access service-token headers are attached when provided.
     func connect(host: String, accessId: String = "", accessSecret: String = "") {
         wantConnection = true
+        lastError = nil
         connectParams = (host, accessId, accessSecret)
         openSocket()
+    }
+
+    /// Maps a URLSession failure to a short reason a user can act on without
+    /// opening Console.app: Cloudflare Access rejection vs. unreachable host
+    /// vs. wrong address, distinguished by HTTP status and NSURLError code.
+    static func friendlyError(_ error: Error, response: URLResponse?) -> String {
+        if let http = response as? HTTPURLResponse {
+            switch http.statusCode {
+            case 401, 403: return "Access denied (HTTP \(http.statusCode)) — check the Cloudflare Access token."
+            case 302, 400..<500: return "Connection rejected (HTTP \(http.statusCode)) — check the URL / Cloudflare Access."
+            case 500...: return "Host error (HTTP \(http.statusCode)) — the Mac rejected the stream."
+            default: break
+            }
+        }
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else { return ns.localizedDescription }
+        switch ns.code {
+        case NSURLErrorCannotConnectToHost, NSURLErrorNetworkConnectionLost:
+            return "Can't reach the Mac — is it on this network and is Native Streaming enabled?"
+        case NSURLErrorTimedOut:
+            return "Connection timed out — check the address and that the Mac is awake."
+        case NSURLErrorCannotFindHost, NSURLErrorDNSLookupFailed:
+            return "Can't find that host — check the address."
+        case NSURLErrorNotConnectedToInternet:
+            return "This device is offline."
+        case NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateUntrusted:
+            return "TLS failed — check the wss:// URL / Cloudflare Tunnel."
+        default:
+            return "Connection failed: \(ns.localizedDescription)"
+        }
     }
 
     private func openSocket() {
@@ -130,6 +169,8 @@ final class StreamClient: ObservableObject {
         status = .idle
         videoSize = .zero
         softwareEncoding = false
+        currentBitrateKbps = 0
+        lastError = nil
     }
 
     private func teardownSocket() {
@@ -176,6 +217,8 @@ final class StreamClient: ObservableObject {
                     detail += ")"
                 }
                 clogViewer("stream dropped: \(detail) — reconnecting")
+                let friendly = Self.friendlyError(error, response: task.response)
+                DispatchQueue.main.async { self.lastError = friendly }
                 self.scheduleReconnect()
             }
         }
@@ -192,11 +235,18 @@ final class StreamClient: ObservableObject {
             let hardware = payload.count >= 11 ? (payload[payload.startIndex + 10] & 1) == 1 : true
             clogViewer("HELLO_ACK: \(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height)\(hardware ? "" : " [SOFTWARE ENCODE on host]") — streaming")
             assembler = FrameAssembler(codec: codec)
+            let codecName = codec == .hevc ? "HEVC" : "H.264"
             DispatchQueue.main.async {
                 self.videoSize = CGSize(width: Double(width), height: Double(height))
                 self.softwareEncoding = !hardware
-                self.status = .streaming("\(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height)")
+                self.codecName = codecName
+                self.lastError = nil // streaming actually started — clear any stale reason
+                self.status = .streaming("\(codecName) \(width)x\(height)")
             }
+        case .streamStatus:
+            guard payload.count >= 2 else { return }
+            let kbps = payload.beUInt16(at: 0)
+            DispatchQueue.main.async { self.currentBitrateKbps = kbps }
         case .videoFrame:
             guard let sample = assembler?.assemble(payload: payload) else { return }
             onSampleBuffer?(sample)

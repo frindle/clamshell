@@ -151,14 +151,38 @@ final class Connection: ObservableObject {
 struct ContentView: View {
     private let connection = Connection.shared
     @ObservedObject private var client = Connection.shared.primary
+    @StateObject private var store = MachineStore()
     @AppStorage("hostAddress") private var host = ""
     @AppStorage("cfAccessClientId") private var accessId = ""
     @AppStorage("cfAccessClientSecret") private var accessSecret = ""
+    @AppStorage("nerdMode") private var nerdMode = false
+    @State private var showScanner = false
 
     private func startConnection() {
-        connection.connect(host: host.trimmingCharacters(in: .whitespaces),
-                           accessId: accessId.trimmingCharacters(in: .whitespaces),
-                           accessSecret: accessSecret.trimmingCharacters(in: .whitespaces))
+        let h = host.trimmingCharacters(in: .whitespaces)
+        let id = accessId.trimmingCharacters(in: .whitespaces)
+        let secret = accessSecret.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty else { return }
+        // Both manual and scanned connections are saved (dedup by host).
+        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h, accessId: id, accessSecret: secret))
+        connection.connect(host: h, accessId: id, accessSecret: secret)
+    }
+
+    private func select(_ m: MachineProfile) {
+        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret
+        connection.connect(host: m.host, accessId: m.accessId, accessSecret: m.accessSecret)
+    }
+
+    private func applyScan(_ code: String) {
+        showScanner = false
+        guard let pairing = ClamshellPairing(url: code) else {
+            clogViewer("QR scan ignored: not a clamshell pairing code")
+            return
+        }
+        host = pairing.host; accessId = pairing.accessId; accessSecret = pairing.accessSecret
+        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(pairing.host), host: pairing.host,
+                                    accessId: pairing.accessId, accessSecret: pairing.accessSecret))
+        clogViewer("QR scan filled connection for \(pairing.host)")
     }
 
     var body: some View {
@@ -168,9 +192,11 @@ struct ContentView: View {
                 VideoView(client: client)
                     .ignoresSafeArea()
                     .overlay(alignment: .top) {
-                        if client.softwareEncoding {
-                            SoftwareEncodingBanner().padding(.top, 8)
+                        VStack(spacing: 6) {
+                            if client.softwareEncoding { SoftwareEncodingBanner() }
+                            QualityIndicator(client: client)
                         }
+                        .padding(.top, 8)
                     }
                     .overlay(alignment: .topTrailing) {
                         Button {
@@ -188,40 +214,65 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .fullScreenCover(isPresented: $showScanner) {
+            QRScannerView(onScan: applyScan, onCancel: { showScanner = false })
+                .ignoresSafeArea()
+        }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             if let text = UIPasteboard.general.string { client.syncClipboard(text) }
         }
     }
 
     private var connectForm: some View {
-        VStack(spacing: 16) {
-            Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
-            // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
-            // append "|wss://displayB..." to place a second screen externally.
-            TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .keyboardType(.URL)
-                .frame(maxWidth: 420)
-            // Cloudflare Access service token (optional — leave blank on LAN).
-            TextField("CF-Access-Client-Id (optional)", text: $accessId)
-                .textFieldStyle(.roundedBorder)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .frame(maxWidth: 420)
-            SecureField("CF-Access-Client-Secret (optional)", text: $accessSecret)
-                .textFieldStyle(.roundedBorder)
-                .frame(maxWidth: 420)
-            Button("Connect") { startConnection() }
-                .buttonStyle(.borderedProminent)
-                .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
-            switch client.status {
-            case .connecting: ProgressView().tint(.white)
-            case .failed(let reason): Text(reason).font(.footnote).foregroundStyle(.red)
-            default: EmptyView()
+        ScrollView {
+            VStack(spacing: 16) {
+                Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
+
+                SavedMachinesView(store: store, onSelect: select)
+
+                Button {
+                    showScanner = true
+                } label: {
+                    Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
+                }
+                .buttonStyle(.bordered)
+
+                // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
+                // append "|wss://displayB..." to place a second screen externally.
+                TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.URL)
+                    .frame(maxWidth: 420)
+                // Cloudflare Access service token (optional — leave blank on LAN).
+                TextField("CF-Access-Client-Id (optional)", text: $accessId)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                    .frame(maxWidth: 420)
+                SecureField("CF-Access-Client-Secret (optional)", text: $accessSecret)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 420)
+                Button("Connect") { startConnection() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
+                Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
+                    .frame(maxWidth: 420)
+                    .foregroundStyle(.gray)
+                switch client.status {
+                case .connecting:
+                    VStack(spacing: 6) {
+                        ProgressView().tint(.white)
+                        if let e = client.lastError {
+                            Text(e).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
+                        }
+                    }
+                case .failed(let reason): Text(reason).font(.footnote).foregroundStyle(.red)
+                default: EmptyView()
+                }
             }
+            .padding()
         }
-        .padding()
     }
 }
