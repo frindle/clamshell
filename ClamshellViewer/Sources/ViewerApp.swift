@@ -32,6 +32,7 @@ final class StreamClient: ObservableObject {
     private var task: URLSessionWebSocketTask?
     private var parser: StreamMessageParser?
     private var assembler: FrameAssembler?
+    private let audio = AudioPlayer()
 
     /// Accepts a bare host ("10.0.1.5" -> ws://10.0.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
@@ -64,6 +65,7 @@ final class StreamClient: ObservableObject {
         task = nil
         parser = nil
         assembler = nil
+        audio?.stop()
         status = .idle
         videoSize = .zero
     }
@@ -95,6 +97,8 @@ final class StreamClient: ObservableObject {
         case .videoFrame:
             guard let sample = assembler?.assemble(payload: payload) else { return }
             onSampleBuffer?(sample)
+        case .audioFrame:
+            audio?.play(aac: payload)
         default:
             break // client never receives input/hello/keyframeRequest
         }

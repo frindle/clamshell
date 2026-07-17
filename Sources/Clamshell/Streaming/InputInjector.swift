@@ -45,6 +45,13 @@ final class InputInjector {
                 mouseButton: right ? .right : .left)?.post(tap: .cghidEventTap)
     }
 
+    func scroll(dx: Float32, dy: Float32) {
+        // Pixel-unit scroll wheel: dy is vertical, dx horizontal. CGEvent's
+        // wheel1 is vertical, wheel2 horizontal.
+        CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                wheel1: Int32(dy), wheel2: Int32(dx), wheel3: 0)?.post(tap: .cghidEventTap)
+    }
+
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         guard let event = CGEvent(keyboardEventSource: nil,
                                   virtualKey: CGKeyCode(macKeyCode), keyDown: down) else { return }

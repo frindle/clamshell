@@ -22,7 +22,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var parser: StreamMessageParser?
     private var stream: SCStream?
     private var encoder: VideoEncoder?
+    private var audioEncoder: AudioEncoder?
     private var injector: InputInjector?
+    private let audioQueue = DispatchQueue(label: "clamshell.stream.audio")
 
     /// Serial queue owning all connection/session state.
     private let queue = DispatchQueue(label: "clamshell.stream")
@@ -120,6 +122,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
         encoder?.invalidate()
         encoder = nil
+        audioEncoder = nil
         injector = nil
     }
 
@@ -144,7 +147,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             guard payload.count >= 11 else { return }
             injector?.key(macKeyCode: payload.beUInt16(at: 0), down: payload[payload.startIndex + 2] == 1,
                           flags: payload.beUInt64(at: 3))
-        case .helloAck, .videoFrame:
+        case .scroll:
+            guard payload.count >= 8 else { return }
+            injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .clipboard:
+            break // wired up in the clipboard-sync commit
+        case .helloAck, .videoFrame, .audioFrame:
             break // host never receives these
         }
     }
@@ -182,9 +190,21 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 config.queueDepth = 5
                 config.showsCursor = true
 
+                // Only the primary display carries system audio — one capture,
+                // no separate Core Audio tap.
+                let audioEncoder = self.isPrimary ? AudioEncoder() : nil
+                if audioEncoder != nil {
+                    config.capturesAudio = true
+                    config.sampleRate = 48000
+                    config.channelCount = 2
+                }
+
                 let filter = SCContentFilter(display: scDisplay, excludingWindows: [])
                 let stream = SCStream(filter: filter, configuration: config, delegate: self)
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.videoQueue)
+                if audioEncoder != nil {
+                    try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: self.audioQueue)
+                }
                 try await stream.startCapture()
 
                 self.queue.async {
@@ -198,6 +218,15 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     }
                     self.encoder = encoder
                     self.stream = stream
+                    if let audioEncoder {
+                        audioEncoder.onEncodedPacket = { [weak self] aac in
+                            self?.queue.async {
+                                guard self?.connection != nil else { return }
+                                self?.send(StreamMessage.audioFrame(aac))
+                            }
+                        }
+                        self.audioEncoder = audioEncoder
+                    }
                     self.injector = InputInjector(displayID: displayID)
                     self.send(StreamMessage.helloAck(codec: encoder.codec,
                                                      width: UInt32(pxWidth), height: UInt32(pxHeight)))
@@ -240,6 +269,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     // MARK: - SCStreamOutput / SCStreamDelegate (on `videoQueue`)
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of type: SCStreamOutputType) {
+        if type == .audio {
+            if sampleBuffer.isValid { audioEncoder?.encode(sampleBuffer) }
+            return
+        }
         guard type == .screen,
               sampleBuffer.isValid,
               let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: false)
