@@ -97,7 +97,26 @@ loudly, reported in HELLO_ACK's flags byte, and the viewer shows a persistent
 warning banner ("Software encoding — expect higher CPU/battery use and
 possibly worse latency"). Low-latency tuning: real-time mode, frame
 reordering (B-frames) disabled, zero frame delay, speed prioritized over
-quality, ~20 Mbps.
+quality, 20 Mbps starting bitrate (adapted live, below).
+
+## Adaptive bitrate
+
+Reactive, host-side only — no bandwidth estimation, no client feedback
+channel. The congestion signal is the existing WebSocket send backpressure:
+the host caps unacknowledged in-flight video frames at 8; when the cap is hit
+it already drops delta frames and resyncs on a keyframe. Each such drop now
+also steps `kVTCompressionPropertyKey_AverageBitRate` on the live session
+(a dynamic VT property — no session recreation):
+
+- **Down**: halve the bitrate on congestion, at most once per second,
+  floor **2 Mbps**.
+- **Up**: after 5 s with no congestion, +25%, at most once per 5 s,
+  ceiling **20 Mbps**.
+
+Bitrate resets to the 20 Mbps ceiling on every new connection. Hardware
+encoders track the new target within a GOP or two; on a constrained link
+(hotel wifi, cellular through the Cloudflare Tunnel) the stream converges to
+what the path drains instead of stuttering at a fixed 20 Mbps.
 
 ## Audio (AUDIO_FRAME)
 
@@ -110,7 +129,7 @@ Only the primary connection carries audio; secondary displays are video+input.
 
 ## Future (not in v1)
 
-Adaptive bitrate, H.264/HEVC negotiation beyond the single byte, multi-touch
+H.264/HEVC negotiation beyond the single byte, multi-touch
 gestures, auth on the WS endpoint (currently: VPN, trusted LAN, or Cloudflare
 Access in front of the tunnel). Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only

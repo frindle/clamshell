@@ -262,6 +262,11 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Adaptive bitrate** (⚠ untested on real networks): the stream host now
+  reacts to send-queue congestion by halving the encoder bitrate (floor
+  2 Mbps) and stepping back up 25% after 5 s healthy (ceiling 20 Mbps), so a
+  constrained link (tunnel, hotel wifi, cellular) degrades quality instead of
+  stuttering. Scheme documented in PROTOCOL.md.
 - **Software-encode fallback, loudly surfaced**: with no hardware HEVC/H.264
   encoder the host now falls back to software encoding instead of refusing to
   start. The state is logged, carried in HELLO_ACK (new trailing flags byte),
