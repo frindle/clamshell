@@ -200,8 +200,59 @@ final class VideoUIView: UIView {
         displayLayer.videoGravity = .resizeAspect
         isMultipleTouchEnabled = false
         backgroundColor = .black
+
+        // Trackpad / mouse hover drives the pointer position without a button.
+        let hover = UIHoverGestureRecognizer(target: self, action: #selector(onHover))
+        addGestureRecognizer(hover)
+        // Trackpad two-finger / mouse-wheel scroll -> INPUT_SCROLL.
+        let scroll = UIPanGestureRecognizer(target: self, action: #selector(onScroll))
+        scroll.allowedScrollTypesMask = .all
+        scroll.maximumNumberOfTouches = 0 // indirect (trackpad/wheel) scroll only
+        addGestureRecognizer(scroll)
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    // Physical keyboard: capture key presses while this view is first responder.
+    override var canBecomeFirstResponder: Bool { true }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil { becomeFirstResponder() }
+    }
+
+    @objc private func onHover(_ g: UIHoverGestureRecognizer) {
+        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        client?.sendMouseMove(x: x, y: y)
+    }
+
+    private var lastScroll: CGPoint = .zero
+    @objc private func onScroll(_ g: UIPanGestureRecognizer) {
+        if g.state == .began { lastScroll = .zero }
+        let t = g.translation(in: self)
+        let dx = Float(t.x - lastScroll.x)
+        let dy = Float(t.y - lastScroll.y)
+        lastScroll = t
+        if dx != 0 || dy != 0 { client?.sendScroll(dx: dx, dy: dy) }
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !forwardKeys(presses, down: true) { super.pressesBegan(presses, with: event) }
+    }
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if !forwardKeys(presses, down: false) { super.pressesEnded(presses, with: event) }
+    }
+
+    /// Returns true if at least one press was a mappable hardware key we sent.
+    private func forwardKeys(_ presses: Set<UIPress>, down: Bool) -> Bool {
+        var handled = false
+        for press in presses {
+            guard let key = press.key,
+                  let macVK = KeyMap.hidToMacVK[key.keyCode.rawValue] else { continue }
+            client?.sendKey(macKeyCode: macVK, down: down, flags: KeyMap.cgFlags(from: key.modifierFlags))
+            handled = true
+        }
+        return handled
+    }
 
     func enqueue(_ sample: CMSampleBuffer) {
         if displayLayer.status == .failed {

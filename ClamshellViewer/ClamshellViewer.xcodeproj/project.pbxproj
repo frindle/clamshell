@@ -11,11 +11,13 @@
 		BB0000000000000000000002 /* StreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* StreamProtocol.swift */; };
 		BB0000000000000000000003 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
 		BB0000000000000000000005 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
+		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		FF0000000000000000000001 /* ViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerApp.swift; sourceTree = "<group>"; };
 		FF0000000000000000000005 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
+		FF0000000000000000000006 /* KeyMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMap.swift; sourceTree = "<group>"; };
 		FF0000000000000000000002 /* StreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamProtocol.swift; path = "../Sources/Clamshell/Streaming/StreamProtocol.swift"; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000003 /* FrameAssembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FrameAssembler.swift; path = "../Sources/Clamshell/Streaming/FrameAssembler.swift"; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000004 /* ClamshellViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -46,6 +48,7 @@
 			children = (
 				FF0000000000000000000001 /* ViewerApp.swift */,
 				FF0000000000000000000005 /* AudioPlayer.swift */,
+				FF0000000000000000000006 /* KeyMap.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -121,6 +124,7 @@
 			files = (
 				BB0000000000000000000001 /* ViewerApp.swift in Sources */,
 				BB0000000000000000000005 /* AudioPlayer.swift in Sources */,
+				BB0000000000000000000006 /* KeyMap.swift in Sources */,
 				BB0000000000000000000002 /* StreamProtocol.swift in Sources */,
 				BB0000000000000000000003 /* FrameAssembler.swift in Sources */,
 			);
