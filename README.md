@@ -32,10 +32,13 @@ against a real multi-monitor remote setup.
 
 ## Install
 
-Download `Clamshell-<version>.dmg` from [Releases](https://github.com/frindle/clamshell/releases),
-drag Clamshell.app to Applications. The app is ad-hoc signed (no Apple
-Developer ID), so on first launch **right-click → Open**, or clear
-quarantine: `xattr -dr com.apple.quarantine /Applications/Clamshell.app`.
+Download `Clamshell-<version>.dmg` from [Releases](https://github.com/frindle/clamshell/releases)
+and, in the installer window that opens, drag **Clamshell.app** onto the
+**Applications** shortcut. DMGs are built and code-signed by CI on every `v*`
+tag, using a stable self-signed identity ("Clamshell Dev") so that TCC grants
+(Accessibility) survive updates. It's *not* notarized (no Apple Developer ID),
+so on first launch **right-click → Open**, or clear quarantine:
+`xattr -dr com.apple.quarantine /Applications/Clamshell.app`.
 
 Or build from source (no Xcode project needed):
 
@@ -44,8 +47,19 @@ swift build -c release
 .build/release/Clamshell            # menu bar app
 .build/release/Clamshell test-virtual-display   # 10s smoke test
 .build/release/Clamshell test-detect            # print detection state
-./package.sh 0.1.0                  # build .app + .dmg into dist/
+./package.sh 0.1.0                  # build signed .app + .dmg into dist/
 ```
+
+**Stable signing for local builds (recommended).** Raw `swift build` produces an
+ad-hoc/unsigned binary whose code signature changes every build, so macOS TCC
+treats each rebuild as a new app and drops your Accessibility grant — you get
+re-prompted on every launch. Create a stable identity once (Keychain Access →
+Certificate Assistant → Create a Certificate → name **"Clamshell Dev"**, type
+**Code Signing**), then build with `./dev-build.sh` instead of `swift build`: it
+runs the debug build and re-signs `.build/debug/Clamshell` with that identity,
+so the grant persists across rebuilds. `package.sh` (and CI) use the same
+identity, so a DMG built locally can self-update a CI DMG and vice versa. No
+identity present → both fall back to ad-hoc, exactly as before.
 
 Menu bar: collapse/restore manually, toggle auto mode, pick the remote
 screen size preset. Grant **Accessibility** permission when prompted —
@@ -262,6 +276,23 @@ form.
 ## Changelog
 
 ### Unreleased
+- **CI-built signed releases restored**: pushing a `v*` tag again builds and
+  code-signs the DMG in GitHub Actions, using the stable "Clamshell Dev"
+  identity from repo secrets (imported into a temp keychain — no
+  trust-settings step, which blocks headlessly on macOS 15 runners), verifies
+  `Authority=Clamshell Dev` before publishing, and attaches the DMG to the
+  release. Same identity as local builds, so self-update across CI/local DMGs
+  keeps TCC grants.
+- **Drag-to-Applications DMG**: the DMG now opens to a laid-out Finder window
+  with Clamshell.app next to an Applications shortcut. The app is re-signed
+  inside the DMG after layout (Finder metadata otherwise breaks
+  `codesign --verify --strict`, which the self-updater runs).
+- **Stable local dev signing**: `./dev-build.sh` runs the debug build and
+  signs `.build/debug/Clamshell` with "Clamshell Dev" when present, so TCC
+  (Accessibility) grants survive rebuilds instead of re-prompting every launch.
+- **Self-updater fix**: signing-identity check now reads `codesign -dvv`
+  (the `Authority=` line isn't emitted at `-dv`), so self-signed builds match
+  correctly instead of always reading as ad-hoc.
 - **Adaptive bitrate** (⚠ untested on real networks): the stream host now
   reacts to send-queue congestion by halving the encoder bitrate (floor
   2 Mbps) and stepping back up 25% after 5 s healthy (ceiling 20 Mbps), so a
