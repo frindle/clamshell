@@ -49,8 +49,9 @@ jobs:
         run: |
           set -euo pipefail
           # -dvv, not -dv: Authority= is only printed at verbosity 2+.
-          codesign -dvv dist/Clamshell.app 2>&1 | tee /dev/stderr \
-            | grep -q "Authority=Clamshell Dev"
+          # Plain grep (not -q, no tee): it prints the matched line for the log
+          # and reads to EOF, so no SIGPIPE/broken-pipe trips pipefail.
+          codesign -dvv dist/Clamshell.app 2>&1 | grep "Authority=Clamshell Dev"
           codesign --verify --deep --strict dist/Clamshell.app
           echo "signature identity OK: Clamshell Dev"
 
