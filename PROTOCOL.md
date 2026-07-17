@@ -36,9 +36,12 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE) |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
+| 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
 | 0x20 | INPUT_MOUSE_MOVE | client → host | x(Float32 BE), y(Float32 BE) — normalized 0..1 in display space |
 | 0x21 | INPUT_MOUSE_BUTTON | client → host | button(1: 0=left, 1=right), down(1: 0/1), x(Float32 BE), y(Float32 BE) |
 | 0x22 | INPUT_KEY        | client → host | macKeyCode(2 BE), down(1), cgEventFlags(8 BE) |
+| 0x23 | INPUT_SCROLL     | client → host | dx(Float32 BE), dy(Float32 BE) — pixel wheel deltas |
+| 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
 
 Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
 host picks what its hardware encoder actually supports (HEVC preferred on
@@ -77,11 +80,19 @@ refuses to start rather than silently burning CPU. Low-latency tuning:
 real-time mode, frame reordering (B-frames) disabled, zero frame delay,
 speed prioritized over quality, ~20 Mbps.
 
+## Audio (AUDIO_FRAME)
+
+System audio is captured by the primary display's SCStream
+(`SCStreamConfiguration.capturesAudio`), transcoded to AAC-LC 48 kHz stereo
+with `AVAudioConverter`, and sent one access unit per message. The format is
+fixed on both ends, so no magic cookie / ADTS header is transmitted — the iPad
+rebuilds the same `AVAudioFormat` and decodes to PCM for `AVAudioEngine`.
+Only the primary connection carries audio; secondary displays are video+input.
+
 ## Future (not in v1)
 
-Second display (one connection per display), scroll/multi-touch input, audio,
-adaptive bitrate, clipboard, reconnection/backoff, H.264/HEVC negotiation
-beyond the single byte, auth on the WS endpoint (currently: VPN, trusted LAN,
-or Cloudflare Access in front of the tunnel). Also on the roadmap, explicitly
+Adaptive bitrate, H.264/HEVC negotiation beyond the single byte, multi-touch
+gestures, auth on the WS endpoint (currently: VPN, trusted LAN, or Cloudflare
+Access in front of the tunnel). Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
 VNC/RDP/SSH, so real support means a custom guacd protocol plugin.

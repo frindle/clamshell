@@ -9,9 +9,12 @@ enum StreamMessageType: UInt8 {
     case helloAck = 0x02
     case videoFrame = 0x10
     case keyframeRequest = 0x11
+    case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
     case mouseMove = 0x20
     case mouseButton = 0x21
     case key = 0x22
+    case scroll = 0x23        // client -> host: dx, dy wheel deltas
+    case clipboard = 0x30     // both directions: UTF-8 plain text
 }
 
 enum StreamCodec: UInt8 {
@@ -93,6 +96,17 @@ enum StreamMessage {
     static func key(macKeyCode: UInt16, down: Bool, flags: UInt64) -> Data {
         var p = Data(); p.appendBE(macKeyCode); p.append(down ? 1 : 0); p.appendBE(flags)
         return frame(type: .key, payload: p)
+    }
+
+    static func scroll(dx: Float32, dy: Float32) -> Data {
+        var p = Data(); p.appendBE(dx); p.appendBE(dy)
+        return frame(type: .scroll, payload: p)
+    }
+
+    static func audioFrame(_ aac: Data) -> Data { frame(type: .audioFrame, payload: aac) }
+
+    static func clipboard(text: String) -> Data {
+        frame(type: .clipboard, payload: Data(text.utf8))
     }
 }
 
