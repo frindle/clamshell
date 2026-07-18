@@ -145,8 +145,8 @@ internal sealed class AudioEncoder : IDisposable
             inType.Set(MFAttr.AudioAvgBytesPerSecond, 48000 * 4);
             _aac.SetInputType(0, inType, 0);
         }
-        _aac.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, IntPtr.Zero);
-        _aac.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, IntPtr.Zero);
+        _aac.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, UIntPtr.Zero);
+        _aac.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, UIntPtr.Zero);
     }
 
     public void Dispose()

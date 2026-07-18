@@ -75,7 +75,7 @@ internal sealed class DisplayCapture : IDisposable
                     context!.CopyResource(staging, tex);
 
                     var map = context.Map(staging, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None);
-                    try { Bgra.ToNv12(map.DataPointer, map.RowPitch, _w, _h, _nv12); }
+                    try { Bgra.ToNv12(map.DataPointer, (int)map.RowPitch, _w, _h, _nv12); }
                     finally { context.Unmap(staging, 0); }
 
                     ulong ptsMicros = (ulong)(Environment.TickCount64 - startTicks) * 1000UL;
