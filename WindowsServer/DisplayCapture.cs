@@ -67,7 +67,7 @@ internal sealed class DisplayCapture : IDisposable
                 try
                 {
                     Result r = dup.AcquireNextFrame(200, out var _, out res);
-                    if (r == ResultCode.WaitTimeout) continue; // screen idle, no new frame
+                    if ((uint)r.Code == 0x887A0027) continue; // DXGI_ERROR_WAIT_TIMEOUT: screen idle
                     r.CheckError();
 
                     using var tex = res!.QueryInterface<ID3D11Texture2D>();

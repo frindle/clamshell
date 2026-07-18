@@ -83,8 +83,7 @@ internal sealed class AudioEncoder : IDisposable
     private void Drain()
     {
         var info = _aac.GetOutputStreamInfo(0);
-        bool mftAllocates = (info.Flags &
-            ((int)MFTOutputStreamInfoFlags.ProvidesSamples | (int)MFTOutputStreamInfoFlags.CanProvideSamples)) != 0;
+        bool mftAllocates = ((int)info.Flags & (Mf.ProvidesSamples | Mf.CanProvideSamples)) != 0;
         while (true)
         {
             IMFSample? outSample = null;
@@ -92,12 +91,12 @@ internal sealed class AudioEncoder : IDisposable
             if (!mftAllocates)
             {
                 outSample = MediaFactory.MFCreateSample();
-                outBuffer = MediaFactory.MFCreateMemoryBuffer(Math.Max(info.Size, 4096));
+                outBuffer = MediaFactory.MFCreateMemoryBuffer(Math.Max((int)info.Size, 4096));
                 outSample.AddBuffer(outBuffer);
             }
-            var db = new TOutputDataBuffer { StreamID = 0, Sample = outSample };
-            Result r = _aac.ProcessOutput(0, new[] { db }, out _);
-            if (r == ResultCode.TransformNeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); break; }
+            var db = new OutputDataBuffer { StreamID = 0, Sample = outSample! };
+            Result r = _aac.ProcessOutput((ProcessOutputFlags)0, 1, ref db, out _);
+            if ((uint)r.Code == Mf.NeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); break; }
             r.CheckError();
 
             using (var produced = db.Sample)
@@ -116,9 +115,9 @@ internal sealed class AudioEncoder : IDisposable
     private void BuildAacMft()
     {
         Guid audioEncoderCategory = new("91c64bd0-f91e-4d8c-9276-db248279d975");
-        var outInfo = new TRegisterTypeInformation { GuidMajorType = MFAttr.Audio, GuidSubtype = MFAttr.Aac };
-        IMFActivate[] acts = MediaFactory.MFTEnumEx(audioEncoderCategory,
-            EncoderProbe.MFT_ENUM_FLAG_SORTANDFILTER, null, outInfo);
+        var outInfo = new RegisterTypeInfo { GuidMajorType = MFAttr.Audio, GuidSubtype = MFAttr.Aac };
+        IMFActivate[] acts = EncoderProbe.Enumerate(audioEncoderCategory,
+            EncoderProbe.MFT_ENUM_FLAG_SORTANDFILTER, outInfo);
         if (acts.Length == 0) throw new InvalidOperationException("no AAC encoder MFT");
         _aac = acts[0].ActivateObject<IMFTransform>();
         foreach (var a in acts) a.Dispose();
@@ -146,8 +145,8 @@ internal sealed class AudioEncoder : IDisposable
             inType.Set(MFAttr.AudioAvgBytesPerSecond, 48000 * 4);
             _aac.SetInputType(0, inType, 0);
         }
-        _aac.ProcessMessage(TMessageType.NotifyBeginStreaming, IntPtr.Zero);
-        _aac.ProcessMessage(TMessageType.NotifyStartOfStream, IntPtr.Zero);
+        _aac.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, IntPtr.Zero);
+        _aac.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, IntPtr.Zero);
     }
 
     public void Dispose()
