@@ -50,12 +50,12 @@ internal static class Proto
     /// case; cleared only on a real hardware fallback). See EncoderStatus.</summary>
     public static byte[] HelloAck(StreamCodec codec, uint width, uint height, byte flags)
     {
-        var p = new byte[9];
+        var p = new byte[11]; // ver(1)+codec(1)+width(4)+height(4)+flags(1)
         p[0] = Version;
         p[1] = (byte)codec;
         BinaryPrimitives.WriteUInt32BigEndian(p.AsSpan(2, 4), width);
         BinaryPrimitives.WriteUInt32BigEndian(p.AsSpan(6, 4), height);
-        p[8] = flags;
+        p[10] = flags;
         return Frame(MessageType.HelloAck, p);
     }
 
