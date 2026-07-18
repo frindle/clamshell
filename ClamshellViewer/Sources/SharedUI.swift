@@ -14,8 +14,6 @@ struct MachineProfile: Codable, Identifiable, Equatable {
     var id = UUID()
     var name: String
     var host: String
-    var accessId: String = ""
-    var accessSecret: String = ""
     var displayIndex: Int = 0
 }
 

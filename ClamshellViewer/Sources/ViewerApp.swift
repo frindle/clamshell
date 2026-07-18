@@ -79,7 +79,7 @@ final class Connection: ObservableObject {
     let primary = StreamClient()
     let external = StreamClient()
 
-    private var params: (host: String, accessId: String, accessSecret: String)?
+    private var connectedHost: String?
     private var externalAttached = false
 
     init() {
@@ -89,18 +89,18 @@ final class Connection: ObservableObject {
         primary.reportedPixelSize = UIScreen.main.nativeBounds.size
     }
 
-    func connect(host: String, accessId: String, accessSecret: String) {
-        params = (host, accessId, accessSecret)
+    func connect(host: String) {
+        connectedHost = host
         // A leading "A|B" carries an explicit Display B address; the primary
         // connects only to the A part.
         let primaryHost = host.contains("|") ? String(host.split(separator: "|", maxSplits: 1)[0]) : host
         primary.onClipboard = { text in UIPasteboard.general.string = text }
-        primary.connect(host: primaryHost, accessId: accessId, accessSecret: accessSecret)
+        primary.connect(host: primaryHost)
         connectExternalIfAttached()
     }
 
     func disconnect() {
-        params = nil
+        connectedHost = nil
         primary.disconnect()
         external.disconnect()
     }
@@ -127,9 +127,9 @@ final class Connection: ObservableObject {
     /// reconnecting to a port the Mac isn't serving).
     private func connectExternalIfAttached() {
         guard externalAttached,
-              let (host, id, secret) = params,
+              let host = connectedHost,
               let bHost = Self.secondDisplayEndpoint(from: host) else { return }
-        external.connect(host: bHost, accessId: id, accessSecret: secret)
+        external.connect(host: bHost)
     }
 
     /// Display B's endpoint. For a bare LAN host the Mac serves display index 1
@@ -153,27 +153,23 @@ struct ContentView: View {
     @ObservedObject private var client = Connection.shared.primary
     @StateObject private var store = MachineStore()
     @AppStorage("hostAddress") private var host = ""
-    @AppStorage("cfAccessClientId") private var accessId = ""
-    @AppStorage("cfAccessClientSecret") private var accessSecret = ""
     @AppStorage("nerdMode") private var nerdMode = false
     @State private var showScanner = false
     @State private var showSettings = false
 
     private func startConnection() {
         let h = host.trimmingCharacters(in: .whitespaces)
-        let id = accessId.trimmingCharacters(in: .whitespaces)
-        let secret = accessSecret.trimmingCharacters(in: .whitespaces)
         guard !h.isEmpty else { return }
         // Both manual and scanned connections are saved (dedup by host).
-        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h, accessId: id, accessSecret: secret))
+        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h))
         store.markUsed(h)
-        connection.connect(host: h, accessId: id, accessSecret: secret)
+        connection.connect(host: h)
     }
 
     private func select(_ m: MachineProfile) {
-        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret
+        host = m.host
         store.markUsed(m.host)
-        connection.connect(host: m.host, accessId: m.accessId, accessSecret: m.accessSecret)
+        connection.connect(host: m.host)
     }
 
     /// Switch to another saved machine mid-session: drop the current stream and
@@ -188,7 +184,7 @@ struct ContentView: View {
     /// Connect press reuses it (does NOT auto-connect).
     private func preselectLastUsed() {
         guard host.trimmingCharacters(in: .whitespaces).isEmpty, let m = store.lastUsed else { return }
-        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret
+        host = m.host
     }
 
     private func applyScan(_ code: String) {
@@ -197,9 +193,8 @@ struct ContentView: View {
             clogViewer("QR scan ignored: not a clamshell pairing code")
             return
         }
-        host = pairing.host; accessId = pairing.accessId; accessSecret = pairing.accessSecret
-        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(pairing.host), host: pairing.host,
-                                    accessId: pairing.accessId, accessSecret: pairing.accessSecret))
+        host = pairing.host
+        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(pairing.host), host: pairing.host))
         clogViewer("QR scan filled connection for \(pairing.host)")
     }
 
@@ -274,15 +269,6 @@ struct ContentView: View {
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
                     .keyboardType(.URL)
-                    .frame(maxWidth: 420)
-                // Cloudflare Access service token (optional — leave blank on LAN).
-                TextField("CF-Access-Client-Id (optional)", text: $accessId)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .frame(maxWidth: 420)
-                SecureField("CF-Access-Client-Secret (optional)", text: $accessSecret)
-                    .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 420)
                 Button("Connect") { startConnection() }
                     .buttonStyle(.borderedProminent)

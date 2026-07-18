@@ -76,12 +76,12 @@ final class ControlSession: ObservableObject {
     /// displayIndex is 0-based; a bare host connects to streamDefaultPort+index.
     /// A full ws(s):// URL (tunnel) is used as-is — the tunnel hostname already
     /// pins a specific display's endpoint, so the index is ignored.
-    func connect(host: String, displayIndex: Int, accessId: String, accessSecret: String) {
+    func connect(host: String, displayIndex: Int) {
         let endpoint = host.contains("://")
             ? host
             : "ws://\(host):\(Int(streamDefaultPort) + displayIndex)"
         client.onClipboard = { text in UIPasteboard.general.string = text }
-        client.connect(host: endpoint, accessId: accessId, accessSecret: accessSecret)
+        client.connect(host: endpoint)
     }
 
     func disconnect() { client.disconnect() }
@@ -297,8 +297,6 @@ struct ControlContentView: View {
     @StateObject private var store = MachineStore()
     @AppStorage("hostAddress") private var host = ""
     @AppStorage("displayIndex") private var displayIndex = 0
-    @AppStorage("cfAccessClientId") private var accessId = ""
-    @AppStorage("cfAccessClientSecret") private var accessSecret = ""
     @AppStorage("nerdMode") private var nerdMode = false
     @State private var keyboardVisible = false
     @State private var showScanner = false
@@ -328,18 +326,17 @@ struct ControlContentView: View {
         }
     }
 
-    private func connectNow(host h: String, displayIndex idx: Int, accessId id: String, accessSecret secret: String) {
+    private func connectNow(host h: String, displayIndex idx: Int) {
         guard !h.isEmpty else { return }
-        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h,
-                                    accessId: id, accessSecret: secret, displayIndex: idx))
+        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h, displayIndex: idx))
         store.markUsed(h)
-        session.connect(host: h, displayIndex: idx, accessId: id, accessSecret: secret)
+        session.connect(host: h, displayIndex: idx)
     }
 
     private func select(_ m: MachineProfile) {
-        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret; displayIndex = m.displayIndex
+        host = m.host; displayIndex = m.displayIndex
         store.markUsed(m.host)
-        session.connect(host: m.host, displayIndex: m.displayIndex, accessId: m.accessId, accessSecret: m.accessSecret)
+        session.connect(host: m.host, displayIndex: m.displayIndex)
     }
 
     /// Switch to another saved machine mid-session: drop the current stream and
@@ -355,7 +352,7 @@ struct ControlContentView: View {
     /// Connect press reuses it (does NOT auto-connect).
     private func preselectLastUsed() {
         guard host.trimmingCharacters(in: .whitespaces).isEmpty, let m = store.lastUsed else { return }
-        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret; displayIndex = m.displayIndex
+        host = m.host; displayIndex = m.displayIndex
     }
 
     private func applyScan(_ code: String) {
@@ -363,9 +360,9 @@ struct ControlContentView: View {
         guard let pairing = ClamshellPairing(url: code) else {
             clogViewer("QR scan ignored: not a clamshell pairing code"); return
         }
-        host = pairing.host; accessId = pairing.accessId; accessSecret = pairing.accessSecret
+        host = pairing.host
         store.upsert(MachineProfile(name: ContentViewNaming.deriveName(pairing.host), host: pairing.host,
-                                    accessId: pairing.accessId, accessSecret: pairing.accessSecret, displayIndex: displayIndex))
+                                    displayIndex: displayIndex))
         clogViewer("QR scan filled connection for \(pairing.host)")
     }
 
@@ -447,19 +444,9 @@ struct ControlContentView: View {
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 420)
                 }
-                TextField("CF-Access-Client-Id (optional)", text: $accessId)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .frame(maxWidth: 420)
-                SecureField("CF-Access-Client-Secret (optional)", text: $accessSecret)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 420)
                 Button("Connect") {
                     connectNow(host: host.trimmingCharacters(in: .whitespaces),
-                               displayIndex: displayIndex,
-                               accessId: accessId.trimmingCharacters(in: .whitespaces),
-                               accessSecret: accessSecret.trimmingCharacters(in: .whitespaces))
+                               displayIndex: displayIndex)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)

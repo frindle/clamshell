@@ -53,7 +53,7 @@ final class StreamClient: ObservableObject {
     private let audio = AudioPlayer()
 
     // Retained connection parameters for automatic reconnection.
-    private var connectParams: (host: String, accessId: String, accessSecret: String)?
+    private var connectHost: String?
     private var wantConnection = false
     private var reconnectAttempt = 0
     /// Last clipboard text seen in either direction — breaks the echo loop.
@@ -61,11 +61,10 @@ final class StreamClient: ObservableObject {
 
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
-    /// Cloudflare Access service-token headers are attached when provided.
-    func connect(host: String, accessId: String = "", accessSecret: String = "") {
+    func connect(host: String) {
         wantConnection = true
         lastError = nil
-        connectParams = (host, accessId, accessSecret)
+        connectHost = host
         openSocket()
     }
 
@@ -101,26 +100,21 @@ final class StreamClient: ObservableObject {
 
     private func openSocket() {
         teardownSocket()
-        guard let (host, accessId, accessSecret) = connectParams else { return }
+        guard let host = connectHost else { return }
         let urlString = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
         guard let url = URL(string: urlString) else {
             clogViewer("connect FAILED: invalid address '\(urlString)'")
             status = .failed("invalid address")
             return
         }
-        clogViewer("connecting to \(urlString)\(accessId.isEmpty ? "" : " (with CF Access service token)")")
+        clogViewer("connecting to \(urlString)")
         status = .connecting
 
         let parser = StreamMessageParser()
         parser.onMessage = { [weak self] type, payload in self?.handle(type: type, payload: payload) }
         self.parser = parser
 
-        var request = URLRequest(url: url)
-        // Cloudflare Access service token — validated at Cloudflare's edge.
-        if !accessId.isEmpty { request.setValue(accessId, forHTTPHeaderField: "CF-Access-Client-Id") }
-        if !accessSecret.isEmpty { request.setValue(accessSecret, forHTTPHeaderField: "CF-Access-Client-Secret") }
-
-        let task = URLSession.shared.webSocketTask(with: request)
+        let task = URLSession.shared.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20 // keyframes at full display resolution
         self.task = task
         task.resume()
@@ -163,7 +157,7 @@ final class StreamClient: ObservableObject {
     func disconnect() {
         if wantConnection { clogViewer("disconnect requested by user") }
         wantConnection = false
-        connectParams = nil
+        connectHost = nil
         reconnectAttempt = 0
         teardownSocket()
         status = .idle
