@@ -372,6 +372,7 @@ struct ControlContentView: View {
             .overlay(alignment: .top) {
                 VStack(spacing: 8) {
                     topBar
+                    if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
                     if client.softwareEncoding { SoftwareEncodingBanner() }
                     QualityIndicator(client: client)
                 }
