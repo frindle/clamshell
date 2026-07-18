@@ -78,10 +78,22 @@ self-contained installer (no separate .NET install required) built by CI on
 every `v*` tag from `WindowsServer/` via `dotnet publish` + Inno Setup — see
 `WindowsServer/installer.iss`. It installs `ClamshellServer.exe` and adds
 Start Menu shortcuts; "start at sign-in" is an opt-in checkbox during
-install. Unsigned, so Windows SmartScreen will warn on first run
-(**More info → Run anyway**). As noted above, this host is CI-built and
-self-tested only — it hasn't been run on a real Windows machine yet, so
-treat it as unverified until that happens.
+install. As noted above, this host is CI-built and self-tested only — it
+hasn't been run on a real Windows machine yet, so treat it as unverified
+until that happens.
+
+Both `ClamshellServer.exe` and the installer are Authenticode-signed with a
+self-signed "Clamshell Dev" identity (same tradeoff as the macOS build's
+ad-hoc signing — no paid cert). On a machine where that cert isn't already
+trusted, Windows SmartScreen will still warn on first run (**More info →
+Run anyway**); to remove the warning permanently on a machine you control,
+trust the cert once:
+
+```powershell
+$sig = Get-AuthenticodeSignature "Clamshell-Setup-<version>.exe"
+$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Root", "CurrentUser")
+$store.Open("ReadWrite"); $store.Add($sig.SignerCertificate); $store.Close()
+```
 
 To build locally instead: `dotnet publish WindowsServer/ClamshellServer.csproj
 -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish`,
