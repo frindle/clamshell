@@ -9,6 +9,7 @@ enum StreamMessageType: UInt8 {
     case helloAck = 0x02
     case clientDisplays = 0x03 // client -> host: display size / second-screen update
     case streamStatus = 0x04   // host -> client: live status (current bitrate)
+    case hostLockState = 0x05  // host -> client: screen locked/unlocked (1 byte bool)
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
@@ -151,6 +152,12 @@ enum StreamMessage {
 
     static func clipboard(text: String) -> Data {
         frame(type: .clipboard, payload: Data(text.utf8))
+    }
+
+    /// Host screen lock state — native capture can't survive the macOS lock
+    /// screen, so the client shows the browser-VNC fallback banner when locked.
+    static func hostLockState(_ locked: Bool) -> Data {
+        frame(type: .hostLockState, payload: Data([locked ? 1 : 0]))
     }
 }
 

@@ -49,6 +49,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
 | 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
 | 0x04 | STREAM_STATUS    | host → client | currentBitrateKbps(2 BE) — see "Connection quality" |
+| 0x05 | HOST_LOCK_STATE  | host → client | locked(1: 0/1) — see "Lock screen fallback" |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -178,6 +179,27 @@ Mode" expands the dot into a one-line readout (codec, resolution, hardware vs.
 software, current Mbps) built from HELLO_ACK plus this message. Pre-status
 hosts simply never send it; the client shows no dot until the first one
 arrives.
+
+## Lock screen fallback (HOST_LOCK_STATE)
+
+Native ScreenCaptureKit capture runs in the logged-in user session and stops
+delivering frames at the macOS lock screen; `CGEventPost`-injected input can't
+cross it either (both are deliberate security boundaries, not bugs). The host
+therefore reports lock state so the client can fall back to the browser VNC
+bridge (noVNC on `http://<mac>:5901` → Apple's privileged `screensharingd`),
+which *can* reach and unlock a locked Mac.
+
+The host observes the system `com.apple.screenIsLocked` /
+`com.apple.screenIsUnlocked` distributed notifications (seeding initial state
+from the login session's `CGSSessionScreenIsLocked`) and sends HOST_LOCK_STATE
+(1-byte boolean, `1` = locked) on every change, to every connected display, and
+once right after HELLO_ACK — so a client connecting to an already-locked Mac
+knows immediately. On `locked = 1` the client shows a prominent banner over the
+video/trackpad ("Mac is locked — native video paused") with a one-tap link to
+the browser fallback. On `locked = 0` the banner clears and the native video
+resumes on its own through the existing reconnect/keyframe flow — no separate
+resume message. Pre-lock-state hosts simply never send it; the client shows no
+banner.
 
 ## Audio (AUDIO_FRAME)
 
