@@ -4,7 +4,7 @@ on:
     tags: ['v*']
 
 jobs:
-  release:
+  release-macos:
     runs-on: macos-15
     permissions:
       contents: write
@@ -62,3 +62,39 @@ jobs:
           gh release create "$GITHUB_REF_NAME" dist/*.dmg \
             --title "Clamshell $GITHUB_REF_NAME" \
             --generate-notes
+
+  release-windows:
+    runs-on: windows-latest
+    needs: release-macos
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Publish self-contained host
+        # Single-file, self-contained: the installer ships a binary that
+        # runs without a separate .NET runtime install on the target machine.
+        run: >
+          dotnet publish WindowsServer/ClamshellServer.csproj -c Release -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -o publish
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}" -replace '^v',''
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version WindowsServer\installer.iss
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:GITHUB_REF_NAME" dist\*.exe
