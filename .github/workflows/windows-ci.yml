@@ -15,3 +15,39 @@ jobs:
         run: dotnet build WindowsServer/ClamshellServer.csproj -c Release
       - name: Self-test (pure protocol/framing logic)
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest
+
+      - name: Live smoke test (real display enum, encoder probe, listener bind)
+        # `selftest` above never touches DXGI/Media Foundation/HttpListener —
+        # those need an actual display/session, which is exactly what nobody
+        # had verified on Windows at all (see README). windows-latest runners
+        # do present a virtual display, so this launches the real server for
+        # a few seconds and checks it made it through display enumeration,
+        # the hardware-encoder probe, and a listener bind without an
+        # unhandled exception, then kills it. Not a substitute for testing
+        # with a real client connection, but it is real capture/encode code
+        # actually running, not just protocol framing in isolation.
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath dotnet `
+            -ArgumentList "run","--project","WindowsServer/ClamshellServer.csproj","-c","Release","--","5950" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput smoke-out.log -RedirectStandardError smoke-err.log
+          Start-Sleep -Seconds 10
+
+          if ($proc.HasExited) {
+            Write-Output "--- stdout ---"; Get-Content smoke-out.log -ErrorAction SilentlyContinue
+            Write-Output "--- stderr ---"; Get-Content smoke-err.log -ErrorAction SilentlyContinue
+            throw "ClamshellServer exited early (code $($proc.ExitCode)) instead of staying up"
+          }
+          Stop-Process -Id $proc.Id -Force
+
+          # Log.cs writes every startup line to stderr, not stdout.
+          Write-Output "--- stdout ---"
+          Get-Content smoke-out.log -ErrorAction SilentlyContinue
+          Write-Output "--- stderr ---"
+          Get-Content smoke-err.log -ErrorAction SilentlyContinue
+          $log = Get-Content smoke-err.log -Raw -ErrorAction SilentlyContinue
+          if ($log -notmatch "display\(s\)") { throw "startup log missing display enumeration line" }
+          if ($log -notmatch "hardware video encoder|no hardware video encoder") { throw "startup log missing encoder probe line" }
+          if ($log -notmatch "listening on ws port|cannot bind") { throw "startup log missing listener bind line" }
+          Write-Output "smoke test OK: process stayed up and completed the real startup sequence"
