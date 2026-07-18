@@ -158,21 +158,15 @@ enum StreamMessage {
 
 /// Connection info encoded in the pairing QR code the Mac displays and the
 /// iOS apps scan. Format is a custom URL so a generic QR reader shows
-/// something recognizable: `clamshell://pair?host=<h>&id=<i>&secret=<s>`.
-/// id/secret are the optional Cloudflare Access service-token pair.
+/// something recognizable: `clamshell://pair?host=<h>`.
 struct ClamshellPairing: Equatable {
     var host: String
-    var accessId: String = ""
-    var accessSecret: String = ""
 
     var url: String {
         var c = URLComponents()
         c.scheme = "clamshell"
         c.host = "pair"
-        var items = [URLQueryItem(name: "host", value: host)]
-        if !accessId.isEmpty { items.append(URLQueryItem(name: "id", value: accessId)) }
-        if !accessSecret.isEmpty { items.append(URLQueryItem(name: "secret", value: accessSecret)) }
-        c.queryItems = items
+        c.queryItems = [URLQueryItem(name: "host", value: host)]
         return c.string ?? "clamshell://pair?host=\(host)"
     }
 
@@ -183,12 +177,10 @@ struct ClamshellPairing: Equatable {
         let items = c.queryItems ?? []
         guard let h = items.first(where: { $0.name == "host" })?.value, !h.isEmpty else { return nil }
         host = h
-        accessId = items.first(where: { $0.name == "id" })?.value ?? ""
-        accessSecret = items.first(where: { $0.name == "secret" })?.value ?? ""
     }
 
-    init(host: String, accessId: String = "", accessSecret: String = "") {
-        self.host = host; self.accessId = accessId; self.accessSecret = accessSecret
+    init(host: String) {
+        self.host = host
     }
 }
 

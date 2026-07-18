@@ -171,6 +171,9 @@ Only the primary connection carries audio; secondary displays are video+input.
 
 H.264/HEVC negotiation beyond the single byte, multi-touch
 gestures, auth on the WS endpoint (currently: VPN, trusted LAN, or Cloudflare
-Access in front of the tunnel). Also on the roadmap, explicitly
+Access in front of the tunnel). Cloudflare Access, if used, is enforced at the
+edge — via WARP-enrolled devices or an Access policy that trusts the
+connection at the network layer — not by app-level Service Token headers (the
+apps send no `CF-Access-*` headers). Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
 VNC/RDP/SSH, so real support means a custom guacd protocol plugin.

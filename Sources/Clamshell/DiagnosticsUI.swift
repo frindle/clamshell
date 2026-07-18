@@ -122,16 +122,12 @@ final class PairingQRWindowController: NSWindowController {
 
     /// Host defaults to the first LAN IPv4 (what an iPad on the same network
     /// dials); a `streamHost` default overrides it for a tunnel hostname.
-    /// CF Access service-token id/secret are included only if the user stored
-    /// them (`defaults write com.frindle.clamshell cfAccessClientId …`).
     private static func currentPairing() -> ClamshellPairing {
         let d = UserDefaults.standard
         let host = d.string(forKey: "streamHost")
             ?? WebServer.lanIPv4s().first?.ip
             ?? "127.0.0.1"
-        return ClamshellPairing(host: host,
-                                accessId: d.string(forKey: "cfAccessClientId") ?? "",
-                                accessSecret: d.string(forKey: "cfAccessClientSecret") ?? "")
+        return ClamshellPairing(host: host)
     }
 
     private func buildContent() {
@@ -151,7 +147,7 @@ final class PairingQRWindowController: NSWindowController {
         caption.font = .systemFont(ofSize: 12)
         caption.alignment = .center
 
-        let detail = NSTextField(wrappingLabelWithString: "host: \(pairing.host)\(pairing.accessId.isEmpty ? "" : "\nCF Access token included")")
+        let detail = NSTextField(wrappingLabelWithString: "host: \(pairing.host)")
         detail.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
         detail.textColor = .secondaryLabelColor
         detail.alignment = .center
@@ -175,7 +171,7 @@ final class PairingQRWindowController: NSWindowController {
     }
 
     override func showWindow(_ sender: Any?) {
-        buildContent() // regenerate in case the LAN IP / token changed
+        buildContent() // regenerate in case the LAN IP changed
         super.showWindow(sender)
     }
 
