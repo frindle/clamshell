@@ -92,7 +92,7 @@ internal sealed class VideoEncoder : IDisposable
             outType.Set(MFAttr.InterlaceMode, 2 /* Progressive */);
             if (Codec == StreamCodec.H264) outType.Set(MFAttr.Mpeg2Profile, 100 /* High */);
             outType.Set(MFAttr.MaxKeyframeSpacing, 120);
-            MediaFactory.MFSetAttributeSize(outType, MFAttr.FrameSize, _width, _height);
+            MediaFactory.MFSetAttributeSize(outType, MFAttr.FrameSize, (uint)_width, (uint)_height);
             MediaFactory.MFSetAttributeRatio(outType, MFAttr.FrameRate, Fps, 1);
             MediaFactory.MFSetAttributeRatio(outType, MFAttr.PixelAspectRatio, 1, 1);
             _mft.SetOutputType(0, outType, 0);
@@ -107,14 +107,14 @@ internal sealed class VideoEncoder : IDisposable
             inType.Set(MFAttr.MajorType, MFAttr.Video);
             inType.Set(MFAttr.Subtype, MFAttr.Nv12);
             inType.Set(MFAttr.InterlaceMode, 2);
-            MediaFactory.MFSetAttributeSize(inType, MFAttr.FrameSize, _width, _height);
+            MediaFactory.MFSetAttributeSize(inType, MFAttr.FrameSize, (uint)_width, (uint)_height);
             MediaFactory.MFSetAttributeRatio(inType, MFAttr.FrameRate, Fps, 1);
             MediaFactory.MFSetAttributeRatio(inType, MFAttr.PixelAspectRatio, 1, 1);
             _mft.SetInputType(0, inType, 0);
         }
 
-        _mft.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, IntPtr.Zero);
-        _mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, IntPtr.Zero);
+        _mft.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, UIntPtr.Zero);
+        _mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, UIntPtr.Zero);
         _firstAfterBuild = true;
     }
 
@@ -247,7 +247,7 @@ internal sealed class VideoEncoder : IDisposable
 
     private void RebuildLocked()
     {
-        try { _mft.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, IntPtr.Zero); } catch { }
+        try { _mft.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, UIntPtr.Zero); } catch { }
         try { _mft.Dispose(); } catch { }
         Build();
     }
@@ -264,7 +264,7 @@ internal sealed class VideoEncoder : IDisposable
     {
         lock (_lock)
         {
-            try { _mft?.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, IntPtr.Zero); } catch { }
+            try { _mft?.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, UIntPtr.Zero); } catch { }
             try { _mft?.Dispose(); } catch { }
             _mft = null!;
         }
