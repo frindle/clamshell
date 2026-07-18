@@ -12,13 +12,16 @@ namespace Clamshell;
 internal sealed class ClipboardBridge : IDisposable
 {
     private uint _lastSeq;
-    private Timer? _timer;
+    // Fully qualified: UseWindowsForms brings System.Windows.Forms.Timer into
+    // scope too, and this one — a background poll, no UI thread affinity
+    // needed — is the threading one, not the forms one.
+    private System.Threading.Timer? _timer;
     public Action<string>? OnLocalChange;
 
     public void Start()
     {
         _lastSeq = GetClipboardSequenceNumber();
-        _timer = new Timer(_ => Poll(), null, TimeSpan.FromSeconds(0.5), TimeSpan.FromSeconds(0.5));
+        _timer = new System.Threading.Timer(_ => Poll(), null, TimeSpan.FromSeconds(0.5), TimeSpan.FromSeconds(0.5));
     }
 
     public void Dispose() { _timer?.Dispose(); _timer = null; }
