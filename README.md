@@ -325,7 +325,34 @@ form.
 
 ## Changelog
 
-### Unreleased
+### 0.9.0
+- **Native streaming protocol** (replaces browser VNC as the primary path):
+  ScreenCaptureKit capture → VideoToolbox hardware HEVC/H.264 encode → binary
+  WebSocket transport (rides a Cloudflare Tunnel as `wss://` unmodified) →
+  hardware decode on the iPad/iPhone client, with mouse/trackpad, physical +
+  software keyboard, system audio, and plaintext clipboard sync. Cloudflare
+  Access Service Token support was added and later removed in favor of
+  WARP-enrolled-device auth (see below) — see PROTOCOL.md for the wire
+  format. Every display is served independently over its own connection
+  (verified two simultaneous hardware encoder sessions with no fallback).
+- **Windows host** (`WindowsServer/`, experimental, ⚠ compiled and
+  self-tested in CI only — not run on any real Windows machine/VM yet): a
+  C#/.NET console host implementing the identical wire protocol, so the
+  existing iPad/iPhone apps connect to a Windows machine with zero client
+  changes. DXGI Desktop Duplication capture (agnostic to virtual vs.
+  physical displays — no VM-specific code), Media Foundation hardware
+  encode with a software fallback for passthrough-less VMs, WASAPI loopback
+  audio, `SendInput` injection. Verified via a `windows-latest` GitHub
+  Actions CI job (build + a hardware-free self-test), which already caught
+  one real bug (a mis-sized HELLO_ACK payload) before it ever reached a
+  real machine.
+- **Cloudflare Access fields removed**: the CF-Access-Client-Id/-Secret
+  Service Token fields are gone from both connect screens, the QR pairing
+  format, and saved machine profiles — WARP-enrolled-device auth doesn't
+  need them, and Service Tokens don't fit a non-browser client's login flow
+  anyway. Cloudflare Access, if used at all, is now assumed to be enforced
+  at the edge via an enrolled device or a policy that doesn't require
+  app-level headers.
 - **Mid-session settings (iPad + iPhone)**: a gear button beside the disconnect
   X on the streaming view opens a lightweight sheet — flip Nerd Mode live (also
   tap the quality dot to toggle it) with no reconnect, and switch to another
