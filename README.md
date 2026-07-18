@@ -268,6 +268,47 @@ phone's screen is a laptop-style trackpad (pan = pointer, tap = click,
 two-finger tap = right click, two-finger pan = scroll) with a software
 keyboard toggle. Hardware Bluetooth keyboards/mice work like on the iPad.
 
+### Known limitation: the lock screen (idle auto-lock / screensaver)
+
+This is **separate from the FileVault/no-login-session wall above** — here a real
+user *is* logged in, but the screen has locked from inactivity (or a manual
+Ctrl+Cmd+Q). The native streaming path very likely **does not survive a locked
+screen**, for two independent reasons:
+
+- **Capture stops.** Clamshell captures with ScreenCaptureKit from the ordinary
+  logged-in user session (it runs unprivileged). When macOS locks, the secure
+  `loginwindow` takes over the display in its own session and the user session's
+  content stops compositing — screen-capture consumers see the frame stream
+  freeze / go to an empty desktop, and `SCStream` may even end with
+  `didStopWithError`. So the iPad would show a frozen or blank image.
+- **Injected input can't unlock it.** Clamshell injects clicks/keys with
+  `CGEventPost` from that same user session. The lock screen's password field is
+  protected by secure event input in a *different* session, so synthetic events
+  posted from a user process are ignored there — you can't type the password
+  remotely to get back in. (Apple's own Screen Sharing / Remote Desktop *can*
+  unlock a Mac only because `screensharingd` is a privileged system daemon wired
+  into the console, not a user-session app posting synthetic events — Clamshell's
+  native path is the latter.)
+
+Confidence: **high on input, moderate-high on capture.** The input side is a
+long-standing, well-documented macOS security boundary (secure event input at
+`loginwindow`). The capture side is inferred from consistent third-party reports
+that screen-capture frame updates stop at the lock screen plus the known
+session/`loginwindow` architecture, rather than from a single definitive Apple
+doc line — it has not been verified against a real locked Mac for this project.
+
+There is **no appropriate software fix** — making capture or input work through
+an active lock would mean defeating a deliberate macOS security boundary, which
+Clamshell does not do. The display-sleep power assertion Clamshell already holds
+during a session (`kIOPMAssertionTypePreventUserIdleDisplaySleep`, see
+`SessionComfort`) keeps the *display* awake but, like `caffeinate -d`, does **not**
+stop the screensaver or the idle lock. So keeping a Mac mini remotely usable
+through idle periods is a **settings tradeoff you choose**, same category as the
+FileVault one: disable the screensaver / auto-lock (System Settings → Lock Screen
+→ "Start Screen Saver when inactive: Never" and "Require password after screen
+saver begins…: Never"), or otherwise avoid the lock. Clamshell will not change
+those settings for you — it's your security/usability call.
+
 ## Remote client notes
 
 - **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
@@ -285,6 +326,17 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Mid-session settings (iPad + iPhone)**: a gear button beside the disconnect
+  X on the streaming view opens a lightweight sheet — flip Nerd Mode live (also
+  tap the quality dot to toggle it) with no reconnect, and switch to another
+  saved machine without hunting through the connect form first. The connect
+  screen now pre-selects and pre-fills the most-recently-used saved machine on
+  launch (one Connect press reuses it; it does not auto-connect).
+- **Known-limitation note — the lock screen**: documented that the native
+  streaming path very likely does not survive an idle/auto-locked screen
+  (capture freezes; `CGEventPost` can't type the unlock password past secure
+  event input), a settings tradeoff like the FileVault one. See "Known
+  limitation: the lock screen" under Native streaming.
 - **Native streaming from the menu bar**: a new "Native Streaming" toggle runs
   the stream servers in-process (same `StreamFleet` the CLI `stream` command
   uses), persisted and auto-restored on launch like Web Access / Start at

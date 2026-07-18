@@ -157,6 +157,7 @@ struct ContentView: View {
     @AppStorage("cfAccessClientSecret") private var accessSecret = ""
     @AppStorage("nerdMode") private var nerdMode = false
     @State private var showScanner = false
+    @State private var showSettings = false
 
     private func startConnection() {
         let h = host.trimmingCharacters(in: .whitespaces)
@@ -165,12 +166,29 @@ struct ContentView: View {
         guard !h.isEmpty else { return }
         // Both manual and scanned connections are saved (dedup by host).
         store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h, accessId: id, accessSecret: secret))
+        store.markUsed(h)
         connection.connect(host: h, accessId: id, accessSecret: secret)
     }
 
     private func select(_ m: MachineProfile) {
         host = m.host; accessId = m.accessId; accessSecret = m.accessSecret
+        store.markUsed(m.host)
         connection.connect(host: m.host, accessId: m.accessId, accessSecret: m.accessSecret)
+    }
+
+    /// Switch to another saved machine mid-session: drop the current stream and
+    /// reconnect to the chosen one.
+    private func switchTo(_ m: MachineProfile) {
+        showSettings = false
+        connection.disconnect()
+        select(m)
+    }
+
+    /// Pre-fill the connect form from the last-used saved machine so a single
+    /// Connect press reuses it (does NOT auto-connect).
+    private func preselectLastUsed() {
+        guard host.trimmingCharacters(in: .whitespaces).isEmpty, let m = store.lastUsed else { return }
+        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret
     }
 
     private func applyScan(_ code: String) {
@@ -199,12 +217,19 @@ struct ContentView: View {
                         .padding(.top, 8)
                     }
                     .overlay(alignment: .topTrailing) {
-                        Button {
-                            connection.disconnect()
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.title)
-                                .foregroundStyle(.white.opacity(0.35))
+                        HStack(spacing: 16) {
+                            Button { showSettings = true } label: {
+                                Image(systemName: "gearshape.fill")
+                                    .font(.title)
+                                    .foregroundStyle(.white.opacity(0.35))
+                            }
+                            Button {
+                                connection.disconnect()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.title)
+                                    .foregroundStyle(.white.opacity(0.35))
+                            }
                         }
                         .padding()
                     }
@@ -214,6 +239,11 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .onAppear(perform: preselectLastUsed)
+        .sheet(isPresented: $showSettings) {
+            InSessionSettingsView(store: store, currentHost: host,
+                                  onSwitch: switchTo, onClose: { showSettings = false })
+        }
         .fullScreenCover(isPresented: $showScanner) {
             QRScannerView(onScan: applyScan, onCancel: { showScanner = false })
                 .ignoresSafeArea()
@@ -228,7 +258,7 @@ struct ContentView: View {
             VStack(spacing: 16) {
                 Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
 
-                SavedMachinesView(store: store, onSelect: select)
+                SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
 
                 Button {
                     showScanner = true

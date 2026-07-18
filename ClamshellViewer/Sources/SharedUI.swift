@@ -30,13 +30,30 @@ enum ContentViewNaming {
 
 final class MachineStore: ObservableObject {
     @Published private(set) var machines: [MachineProfile] = []
+    /// Host of the machine connected to most recently — used to pre-select the
+    /// connect form on launch so it isn't a blank field every time.
+    @Published private(set) var lastUsedHost: String?
     private let key = "savedMachines"
+    private let lastUsedKey = "lastUsedHost"
 
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
            let list = try? JSONDecoder().decode([MachineProfile].self, from: data) {
             machines = list
         }
+        lastUsedHost = UserDefaults.standard.string(forKey: lastUsedKey)
+    }
+
+    /// The saved profile last connected to, if it still exists.
+    var lastUsed: MachineProfile? {
+        guard let h = lastUsedHost else { return nil }
+        return machines.first { $0.host == h }
+    }
+
+    /// Record which machine was just connected to (call on every connect).
+    func markUsed(_ host: String) {
+        lastUsedHost = host
+        UserDefaults.standard.set(host, forKey: lastUsedKey)
     }
 
     private func persist() {
@@ -103,6 +120,9 @@ struct QualityIndicator: View {
             }
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(.black.opacity(0.45), in: Capsule())
+            // Tap the dot to expand/collapse the stats readout live, no reconnect.
+            .contentShape(Capsule())
+            .onTapGesture { nerdMode.toggle() }
         }
     }
 }
@@ -229,17 +249,25 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
 struct SavedMachinesView: View {
     @ObservedObject var store: MachineStore
     var onSelect: (MachineProfile) -> Void
+    /// Host to visually mark as pre-selected (the last-used machine).
+    var selectedHost: String? = nil
 
     var body: some View {
         if !store.machines.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Saved Machines").font(.footnote).foregroundStyle(.gray)
                 ForEach(store.machines) { machine in
+                    let isSelected = machine.host == selectedHost
                     HStack {
                         Button { onSelect(machine) } label: {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(machine.name).foregroundStyle(.white)
-                                Text(machine.host).font(.caption2).foregroundStyle(.gray)
+                            HStack(spacing: 8) {
+                                if isSelected {
+                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                                }
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(machine.name).foregroundStyle(.white)
+                                    Text(machine.host).font(.caption2).foregroundStyle(.gray)
+                                }
                             }
                         }
                         Spacer()
@@ -248,10 +276,58 @@ struct SavedMachinesView: View {
                         }
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+                    .background(isSelected ? .green.opacity(0.14) : .white.opacity(0.06),
+                                in: RoundedRectangle(cornerRadius: 8))
                 }
             }
             .frame(maxWidth: 420)
+        }
+    }
+}
+
+// MARK: - In-session settings (reachable mid-stream, both apps)
+
+/// Lightweight sheet presented from the streaming view: flip Nerd Mode live
+/// (shared @AppStorage — takes effect immediately, no reconnect) and switch to
+/// another saved machine (which disconnects + reconnects). Deliberately minimal.
+struct InSessionSettingsView: View {
+    @ObservedObject var store: MachineStore
+    /// Host of the machine currently streaming, marked with a checkmark.
+    var currentHost: String
+    /// Called when the user picks a different machine — caller disconnects and
+    /// reconnects to it.
+    var onSwitch: (MachineProfile) -> Void
+    var onClose: () -> Void
+    @AppStorage("nerdMode") private var nerdMode = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
+                if !store.machines.isEmpty {
+                    Section("Switch machine (reconnects)") {
+                        ForEach(store.machines) { m in
+                            Button { onSwitch(m) } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(m.name)
+                                        Text(m.host).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    if m.host == currentHost {
+                                        Image(systemName: "checkmark").foregroundStyle(.tint)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Session Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
+            }
         }
     }
 }
