@@ -105,8 +105,11 @@ including at sign-in — Windows doesn't auto-elevate "start at sign-in"
 entries even for admin accounts, so requiring admin would have broken that.
 
 **No console window:** it runs from the system tray (mirroring the Mac
-app's menu-bar-only presence) instead of opening a visible log window.
-Right-click the tray icon for **Stop/Start Serving**, **Settings…** (toggle
+app's menu-bar-only presence) instead of opening a visible log window,
+using the same artwork as the Mac app's menu bar icon (`AppIcon.icns`
+repackaged as `WindowsServer/AppIcon.ico`) for the exe itself, the
+installer, and the tray icon. Right-click the tray icon for **Stop/Start
+Serving**, **Settings…** (toggle
 start-at-sign-in, change the base port, see detected displays and their
 assigned ports, or check for updates on demand), and **Exit**. Logs go to
 `%LOCALAPPDATA%\Clamshell\clamshell.log` (also **Open Log File** in the tray
