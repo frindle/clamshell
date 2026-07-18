@@ -85,6 +85,28 @@ jobs:
           -p:IncludeNativeLibrariesForSelfExtract=true
           -o publish
 
+      - name: Import signing certificate
+        env:
+          PFX_B64: ${{ secrets.CLAMSHELL_WIN_CERT_PFX }}
+          PFX_PW: ${{ secrets.CLAMSHELL_WIN_CERT_PASSWORD }}
+        shell: pwsh
+        run: |
+          $bytes = [Convert]::FromBase64String($env:PFX_B64)
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\clamshell-win-dev.pfx", $bytes)
+          $securePw = ConvertTo-SecureString -String $env:PFX_PW -Force -AsPlainText
+          $cert = Import-PfxCertificate -FilePath "$env:RUNNER_TEMP\clamshell-win-dev.pfx" -CertStoreLocation Cert:\CurrentUser\My -Password $securePw
+          Remove-Item "$env:RUNNER_TEMP\clamshell-win-dev.pfx" -Force
+          "CERT_THUMBPRINT=$($cert.Thumbprint)" >> $env:GITHUB_ENV
+
+      - name: Sign server binary
+        # Self-signed identity — same "Clamshell Dev" tradeoff as the macOS
+        # DMG: no SmartScreen warning on machines that trust this cert, but
+        # unrecognized (not absent) publisher for everyone else.
+        shell: pwsh
+        run: |
+          $cert = Get-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT"
+          Set-AuthenticodeSignature -FilePath publish\ClamshellServer.exe -Certificate $cert -TimestampServer "http://timestamp.digicert.com" -HashAlgorithm SHA256
+
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
@@ -93,6 +115,14 @@ jobs:
         run: |
           $version = "${env:GITHUB_REF_NAME}" -replace '^v',''
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version WindowsServer\installer.iss
+
+      - name: Sign installer
+        shell: pwsh
+        run: |
+          $cert = Get-Item "Cert:\CurrentUser\My\$env:CERT_THUMBPRINT"
+          Get-ChildItem dist\*.exe | ForEach-Object {
+            Set-AuthenticodeSignature -FilePath $_.FullName -Certificate $cert -TimestampServer "http://timestamp.digicert.com" -HashAlgorithm SHA256
+          }
 
       - name: Upload to release
         env:
