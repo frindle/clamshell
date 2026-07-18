@@ -70,6 +70,23 @@ with a stable identity, so grants survive updates. If you're coming from an
 older (ad-hoc) build: remove Clamshell from the Accessibility list
 (− button), relaunch, re-grant — once.
 
+### Windows host (experimental)
+
+Download `Clamshell-Setup-<version>.exe` from
+[Releases](https://github.com/frindle/clamshell/releases) and run it. It's a
+self-contained installer (no separate .NET install required) built by CI on
+every `v*` tag from `WindowsServer/` via `dotnet publish` + Inno Setup — see
+`WindowsServer/installer.iss`. It installs `ClamshellServer.exe` and adds
+Start Menu shortcuts; "start at sign-in" is an opt-in checkbox during
+install. Unsigned, so Windows SmartScreen will warn on first run
+(**More info → Run anyway**). As noted above, this host is CI-built and
+self-tested only — it hasn't been run on a real Windows machine yet, so
+treat it as unverified until that happens.
+
+To build locally instead: `dotnet publish WindowsServer/ClamshellServer.csproj
+-c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish`,
+then `iscc WindowsServer\installer.iss` (Inno Setup must be installed).
+
 ## Browser access
 
 Enable **Web Access** in the menu and open `http://<mac-hostname>:5901`
