@@ -29,7 +29,7 @@ internal static class SelfTest
         // Wire framing: HELLO_ACK round-trips type + length + payload fields.
         byte[] ack = Proto.HelloAck(StreamCodec.Hevc, 1920, 1080, 0b01);
         Assert(ack[0] == (byte)MessageType.HelloAck, "ack type");
-        Assert(BinaryPrimitives.ReadUInt32BigEndian(ack.AsSpan(1, 4)) == 9, "ack payload len");
+        Assert(BinaryPrimitives.ReadUInt32BigEndian(ack.AsSpan(1, 4)) == 11, "ack payload len");
         Assert(ack[5] == Proto.Version && ack[6] == (byte)StreamCodec.Hevc, "ack ver/codec");
         Assert(Be.U32(ack.AsSpan(7), 0) == 1920, "ack width");
         Assert(Be.U32(ack.AsSpan(11), 0) == 1080, "ack height");
