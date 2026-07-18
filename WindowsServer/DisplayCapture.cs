@@ -118,7 +118,7 @@ internal sealed class DisplayCapture : IDisposable
                         if (!match) continue;
 
                         D3D11.D3D11CreateDevice(adapter, DriverType.Unknown, DeviceCreationFlags.BgraSupport,
-                            null, out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
+                            Array.Empty<FeatureLevel>(), out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
                         using var output1 = output.QueryInterface<IDXGIOutput1>();
                         var dup = output1.DuplicateOutput(device);
                         Log.Line($"capture {_display.Index}: duplicating output at ({d.Left},{d.Top})");
