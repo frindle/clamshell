@@ -75,14 +75,26 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Compute version
+        # Shared by the publish step below (stamps the exe so UpdateChecker
+        # can compare itself against the latest GitHub release) and the
+        # installer build step further down, instead of each computing it
+        # separately from GITHUB_REF_NAME.
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}" -replace '^v',''
+          "CLAMSHELL_VERSION=$version" >> $env:GITHUB_ENV
+
       - name: Publish self-contained host
         # Single-file, self-contained: the installer ships a binary that
         # runs without a separate .NET runtime install on the target machine.
+        shell: pwsh
         run: >
           dotnet publish WindowsServer/ClamshellServer.csproj -c Release -r win-x64
           --self-contained true
           -p:PublishSingleFile=true
           -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:Version=$env:CLAMSHELL_VERSION
           -o publish
 
       - name: Import signing certificate
@@ -113,8 +125,7 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          $version = "${env:GITHUB_REF_NAME}" -replace '^v',''
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$version WindowsServer\installer.iss
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$env:CLAMSHELL_VERSION WindowsServer\installer.iss
 
       - name: Sign installer
         shell: pwsh

@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>Exe</OutputType>
+    <!-- WinExe, not Exe: runs from the system tray, no console window. -->
+    <OutputType>WinExe</OutputType>
     <!-- Windows-only: DXGI capture, Media Foundation, WASAPI, SendInput, Win32 clipboard. -->
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
@@ -12,6 +13,8 @@
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- NotifyIcon/ContextMenuStrip/Form for the tray icon and Settings window. -->
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
   <ItemGroup>
