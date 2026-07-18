@@ -104,6 +104,18 @@ it's already elevated (`WindowsServer/installer.iss`, `[Run]`/
 including at sign-in — Windows doesn't auto-elevate "start at sign-in"
 entries even for admin accounts, so requiring admin would have broken that.
 
+**No console window:** it runs from the system tray (mirroring the Mac
+app's menu-bar-only presence) instead of opening a visible log window.
+Right-click the tray icon for **Stop/Start Serving**, **Settings…** (toggle
+start-at-sign-in, change the base port, see detected displays and their
+assigned ports, or check for updates on demand), and **Exit**. Logs go to
+`%LOCALAPPDATA%\Clamshell\clamshell.log` (also **Open Log File** in the tray
+menu) since there's no console to print to. It checks GitHub for a newer
+release every 6 hours and on startup; a balloon tip and a tray menu item
+appear when one's found — clicking it opens the release page, it doesn't
+install anything automatically (Windows can't overwrite a running exe, so
+that's a manual download-and-run same as today).
+
 To build locally instead: `dotnet publish WindowsServer/ClamshellServer.csproj
 -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish`,
 then `iscc WindowsServer\installer.iss` (Inno Setup must be installed). Running
