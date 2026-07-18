@@ -95,9 +95,21 @@ $store = New-Object System.Security.Cryptography.X509Certificates.X509Store("Roo
 $store.Open("ReadWrite"); $store.Add($sig.SignerCertificate); $store.Close()
 ```
 
+**Networking:** `ClamshellServer.exe` listens on `http://+:5903/` and up
+(one WebSocket port per display) so LAN/Tailscale clients can reach it — a
+wildcard bind that normally needs either an elevated process or a one-time
+URL ACL reservation. The installer reserves ports 5903–5910 for you while
+it's already elevated (`WindowsServer/installer.iss`, `[Run]`/
+`[UninstallRun]`), so the installed exe never needs to run as admin,
+including at sign-in — Windows doesn't auto-elevate "start at sign-in"
+entries even for admin accounts, so requiring admin would have broken that.
+
 To build locally instead: `dotnet publish WindowsServer/ClamshellServer.csproj
 -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish`,
-then `iscc WindowsServer\installer.iss` (Inno Setup must be installed).
+then `iscc WindowsServer\installer.iss` (Inno Setup must be installed). Running
+the published exe directly (skipping the installer) skips the port reservation
+too — either run it elevated once, or reserve the ports yourself:
+`netsh http add urlacl url=http://+:<port>/ user=Everyone`.
 
 ## Browser access
 
