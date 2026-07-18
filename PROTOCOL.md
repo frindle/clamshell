@@ -68,6 +68,27 @@ the byte is trailing so clients that predate it parse unchanged (and a
 missing byte from an older host implies hardware, matching its
 refuse-to-start contract).
 
+**Flags byte, refined semantics (Windows host).** On Windows the single bit 0
+is treated strictly as *"should the client show the software-encoding
+warning?"* rather than literally *"is it hardware?"* — because a machine with
+**no** hardware encoder at all (e.g. a VM with no GPU passthrough) is an
+expected, non-alarming state, not a fallback. The Windows host therefore sets
+bit 0 = 1 (no warning) both when a hardware encoder is active **and** when no
+hardware encoder exists on the system; it clears bit 0 (warn) only when a
+hardware encoder was enumerated but could not be instantiated/driven — a real
+fallback. The iOS client needs **no change**: it already shows the banner iff
+bit 0 == 0. The Mac host keeps its existing bit 0 = isHardware meaning; the two
+hosts differ only in the no-hardware-present case, which the client renders
+identically either way.
+
+*Proposed, not yet implemented on Mac/iOS:* bit 1 = "encoder is genuinely
+hardware" (the Windows host already sets it: 1 only for HardwareActive). It's
+backward compatible because existing clients mask only bit 0. If a future
+"Nerd Mode" wants an accurate hardware-vs-software label in the
+no-hardware-present case (where bit 0 alone can't distinguish it from real
+hardware), it can read bit 1; the Mac host would then also set bit 1 =
+isHardware. No client change is required until that label is wanted.
+
 ## Client display reporting (HELLO trailing bytes / CLIENT_DISPLAYS)
 
 The client optionally reports its real display situation: its video surface
