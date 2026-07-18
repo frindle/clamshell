@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Vortice.MediaFoundation;
 
 namespace Clamshell;
@@ -51,13 +52,24 @@ internal static class EncoderProbe
     private static int HardwareEncoderCount()
     {
         // Null input/output type filters -> all hardware video encoders.
-        IMFActivate[] activates = MediaFactory.MFTEnumEx(
-            VideoEncoderCategory,
-            MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER,
-            null, null);
+        IMFActivate[] activates = Enumerate(VideoEncoderCategory,
+            MFT_ENUM_FLAG_HARDWARE | MFT_ENUM_FLAG_SORTANDFILTER, null);
         int n = activates.Length;
         foreach (var a in activates) a.Dispose();
         return n;
+    }
+
+    /// <summary>MFTEnumEx wrapper. Vortice surfaces the raw (IMFActivate** ,
+    /// count) out-params, so we marshal the COM pointer array ourselves and free
+    /// the outer array with CoTaskMemFree (per MSDN).</summary>
+    public static IMFActivate[] Enumerate(Guid category, int flags, RegisterTypeInfo? outputType)
+    {
+        MediaFactory.MFTEnumEx(category, (uint)flags, null, outputType, out nint pActs, out uint count);
+        var result = new IMFActivate[count];
+        for (int i = 0; i < count; i++)
+            result[i] = new IMFActivate(Marshal.ReadIntPtr(pActs, i * IntPtr.Size));
+        if (pActs != IntPtr.Zero) Marshal.FreeCoTaskMem(pActs);
+        return result;
     }
 }
 

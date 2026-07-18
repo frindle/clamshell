@@ -38,3 +38,4 @@ catch (OperationCanceledException) { }
 
 Log.Line("stopping");
 foreach (var s in servers) s.Dispose();
+return 0;

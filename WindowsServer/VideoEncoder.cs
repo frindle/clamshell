@@ -113,33 +113,24 @@ internal sealed class VideoEncoder : IDisposable
             _mft.SetInputType(0, inType, 0);
         }
 
-        _mft.ProcessMessage(TMessageType.NotifyBeginStreaming, IntPtr.Zero);
-        _mft.ProcessMessage(TMessageType.NotifyStartOfStream, IntPtr.Zero);
+        _mft.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, IntPtr.Zero);
+        _mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, IntPtr.Zero);
         _firstAfterBuild = true;
     }
 
     private static IMFTransform ActivateEncoder(StreamCodec codec, bool hardware)
     {
         Guid subtype = codec == StreamCodec.Hevc ? MFAttr.Hevc : MFAttr.H264;
-        var outInfo = new TRegisterTypeInformation { GuidMajorType = MFAttr.Video, GuidSubtype = subtype };
+        var outInfo = new RegisterTypeInfo { GuidMajorType = MFAttr.Video, GuidSubtype = subtype };
         int flags = (hardware ? EncoderProbe.MFT_ENUM_FLAG_HARDWARE : MFT_ENUM_FLAG_SYNCMFT)
                     | EncoderProbe.MFT_ENUM_FLAG_SORTANDFILTER;
-        IMFActivate[] acts = MediaFactory.MFTEnumEx(EncoderProbe.VideoEncoderCategory, flags, null, outInfo);
+        IMFActivate[] acts = EncoderProbe.Enumerate(EncoderProbe.VideoEncoderCategory, flags, outInfo);
         if (acts.Length == 0) throw new InvalidOperationException($"no {(hardware ? "hardware" : "software")} {codec} encoder MFT");
+        // Async-only hardware MFTs (the common GPU case) will fail SetInputType/
+        // ProcessInput below and be caught by Create() -> software fallback. We
+        // don't drive the async model yet (see the class header's KNOWN GAP).
         IMFTransform mft = acts[0].ActivateObject<IMFTransform>();
         for (int i = 0; i < acts.Length; i++) acts[i].Dispose();
-
-        if (hardware)
-        {
-            // Reject async-only hardware MFTs — we don't drive the async model yet.
-            using var attrs = mft.GetAttributes();
-            int async = attrs.Get(MFAttr.TransformAsync, 0);
-            if (async != 0)
-            {
-                mft.Dispose();
-                throw new NotSupportedException("hardware MFT is async-only (async drive not implemented)");
-            }
-        }
         return mft;
     }
 
@@ -181,8 +172,7 @@ internal sealed class VideoEncoder : IDisposable
     private void DrainLocked(ulong ptsMicros)
     {
         var info = _mft.GetOutputStreamInfo(0);
-        bool mftAllocates = (info.Flags &
-            ((int)MFTOutputStreamInfoFlags.ProvidesSamples | (int)MFTOutputStreamInfoFlags.CanProvideSamples)) != 0;
+        bool mftAllocates = ((int)info.Flags & (Mf.ProvidesSamples | Mf.CanProvideSamples)) != 0;
 
         while (true)
         {
@@ -191,19 +181,18 @@ internal sealed class VideoEncoder : IDisposable
             if (!mftAllocates)
             {
                 outSample = MediaFactory.MFCreateSample();
-                outBuffer = MediaFactory.MFCreateMemoryBuffer(Math.Max(info.Size, _width * _height * 2));
+                outBuffer = MediaFactory.MFCreateMemoryBuffer(Math.Max((int)info.Size, _width * _height * 2));
                 outSample.AddBuffer(outBuffer);
             }
 
-            var dataBuffer = new TOutputDataBuffer { StreamID = 0, Sample = outSample };
-            Result r = _mft.ProcessOutput(0, new[] { dataBuffer }, out _);
+            var dataBuffer = new OutputDataBuffer { StreamID = 0, Sample = outSample! };
+            Result r = _mft.ProcessOutput((ProcessOutputFlags)0, 1, ref dataBuffer, out _);
 
-            if (r == ResultCode.TransformNeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); break; }
-            if (r == ResultCode.TransformStreamChange)
+            if ((uint)r.Code == Mf.NeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); break; }
+            if ((uint)r.Code == Mf.StreamChange)
             {
-                // Output format renegotiation — re-apply and retry.
                 outSample?.Dispose(); outBuffer?.Dispose();
-                ReapplyOutputTypeLocked();
+                ReapplyOutputTypeLocked(); // full rebuild (new IDR)
                 continue;
             }
             r.CheckError();
@@ -218,7 +207,9 @@ internal sealed class VideoEncoder : IDisposable
 
     private void EmitLocked(IMFSample sample, ulong ptsMicros)
     {
-        bool keyframe = _firstAfterBuild || sample.Get(MFAttr.CleanPoint, 0) != 0;
+        uint clean = 0;
+        try { clean = sample.GetUInt32(MFAttr.CleanPoint); } catch { /* attribute absent */ }
+        bool keyframe = _firstAfterBuild || clean != 0;
         _firstAfterBuild = false;
 
         using var contiguous = sample.ConvertToContiguousBuffer();
@@ -242,11 +233,8 @@ internal sealed class VideoEncoder : IDisposable
     {
         try
         {
-            int size = outType.GetBlobSize(MFAttr.MpegSequenceHeader);
-            if (size <= 0) return Array.Empty<byte>();
-            byte[] blob = new byte[size];
-            outType.GetBlob(MFAttr.MpegSequenceHeader, blob, size, out _);
-            return AnnexB.ToAvcc(blob);
+            byte[] blob = outType.GetBlob(MFAttr.MpegSequenceHeader);
+            return blob.Length == 0 ? Array.Empty<byte>() : AnnexB.ToAvcc(blob);
         }
         catch { return Array.Empty<byte>(); }
     }
@@ -259,7 +247,7 @@ internal sealed class VideoEncoder : IDisposable
 
     private void RebuildLocked()
     {
-        try { _mft.ProcessMessage(TMessageType.NotifyEndOfStream, IntPtr.Zero); } catch { }
+        try { _mft.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, IntPtr.Zero); } catch { }
         try { _mft.Dispose(); } catch { }
         Build();
     }
@@ -276,7 +264,7 @@ internal sealed class VideoEncoder : IDisposable
     {
         lock (_lock)
         {
-            try { _mft?.ProcessMessage(TMessageType.NotifyEndOfStream, IntPtr.Zero); } catch { }
+            try { _mft?.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, IntPtr.Zero); } catch { }
             try { _mft?.Dispose(); } catch { }
             _mft = null!;
         }
@@ -316,6 +304,23 @@ internal static class MFAttr
     public static readonly Guid AudioBlockAlignment = new("322de230-9eeb-43bd-ab7a-ff412251541d");
     public static readonly Guid AacPayloadType = new("bfbabe79-7434-4d1c-94f0-72a3b9e17188");
     public static readonly Guid AacProfileLevel = new("7632f0e6-9538-4d61-acda-ea29c8c14456");
+}
+
+// Media Foundation numeric constants (MFT messages, non-fatal HRESULTs, output
+// stream-info flags) as literals — avoids depending on Vortice enum member names.
+internal static class Mf
+{
+    // MFT_MESSAGE_TYPE
+    public const int NotifyBeginStreaming = 0x10000000;
+    public const int NotifyEndStreaming = 0x10000001;
+    public const int NotifyEndOfStream = 0x10000002;
+    public const int NotifyStartOfStream = 0x10000003;
+    // Non-fatal ProcessOutput HRESULTs
+    public const uint NeedMoreInput = 0xC00D6D72;
+    public const uint StreamChange = 0xC00D6D61;
+    // MFT_OUTPUT_STREAM_INFO flags
+    public const int ProvidesSamples = 0x100;
+    public const int CanProvideSamples = 0x200;
 }
 
 // Splits an Annex-B byte stream (start-code separated NALs) into AVCC framing
