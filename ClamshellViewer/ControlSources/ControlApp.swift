@@ -302,6 +302,7 @@ struct ControlContentView: View {
     @AppStorage("nerdMode") private var nerdMode = false
     @State private var keyboardVisible = false
     @State private var showScanner = false
+    @State private var showSettings = false
 
     var body: some View {
         ZStack {
@@ -313,6 +314,11 @@ struct ControlContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .onAppear(perform: preselectLastUsed)
+        .sheet(isPresented: $showSettings) {
+            InSessionSettingsView(store: store, currentHost: host,
+                                  onSwitch: switchTo, onClose: { showSettings = false })
+        }
         .fullScreenCover(isPresented: $showScanner) {
             QRScannerView(onScan: applyScan, onCancel: { showScanner = false })
                 .ignoresSafeArea()
@@ -326,12 +332,30 @@ struct ControlContentView: View {
         guard !h.isEmpty else { return }
         store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h,
                                     accessId: id, accessSecret: secret, displayIndex: idx))
+        store.markUsed(h)
         session.connect(host: h, displayIndex: idx, accessId: id, accessSecret: secret)
     }
 
     private func select(_ m: MachineProfile) {
         host = m.host; accessId = m.accessId; accessSecret = m.accessSecret; displayIndex = m.displayIndex
+        store.markUsed(m.host)
         session.connect(host: m.host, displayIndex: m.displayIndex, accessId: m.accessId, accessSecret: m.accessSecret)
+    }
+
+    /// Switch to another saved machine mid-session: drop the current stream and
+    /// reconnect to the chosen one.
+    private func switchTo(_ m: MachineProfile) {
+        showSettings = false
+        keyboardVisible = false
+        session.disconnect()
+        select(m)
+    }
+
+    /// Pre-fill the connect form from the last-used saved machine so a single
+    /// Connect press reuses it (does NOT auto-connect).
+    private func preselectLastUsed() {
+        guard host.trimmingCharacters(in: .whitespaces).isEmpty, let m = store.lastUsed else { return }
+        host = m.host; accessId = m.accessId; accessSecret = m.accessSecret; displayIndex = m.displayIndex
     }
 
     private func applyScan(_ code: String) {
@@ -371,6 +395,9 @@ struct ControlContentView: View {
                 .font(.footnote)
                 .foregroundStyle(.white.opacity(0.35))
             Spacer()
+            Button { showSettings = true } label: {
+                Image(systemName: "gearshape.fill")
+            }
             Button {
                 keyboardVisible.toggle()
             } label: {
@@ -398,7 +425,7 @@ struct ControlContentView: View {
                 Text("Video goes to the external monitor; this screen is the trackpad.")
                     .font(.footnote).foregroundStyle(.gray)
 
-                SavedMachinesView(store: store, onSelect: select)
+                SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
 
                 Button { showScanner = true } label: {
                     Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
