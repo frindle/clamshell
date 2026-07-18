@@ -297,17 +297,37 @@ that screen-capture frame updates stop at the lock screen plus the known
 session/`loginwindow` architecture, rather than from a single definitive Apple
 doc line — it has not been verified against a real locked Mac for this project.
 
-There is **no appropriate software fix** — making capture or input work through
-an active lock would mean defeating a deliberate macOS security boundary, which
-Clamshell does not do. The display-sleep power assertion Clamshell already holds
-during a session (`kIOPMAssertionTypePreventUserIdleDisplaySleep`, see
-`SessionComfort`) keeps the *display* awake but, like `caffeinate -d`, does **not**
-stop the screensaver or the idle lock. So keeping a Mac mini remotely usable
-through idle periods is a **settings tradeoff you choose**, same category as the
-FileVault one: disable the screensaver / auto-lock (System Settings → Lock Screen
-→ "Start Screen Saver when inactive: Never" and "Require password after screen
-saver begins…: Never"), or otherwise avoid the lock. Clamshell will not change
-those settings for you — it's your security/usability call.
+Making native capture or input work *through* an active lock would mean defeating
+a deliberate macOS security boundary, which Clamshell does not do. Instead, when
+the Mac locks Clamshell now **hands you off to the browser VNC fallback
+automatically**:
+
+- The host watches the system `com.apple.screenIsLocked` /
+  `com.apple.screenIsUnlocked` notifications and pushes the state to every
+  connected native client (protocol message `HOST_LOCK_STATE`, see PROTOCOL.md).
+- On lock, the iPad viewer and iPhone control app show a banner over the frozen
+  video — *"Mac is locked — native video paused"* — with a one-tap button that
+  opens the Mac's browser VNC bridge (noVNC on `http://<mac>:5901`) in Safari.
+  That bridge fronts Apple's own privileged `screensharingd`, so — unlike the
+  native path — it can reach the lock screen and let you type your password to
+  unlock (real password auth, the same way Apple Screen Sharing does).
+- On unlock, the banner clears itself and the native video resumes on its own
+  through the client's existing auto-reconnect — no extra step.
+
+The one-tap link is derived from the address you connected to, so it only
+appears for a bare LAN host or `ws://` connection (where the web port can be
+substituted); over a `wss://` Cloudflare Tunnel the banner still explains the
+situation but you open the Mac's web access URL yourself. Note the browser
+fallback requires **Web Access** to be enabled on the Mac (it serves noVNC on
+port 5901) and Screen Sharing turned on in System Settings.
+
+The display-sleep power assertion Clamshell holds during a session
+(`kIOPMAssertionTypePreventUserIdleDisplaySleep`, see `SessionComfort`) keeps the
+*display* awake but, like `caffeinate -d`, does **not** stop the screensaver or
+idle lock. So if you'd rather never hit the lock at all, disabling the
+screensaver / auto-lock (System Settings → Lock Screen → "Start Screen Saver when
+inactive: Never" and "Require password after screen saver begins…: Never")
+remains a **settings tradeoff you choose** — Clamshell won't change those for you.
 
 ## Remote client notes
 
@@ -326,6 +346,13 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Lock-screen fallback to browser VNC (automatic)**: the host now detects when
+  the Mac's screen locks (`com.apple.screenIsLocked` / `...Unlocked`) and pushes
+  it to native clients via a new `HOST_LOCK_STATE` protocol message. The iPad and
+  iPhone apps show a banner over the paused video with a one-tap link to the
+  browser VNC bridge (`http://<mac>:5901`), which fronts Apple's privileged
+  `screensharingd` and *can* unlock a locked Mac. The banner and native video
+  clear/resume automatically on unlock. See "Known limitation: the lock screen".
 - **Mid-session settings (iPad + iPhone)**: a gear button beside the disconnect
   X on the streaming view opens a lightweight sheet — flip Nerd Mode live (also
   tap the quality dot to toggle it) with no reconnect, and switch to another

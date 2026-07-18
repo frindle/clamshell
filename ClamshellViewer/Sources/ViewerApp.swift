@@ -206,6 +206,7 @@ struct ContentView: View {
                     .ignoresSafeArea()
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
+                            if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
                             if client.softwareEncoding { SoftwareEncodingBanner() }
                             QualityIndicator(client: client)
                         }

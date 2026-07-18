@@ -144,6 +144,42 @@ struct SoftwareEncodingBanner: View {
     }
 }
 
+/// Shown while the host reports its screen is locked (HOST_LOCK_STATE). Native
+/// ScreenCaptureKit capture and CGEventPost input can't cross the macOS lock
+/// screen, so the video freezes — this points the user at the browser VNC
+/// bridge (Apple's privileged screensharingd), which can reach and unlock a
+/// locked Mac. Clears automatically when the host reports unlocked; the video
+/// resumes on its own via StreamClient's existing reconnect/frame flow.
+struct LockScreenBanner: View {
+    let fallbackURL: URL?
+    @Environment(\.openURL) private var openURL
+
+    var body: some View {
+        VStack(spacing: 8) {
+            Label("Mac is locked — native video paused", systemImage: "lock.fill")
+                .font(.footnote.weight(.semibold))
+            if let url = fallbackURL {
+                Button {
+                    openURL(url) // opens the noVNC bridge in Safari
+                } label: {
+                    Label("Unlock in browser (Screen Sharing)", systemImage: "safari.fill")
+                        .font(.footnote.weight(.medium))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.white)
+                .foregroundStyle(.black)
+            } else {
+                Text("Open the Mac's http://…:5901 web access in a browser to unlock.")
+                    .font(.caption2).multilineTextAlignment(.center)
+            }
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .background(.black.opacity(0.82), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.yellow.opacity(0.7), lineWidth: 1))
+    }
+}
+
 /// Root view hosted on the external UIWindowScene — output only.
 struct ExternalDisplayView: View {
     @ObservedObject var client: StreamClient

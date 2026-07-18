@@ -24,6 +24,10 @@ final class StreamClient: ObservableObject {
     /// Human-readable reason for the most recent connection failure, surfaced
     /// on-screen while auto-reconnect keeps retrying. nil once streaming.
     @Published var lastError: String?
+    /// True while the host reports its screen is locked (HOST_LOCK_STATE). The
+    /// native capture path can't survive the macOS lock screen, so the UI shows
+    /// a banner pointing at the browser VNC fallback until the host unlocks.
+    @Published var hostLocked = false
 
     /// Whether audio plays through this client. Only the primary (iPad-screen)
     /// client plays audio; the external-display client stays muted.
@@ -164,7 +168,25 @@ final class StreamClient: ObservableObject {
         videoSize = .zero
         softwareEncoding = false
         currentBitrateKbps = 0
+        hostLocked = false
         lastError = nil
+    }
+
+    /// The Mac's browser VNC bridge (noVNC on http://<mac>:5901), derived from
+    /// the connected host — the lock-screen fallback, since Apple's privileged
+    /// screensharingd can reach a locked Mac where native capture can't. Works
+    /// for a bare LAN host or ws:// URL (swap in the web port); a wss:// tunnel
+    /// URL addresses one route and can't be remapped, so nil there.
+    var browserFallbackURL: URL? {
+        guard let host = connectHost else { return nil }
+        let bare: String
+        if host.contains("://") {
+            guard host.hasPrefix("ws://"), let h = URL(string: host)?.host else { return nil }
+            bare = h
+        } else {
+            bare = host
+        }
+        return URL(string: "http://\(bare):5901") // WebServer.httpPort
     }
 
     private func teardownSocket() {
@@ -241,6 +263,11 @@ final class StreamClient: ObservableObject {
             guard payload.count >= 2 else { return }
             let kbps = payload.beUInt16(at: 0)
             DispatchQueue.main.async { self.currentBitrateKbps = kbps }
+        case .hostLockState:
+            guard let byte = payload.first else { return }
+            let locked = byte == 1
+            clogViewer("HOST_LOCK_STATE: host screen \(locked ? "LOCKED — showing browser VNC fallback" : "unlocked")")
+            DispatchQueue.main.async { self.hostLocked = locked }
         case .videoFrame:
             guard let sample = assembler?.assemble(payload: payload) else { return }
             onSampleBuffer?(sample)
