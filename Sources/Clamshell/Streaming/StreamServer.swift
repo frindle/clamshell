@@ -41,6 +41,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// collapse) — on teardown, schedule the matching restore request.
     private var clientAnnounced = false
 
+    /// Whether the Mac's screen is currently locked (fed by StreamFleet's
+    /// lock-notification observer). Pushed to the client as HOST_LOCK_STATE on
+    /// every change and once right after HELLO_ACK, so a client that connects to
+    /// an already-locked Mac immediately shows the browser-VNC fallback banner.
+    private var hostLocked = false
+
     // Adaptive bitrate (see PROTOCOL.md "Adaptive bitrate"): reactive, driven
     // purely by the send-queue backpressure above. A full send queue means the
     // network can't drain 20 Mbps — halve the encoder bitrate (min once per
@@ -87,6 +93,16 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// Force-disconnect the current client (Diagnostics "Disconnect All").
     func disconnectClient() {
         queue.async { [self] in teardownSession() }
+    }
+
+    /// Update the host lock state (from StreamFleet's lock observer). Stores it
+    /// for the next HELLO_ACK and, if a client is connected, pushes it now.
+    func setLockState(_ locked: Bool) {
+        queue.async { [self] in
+            hostLocked = locked
+            guard connection != nil else { return }
+            send(StreamMessage.hostLockState(locked))
+        }
     }
 
     /// Snapshot for the Diagnostics view (read from the main queue).
@@ -188,7 +204,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
         case .clipboard:
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
-        case .helloAck, .videoFrame, .audioFrame, .streamStatus:
+        case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState:
             break // host never receives these
         }
     }
@@ -352,6 +368,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                                                      width: UInt32(pxWidth), height: UInt32(pxHeight),
                                                      hardwareEncoder: encoder.isHardware))
                     self.sendStreamStatus() // initial bitrate for the quality indicator
+                    self.send(StreamMessage.hostLockState(self.hostLocked)) // so a client joining a locked Mac knows now
                     clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))\(encoder.isHardware ? "" : " [SOFTWARE ENCODE]")")
                 }
             } catch {
@@ -459,6 +476,13 @@ final class StreamFleet {
     private var currentIDs: [CGDirectDisplayID] = []
     private var pendingRebuild: DispatchWorkItem?
 
+    /// Current screen-lock state, tracked from the `com.apple.screenIsLocked` /
+    /// `...Unlocked` distributed notifications. Seeded from the login-session
+    /// dictionary so a fleet started while already locked is correct. New
+    /// servers inherit it on rebuild; live changes are pushed to every server.
+    private var screenLocked = false
+    private var lockObservers: [NSObjectProtocol] = []
+
     var isServing: Bool { !servers.isEmpty }
 
     /// Per-display connection snapshot for the Diagnostics view.
@@ -481,6 +505,32 @@ final class StreamFleet {
         self.basePort = basePort
         CGDisplayRegisterReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
         callbackRegistered = true
+        screenLocked = Self.currentlyLocked() // correct if started while already locked
+        observeLockState()
+    }
+
+    /// Whether the login session's screen is locked right now. `nil` (key
+    /// absent) means unlocked. Used to seed initial state and is the same signal
+    /// the screenIsLocked/Unlocked notifications flip.
+    private static func currentlyLocked() -> Bool {
+        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Int == 1
+    }
+
+    /// Observe the system lock/unlock distributed notifications (the same
+    /// mechanism `screensharingd` and the login window use) and fan the state
+    /// out to every server so connected clients get HOST_LOCK_STATE. Main-queue
+    /// confined, matching the rest of this class.
+    private func observeLockState() {
+        let dnc = DistributedNotificationCenter.default()
+        for (name, locked) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false)] {
+            let obs = dnc.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
+                guard let self else { return }
+                self.screenLocked = locked
+                clog("STREAM: screen \(locked ? "LOCKED" : "UNLOCKED") — notifying \(self.servers.count) server(s)")
+                for s in self.servers { s.setLockState(locked) }
+            }
+            lockObservers.append(obs)
+        }
     }
 
     /// Stop every server and unregister the topology callback. Lets the
@@ -495,6 +545,8 @@ final class StreamFleet {
             CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
             callbackRegistered = false
         }
+        for obs in lockObservers { DistributedNotificationCenter.default().removeObserver(obs) }
+        lockObservers = []
         clog("STREAM: fleet stopped")
     }
 
@@ -528,6 +580,7 @@ final class StreamFleet {
             let server = StreamServer(displayID: id, port: basePort + UInt16(i), isPrimary: i == 0)
             do {
                 try server.start()
+                server.setLockState(screenLocked) // inherit current lock state
                 servers.append(server)
             } catch {
                 clog("STREAM: failed to start server on port \(basePort + UInt16(i)): \(error)")
