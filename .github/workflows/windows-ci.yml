@@ -1,0 +1,17 @@
+name: Windows CI
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build Windows host server
+        run: dotnet build WindowsServer/ClamshellServer.csproj -c Release
+      - name: Self-test (pure protocol/framing logic)
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest
