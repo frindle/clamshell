@@ -27,6 +27,10 @@ Compression=lzma
 SolidCompression=yes
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
+; UninstallDisplayIcon already picks this up automatically since the exe
+; itself now carries it (ClamshellServer.csproj's ApplicationIcon) — this is
+; just for Setup.exe's own icon (Explorer, Downloads, the wizard window).
+SetupIconFile=AppIcon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]

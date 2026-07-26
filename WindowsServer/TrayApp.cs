@@ -28,9 +28,14 @@ internal sealed class TrayApp : ApplicationContext
 
         try
         {
+            // Pulls the icon the exe was built with (ClamshellServer.csproj's
+            // ApplicationIcon, same artwork as the Mac app's AppIcon.icns) —
+            // one source of truth instead of shipping/loading a second copy
+            // of the file. Falls back to the generic icon if extraction ever
+            // fails (e.g. some future publish setting strips it).
             _icon = new NotifyIcon
             {
-                Icon = System.Drawing.SystemIcons.Application,
+                Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? System.Drawing.SystemIcons.Application,
                 Text = "Clamshell",
                 Visible = true,
             };
