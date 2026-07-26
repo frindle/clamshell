@@ -144,16 +144,23 @@ final class ConnectionMonitor {
 
     /// Jump Desktop Connect exposes session state via its rendezvous child
     /// process holding non-loopback established sockets. Cheap heuristic:
-    /// `lsof` on processes named JumpConnect with ESTABLISHED TCP. Refine
-    /// against a real Jump install (open TODO).
+    /// `lsof` on Jump processes with ESTABLISHED TCP, ignoring loopback.
+    /// `-c /^Jump/` (regex form) is what makes this match both process names
+    /// the `ps` check accepts — a literal `-c JumpConnect` misses the
+    /// "Jump Desktop Connect" spelling. Loopback sockets are excluded because
+    /// the app talks to itself locally whether or not anyone is connected.
+    /// Still unverified against a real Jump install: whether a live session is
+    /// the *only* thing that produces a non-loopback socket here.
     static func jumpDesktopSessionActive() -> Bool {
         guard let output = run("/bin/ps", ["-axo", "comm"]) else { return false }
         let hasJump = output.contains("JumpConnect") || output.contains("Jump Desktop Connect")
         guard hasJump else { return false }
-        guard let lsof = run("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-a", "-c", "JumpConnect"]) else {
+        guard let lsof = run("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-a", "-c", "/^Jump/"]) else {
             return false
         }
-        return lsof.split(separator: "\n").count > 1 // header + at least one socket
+        return lsof.split(separator: "\n").dropFirst().contains { line in // drop header
+            !line.contains("127.0.0.1") && !line.contains("[::1]") && !line.contains("localhost")
+        }
     }
 
     private static func run(_ path: String, _ args: [String]) -> String? {
