@@ -84,10 +84,29 @@ until that happens.
 
 Both `ClamshellServer.exe` and the installer are Authenticode-signed with a
 self-signed "Clamshell Dev" identity (same tradeoff as the macOS build's
-ad-hoc signing — no paid cert). On a machine where that cert isn't already
-trusted, Windows SmartScreen will still warn on first run (**More info →
-Run anyway**); to remove the warning permanently on a machine you control,
-trust the cert once:
+ad-hoc signing — no paid cert). A self-signed cert has no reputation with
+Microsoft, so **Windows SmartScreen will warn on any freshly downloaded copy
+no matter what**: the warning is a cloud reputation check keyed off the
+file's Mark-of-the-Web, not a local signature-trust check. The one-time
+dismissal is **More info → Run anyway**.
+
+To silence it permanently for a specific download (you've verified it's the
+build you expect and don't want to see the prompt again), strip that file's
+Mark-of-the-Web instead of trying to trust the certificate:
+
+```powershell
+Unblock-File "Clamshell-Setup-<version>.exe"
+```
+
+or right-click the file → Properties → check **Unblock** → OK. This has to
+be repeated per downloaded file (each new download gets a fresh
+Mark-of-the-Web); it does not affect other users downloading the same
+release.
+
+Separately, trusting the signing certificate itself avoids the "Unknown
+Publisher" flag in signature details and any UAC elevation prompts about an
+unrecognized publisher — but, as above, it does **not** suppress the
+SmartScreen download warning:
 
 ```powershell
 $sig = Get-AuthenticodeSignature "Clamshell-Setup-<version>.exe"
