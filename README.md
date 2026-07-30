@@ -412,6 +412,32 @@ remains a **settings tradeoff you choose** — Clamshell won't change those for 
   audio, and dynamic resolution; Clamshell provides the collapse + restore.
   Disable Jump's own virtual-display option so Clamshell owns the screen.
 
+## RDP support (in progress, UNTESTED against a live host)
+
+ClamshellViewer can also connect directly to a Windows machine's *built-in*
+Remote Desktop server — no Clamshell agent needed on that machine, unlike
+every other connection mode above. This wraps
+[FreeRDP](https://www.freerdp.com/) (Apache-2.0), cross-compiled to an
+XCFramework vendored at `ClamshellViewer/FreeRDPKit/CFreeRDP.xcframework`
+(rebuild with `scripts/build-freerdp-ios.sh` — see that script's header for
+why the binary is checked in rather than built by SwiftPM itself).
+
+What's verified: the cross-compile itself (libfreerdp/libwinpr/OpenSSL for
+iOS device + Simulator arm64), the Objective-C bridge (`RDPBridge`) compiling
+and linking clean against those real libs, and the whole app (`xcodebuild
+build`, both targets, device + Simulator) building clean with the RDP UI
+wired in. What's **not** verified: an actual RDP handshake/session against a
+live Windows host — there was no Windows machine reachable from the
+environment this was built in. Treat it as needing a real-network smoke test
+(connect to any RDP-enabled Windows box, confirm the framebuffer renders and
+mouse/keyboard round-trip) before relying on it.
+
+Pick "RDP" instead of "Clamshell" on the connect screen, then either import a
+`.rdp` file or enter host/port/username/password/domain manually. Passwords
+are stored in the Keychain, never in `UserDefaults`. Self-signed/untrusted
+certificates prompt a trust dialog rather than failing silently or accepting
+blindly.
+
 ## Caveats
 
 Uses one private API (`CGVirtualDisplay`) — behavior should be re-verified
@@ -421,6 +447,13 @@ form.
 ## Changelog
 
 ### Unreleased
+- **RDP connection mode (ClamshellViewer, in progress)**: connect straight to
+  a Windows machine's built-in RDP server, no Clamshell agent required on that
+  machine. Wraps FreeRDP via a vendored XCFramework + Objective-C bridge
+  (`ClamshellViewer/FreeRDPKit`); connect by importing a `.rdp` file or
+  entering host/user/pass manually, saved targets with Keychain-stored
+  passwords. Cross-compile and full app build verified; live-host handshake
+  is not yet — see "RDP support" above.
 - **Lock-screen fallback to browser VNC (automatic)**: the host now detects when
   the Mac's screen locks (`com.apple.screenIsLocked` / `...Unlocked`) and pushes
   it to native clients via a new `HOST_LOCK_STATE` protocol message. The iPad and
