@@ -26,7 +26,7 @@
 /* #undef WITH_CUPS */
 /* #undef WITH_JPEG */
 /* #undef WITH_WIN8 */
-#define WITH_AAD
+/* #undef WITH_AAD */
 /* #undef WITH_CAIRO */
 /* #undef WITH_SWSCALE */
 /* #undef WITH_RDPSND_DSOUND */
