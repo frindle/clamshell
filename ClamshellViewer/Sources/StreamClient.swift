@@ -246,18 +246,10 @@ final class StreamClient: ObservableObject {
             guard payload.count >= 10,
                   let codec = StreamCodec(rawValue: payload[payload.startIndex + 1]) else { return }
             let width = payload.beUInt32(at: 2), height = payload.beUInt32(at: 6)
-            // flags byte is trailing; an older host omits it — assume no
-            // warning, matching its refuse-to-start contract.
-            // bit 0 = "don't warn about software encoding" (drives the banner).
-            // bit 1 = "encoder is genuinely hardware". The two differ only when
-            // the host has no hardware encoder at all (expected, not alarming),
-            // and bit 1 is absent from hosts that predate it — so it only ever
-            // refines the log line, never the banner.
-            let flags = payload.count >= 11 ? payload[payload.startIndex + 10] : 0b11
-            let hardware = flags & 0b01 != 0
-            let encoderNote = !hardware ? " [SOFTWARE ENCODE on host]"
-                            : flags & 0b10 != 0 ? " [hardware encode]" : ""
-            clogViewer("HELLO_ACK: \(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height)\(encoderNote) — streaming")
+            // flags byte (bit 0 = hardware encoder) is trailing; an older host
+            // omits it — assume hardware, matching its refuse-to-start contract.
+            let hardware = payload.count >= 11 ? (payload[payload.startIndex + 10] & 1) == 1 : true
+            clogViewer("HELLO_ACK: \(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height)\(hardware ? "" : " [SOFTWARE ENCODE on host]") — streaming")
             assembler = FrameAssembler(codec: codec)
             let codecName = codec == .hevc ? "HEVC" : "H.264"
             DispatchQueue.main.async {

@@ -102,16 +102,13 @@ enum StreamMessage {
         }
     }
 
-    /// `hardwareEncoder` becomes flags bit 0 ("no software-encoding warning")
-    /// and bit 1 ("genuinely hardware"). The Mac host never has the Windows
-    /// host's "no hardware encoder present at all" state — every fallback here
-    /// is a real fallback — so both bits carry the same value. Trailing byte;
-    /// clients that predate it just ignore the extra byte.
+    /// `hardwareEncoder` becomes flags bit 0 (trailing byte; clients that
+    /// predate it just ignore the extra byte).
     static func helloAck(codec: StreamCodec, width: UInt32, height: UInt32,
                          hardwareEncoder: Bool) -> Data {
         var p = Data([streamProtocolVersion, codec.rawValue])
         p.appendBE(width); p.appendBE(height)
-        p.append(hardwareEncoder ? 0b11 : 0b00)
+        p.append(hardwareEncoder ? 1 : 0)
         return frame(type: .helloAck, payload: p)
     }
 

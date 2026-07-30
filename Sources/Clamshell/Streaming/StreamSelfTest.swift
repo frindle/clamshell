@@ -17,7 +17,6 @@ enum StreamSelfTest {
     /// falling back to software or hitting a session limit, so both encoders
     /// must confirm the hardware path engaged.
     static func run() -> Bool {
-        guard checkHelloAckFlags() else { return false }
         let group = DispatchGroup()
         var resultA = false, resultB = false
         DispatchQueue.global().async(group: group) {
@@ -33,26 +32,6 @@ enum StreamSelfTest {
         print(resultA && resultB ? "PASS: both concurrent pipelines hardware-encoded and decoded"
                                  : "FAIL: pipeline A=\(resultA) B=\(resultB)")
         return resultA && resultB
-    }
-
-    /// HELLO_ACK's trailing flags byte: bit 0 = don't warn about software
-    /// encoding, bit 1 = genuinely hardware. Payload is
-    /// version(1) codec(1) width(4) height(4) flags(1) = 11 bytes.
-    private static func checkHelloAckFlags() -> Bool {
-        for (hardware, expected) in [(true, UInt8(0b11)), (false, UInt8(0b00))] {
-            let msg = StreamMessage.helloAck(codec: .hevc, width: 1920, height: 1080,
-                                             hardwareEncoder: hardware)
-            guard msg.count == 5 + 11 else {
-                print("FAIL: HELLO_ACK is \(msg.count) bytes, expected 16")
-                return false
-            }
-            let flags = msg[msg.startIndex + 5 + 10] // 5-byte header + payload offset 10
-            guard flags == expected else {
-                print("FAIL: HELLO_ACK flags for hardware=\(hardware) were \(flags), expected \(expected)")
-                return false
-            }
-        }
-        return true
     }
 
     private static func runPipeline(label: String, width: Int32, height: Int32, port: UInt16) -> Bool {

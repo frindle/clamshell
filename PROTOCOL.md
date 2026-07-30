@@ -82,15 +82,13 @@ bit 0 == 0. The Mac host keeps its existing bit 0 = isHardware meaning; the two
 hosts differ only in the no-hardware-present case, which the client renders
 identically either way.
 
-**Flags bit 1 = "encoder is genuinely hardware."** Set by both hosts: the
-Windows host sets it only for HardwareActive; the Mac host sets it = isHardware
-(it has no no-hardware-present state — every Mac fallback is a real fallback,
-so bits 0 and 1 always match there). Backward compatible: existing clients mask
-only bit 0, and a host that predates the bit simply leaves it clear. The bit
-exists because bit 0 alone can't distinguish "no hardware encoder present"
-from real hardware; the iOS client reads it for an accurate hardware-vs-software
-line in its connection log, and a future "Nerd Mode" label can use the same bit.
-The warning banner still keys off bit 0 only.
+*Proposed, not yet implemented on Mac/iOS:* bit 1 = "encoder is genuinely
+hardware" (the Windows host already sets it: 1 only for HardwareActive). It's
+backward compatible because existing clients mask only bit 0. If a future
+"Nerd Mode" wants an accurate hardware-vs-software label in the
+no-hardware-present case (where bit 0 alone can't distinguish it from real
+hardware), it can read bit 1; the Mac host would then also set bit 1 =
+isHardware. No client change is required until that label is wanted.
 
 ## Client display reporting (HELLO trailing bytes / CLIENT_DISPLAYS)
 

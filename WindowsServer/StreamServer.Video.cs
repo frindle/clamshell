@@ -82,10 +82,10 @@ internal sealed partial class StreamServer
     //   SoftwareFallback  -> warn        (bit 0 = 0)  <- hardware existed but failed
     // So no breaking wire change is needed for the behavior that matters.
     //
-    // bit 1 is a backward-compatible extension (old clients mask only bit 0, so
-    // they're unaffected): "genuinely hardware", for an accurate hw/sw label in
-    // the SoftwareExpected case. The Mac host sets it too and the iOS client
-    // reads it — see PROTOCOL.md.
+    // bit 1 is a PROPOSED, backward-compatible extension (old clients mask only
+    // bit 0, so they're unaffected): "genuinely hardware", for an accurate Nerd
+    // Mode hw/sw label in the SoftwareExpected case. The Mac/iOS sides do not
+    // read it yet — see the report and PROTOCOL.md note. Setting it here is free.
     private static byte HelloAckFlags(EncoderStatus s) => s switch
     {
         EncoderStatus.HardwareActive   => 0b11, // don't warn + genuinely hardware
