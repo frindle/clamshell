@@ -157,6 +157,16 @@ struct ContentView: View {
     @State private var showScanner = false
     @State private var showSettings = false
 
+    // RDP connection mode — a second target type alongside the native
+    // Clamshell protocol (see RDPSession.swift / RDPConnectView.swift).
+    // Kept as separate state/views rather than woven into StreamClient so
+    // the existing Clamshell path is untouched.
+    enum TargetType: String, CaseIterable { case clamshell = "Clamshell", rdp = "RDP" }
+    @State private var targetType: TargetType = .clamshell
+    @StateObject private var rdpSession = RDPSession()
+    @StateObject private var rdpStore = RDPProfileStore()
+    @State private var pendingCertificate: (subject: String, issuer: String, fingerprint: String, completion: (Bool) -> Void)?
+
     private func startConnection() {
         let h = host.trimmingCharacters(in: .whitespaces)
         guard !h.isEmpty else { return }
@@ -201,7 +211,9 @@ struct ContentView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            if case .streaming = client.status {
+            if targetType == .rdp, rdpSession.status != .idle {
+                RDPStreamView(session: rdpSession, onClose: { rdpSession.disconnect() })
+            } else if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
                     .overlay(alignment: .top) {
@@ -247,6 +259,14 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             if let text = UIPasteboard.general.string { client.syncClipboard(text) }
         }
+        .modifier(RDPCertificatePrompt(pending: $pendingCertificate))
+        .onAppear {
+            rdpSession.onCertificatePrompt = { subject, issuer, fingerprint, completion in
+                DispatchQueue.main.async {
+                    pendingCertificate = (subject, issuer, fingerprint, completion)
+                }
+            }
+        }
     }
 
     private var connectForm: some View {
@@ -254,39 +274,54 @@ struct ContentView: View {
             VStack(spacing: 16) {
                 Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
 
-                SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
-
-                Button {
-                    showScanner = true
-                } label: {
-                    Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
+                Picker("Target", selection: $targetType) {
+                    ForEach(ContentView.TargetType.allCases, id: \.self) { Text($0.rawValue).tag($0) }
                 }
-                .buttonStyle(.bordered)
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 420)
 
-                // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
-                // append "|wss://displayB..." to place a second screen externally.
-                TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                    .textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                    .frame(maxWidth: 420)
-                Button("Connect") { startConnection() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
-                Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
-                    .frame(maxWidth: 420)
-                    .foregroundStyle(.gray)
-                switch client.status {
-                case .connecting:
-                    VStack(spacing: 6) {
-                        ProgressView().tint(.white)
-                        if let e = client.lastError {
-                            Text(e).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
-                        }
+                if targetType == .rdp {
+                    RDPConnectForm(store: rdpStore) { rdpHost, port, username, password, domain in
+                        let size = UIScreen.main.nativeBounds.size
+                        rdpSession.connect(host: rdpHost, port: port, username: username, password: password,
+                                          domain: domain, width: Int(max(size.width, size.height)),
+                                          height: Int(min(size.width, size.height)), ignoreCertErrors: false)
                     }
-                case .failed(let reason): Text(reason).font(.footnote).foregroundStyle(.red)
-                default: EmptyView()
+                } else {
+                    SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
+
+                    Button {
+                        showScanner = true
+                    } label: {
+                        Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
+                    }
+                    .buttonStyle(.bordered)
+
+                    // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
+                    // append "|wss://displayB..." to place a second screen externally.
+                    TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                        .frame(maxWidth: 420)
+                    Button("Connect") { startConnection() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
+                    Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
+                        .frame(maxWidth: 420)
+                        .foregroundStyle(.gray)
+                    switch client.status {
+                    case .connecting:
+                        VStack(spacing: 6) {
+                            ProgressView().tint(.white)
+                            if let e = client.lastError {
+                                Text(e).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
+                            }
+                        }
+                    case .failed(let reason): Text(reason).font(.footnote).foregroundStyle(.red)
+                    default: EmptyView()
+                    }
                 }
             }
             .padding()

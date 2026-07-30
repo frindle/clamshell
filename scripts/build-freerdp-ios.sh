@@ -31,6 +31,14 @@
 # is already off below), a completely different LTO knob with a confusingly
 # similar failure signature.
 #
+# Second gotcha: WinPR's JSON helper (used for Azure AD device-auth flows,
+# not regular NLA/username+password) links whatever cJSON/json-c CMake finds
+# on the HOST at configure time -- e.g. Homebrew's, a macOS dylib -- which
+# is never actually cross-compiled for iOS and fails at the final app link
+# with "symbol(s) not found for architecture arm64" for json_object_*.
+# -DWITH_JSON_DISABLED=ON sidesteps cross-compiling json-c for a feature
+# this app doesn't use rather than chasing that down.
+#
 # Coverage: iOS device arm64 + iOS Simulator arm64 only (matches this repo's
 # only Apple Silicon dev/test path). Intel Simulator (x86_64) is not built —
 # add a SIMULATOR64 slice below and lipo it into ios-sim-libs if you need it.
@@ -99,6 +107,7 @@ build_freerdp() {
     -DWITH_FFMPEG=OFF -DWITH_DSP_FFMPEG=OFF -DWITH_VIDEO_FFMPEG=OFF -DWITH_SWSCALE=OFF \
     -DWITH_CUPS=OFF -DWITH_PCSC=OFF -DWITH_KRB5=OFF -DWITH_MANPAGES=OFF \
     -DWITH_CAIRO=OFF -DWITH_OPUS=OFF \
+    -DWITH_JSON_DISABLED=ON -DWITH_AAD=OFF \
     -DWITH_SIMD=ON \
     -DBUILD_TESTING=OFF -DBUILD_SHARED_LIBS=OFF \
     -DFREERDP_IOS_EXTERNAL_SSL_PATH="$ssl" \
