@@ -5,6 +5,14 @@ import SwiftUI
 // physical external screen is attached, Display B on that screen. StreamClient
 // (network), VideoView (render/input), StreamProtocol and FrameAssembler are
 // shared with the iPhone ClamshellControl target and/or the Mac host.
+//
+// "External Display Only" mode (Connection.externalOnlyMode, off by default)
+// is a second, simpler pairing for the same external-scene plumbing: instead
+// of a second virtual Mac display (Display B), the single `primary` stream is
+// what plays on the external screen, and the iPad's own screen drops the
+// video for a small status view — so the iPad itself stays free for other
+// apps while a monitor is attached. See ExternalDisplaySceneDelegate and
+// ContentView.externalOnlyStatusView.
 
 @main
 struct ViewerApp: App {
@@ -54,8 +62,14 @@ final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
         }
         clogViewer("external display scene CONNECTED: \(describeScreen(windowScene.screen))")
         let window = UIWindow(windowScene: windowScene) // sized to the external screen's own bounds
+        // External Display Only mode: the external screen shows the single
+        // `primary` stream (same one that would otherwise be on the iPad's own
+        // screen) instead of Display B, so the iPad's screen is free to go
+        // back to the connect/status view (or the user can leave the app
+        // entirely) while the video plays out only on the monitor.
+        let externalClient = Connection.shared.externalOnlyMode ? Connection.shared.primary : Connection.shared.external
         window.rootViewController = UIHostingController(
-            rootView: ExternalDisplayView(client: Connection.shared.external))
+            rootView: ExternalDisplayView(client: externalClient))
         window.isHidden = false
         self.window = window
         Connection.shared.externalDisplayConnected(size: windowScene.screen.nativeBounds.size)
@@ -80,9 +94,22 @@ final class Connection: ObservableObject {
     let external = StreamClient()
 
     private var connectedHost: String?
-    private var externalAttached = false
+    /// True whenever a physical external screen is currently attached
+    /// (regardless of `externalOnlyMode`) — drives the iPad-screen UI.
+    @Published var externalAttached = false
+    /// When on, an attached external display shows the single Mac screen
+    /// (the `primary` stream) instead of Display B, and the iPad's own screen
+    /// switches to a lightweight status view instead of the video — freeing
+    /// it for Home Screen / other apps while the session keeps running.
+    /// Persisted; **off by default** so existing dual-display behavior
+    /// (Display A on iPad + Display B external) is unaffected unless the
+    /// user opts in.
+    @Published var externalOnlyMode: Bool {
+        didSet { UserDefaults.standard.set(externalOnlyMode, forKey: "externalOnlyMode") }
+    }
 
     init() {
+        externalOnlyMode = UserDefaults.standard.bool(forKey: "externalOnlyMode")
         external.playsAudio = false
         // Report the iPad's real screen size in HELLO so the Mac auto-sizes
         // its virtual display to this device (no manual preset needed).
@@ -110,6 +137,9 @@ final class Connection: ObservableObject {
     // auto-enter/leave dual display mode (Auto-Detect Dual Display).
     func externalDisplayConnected(size: CGSize) {
         externalAttached = true
+        // External Display Only: no Display B to negotiate — the external
+        // screen just plays the primary client's existing single stream.
+        guard !externalOnlyMode else { return }
         // The primary connection carries Display B's size too (only the
         // primary's report is honored host-side), so the Mac sizes Display B
         // to the real external monitor instead of the fixed presetB.
@@ -118,15 +148,23 @@ final class Connection: ObservableObject {
     }
     func externalDisplayDisconnected() {
         externalAttached = false
+        // Mid-session unplug while in External Display Only mode: nothing to
+        // tear down here — `primary` was never paused, so ContentView falls
+        // straight back to showing its video on the iPad's own screen the
+        // moment `externalAttached` flips (see ContentView.body). This is the
+        // "fall back rather than freeze" choice for a live session.
+        guard !externalOnlyMode else { return }
         primary.updateReportedDisplay(secondDisplay: false)
         external.disconnect()
     }
 
     /// Connect Display B only when a physical external screen is actually
-    /// attached — otherwise we'd waste a whole encode+stream pipeline (or spin
-    /// reconnecting to a port the Mac isn't serving).
+    /// attached and dual-display mode applies — otherwise we'd waste a whole
+    /// encode+stream pipeline (or spin reconnecting to a port the Mac isn't
+    /// serving). No-op in External Display Only mode (no Display B exists).
     private func connectExternalIfAttached() {
-        guard externalAttached,
+        guard !externalOnlyMode,
+              externalAttached,
               let host = connectedHost,
               let bHost = Self.secondDisplayEndpoint(from: host) else { return }
         external.connect(host: bHost)
@@ -149,7 +187,7 @@ final class Connection: ObservableObject {
 // MARK: - UI
 
 struct ContentView: View {
-    private let connection = Connection.shared
+    @ObservedObject private var connection = Connection.shared
     @ObservedObject private var client = Connection.shared.primary
     @StateObject private var store = MachineStore()
     @AppStorage("hostAddress") private var host = ""
@@ -202,33 +240,37 @@ struct ContentView: View {
         ZStack {
             Color.black.ignoresSafeArea()
             if case .streaming = client.status {
-                VideoView(client: client)
-                    .ignoresSafeArea()
-                    .overlay(alignment: .top) {
-                        VStack(spacing: 6) {
-                            if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
-                            if client.softwareEncoding { SoftwareEncodingBanner() }
-                            QualityIndicator(client: client)
-                        }
-                        .padding(.top, 8)
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        HStack(spacing: 16) {
-                            Button { showSettings = true } label: {
-                                Image(systemName: "gearshape.fill")
-                                    .font(.title)
-                                    .foregroundStyle(.white.opacity(0.35))
+                if connection.externalOnlyMode && connection.externalAttached {
+                    externalOnlyStatusView
+                } else {
+                    VideoView(client: client)
+                        .ignoresSafeArea()
+                        .overlay(alignment: .top) {
+                            VStack(spacing: 6) {
+                                if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
+                                if client.softwareEncoding { SoftwareEncodingBanner() }
+                                QualityIndicator(client: client)
                             }
-                            Button {
-                                connection.disconnect()
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.title)
-                                    .foregroundStyle(.white.opacity(0.35))
-                            }
+                            .padding(.top, 8)
                         }
-                        .padding()
-                    }
+                        .overlay(alignment: .topTrailing) {
+                            HStack(spacing: 16) {
+                                Button { showSettings = true } label: {
+                                    Image(systemName: "gearshape.fill")
+                                        .font(.title)
+                                        .foregroundStyle(.white.opacity(0.35))
+                                }
+                                Button {
+                                    connection.disconnect()
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title)
+                                        .foregroundStyle(.white.opacity(0.35))
+                                }
+                            }
+                            .padding()
+                        }
+                }
             } else {
                 connectForm
             }
@@ -238,7 +280,8 @@ struct ContentView: View {
         .onAppear(perform: preselectLastUsed)
         .sheet(isPresented: $showSettings) {
             InSessionSettingsView(store: store, currentHost: host,
-                                  onSwitch: switchTo, onClose: { showSettings = false })
+                                  onSwitch: switchTo, onClose: { showSettings = false },
+                                  externalOnlyToggle: $connection.externalOnlyMode)
         }
         .fullScreenCover(isPresented: $showScanner) {
             QRScannerView(onScan: applyScan, onCancel: { showScanner = false })
@@ -247,6 +290,37 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             if let text = UIPasteboard.general.string { client.syncClipboard(text) }
         }
+    }
+
+    /// Shown on the iPad's own screen instead of the video, while External
+    /// Display Only mode is on and a monitor is attached — the actual video
+    /// is playing on the external scene (see ExternalDisplaySceneDelegate).
+    /// Deliberately minimal, matching ClamshellControl's control-surface
+    /// screen: status + the same session controls, no video surface to steal
+    /// focus from whatever else the user does on the iPad.
+    private var externalOnlyStatusView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "tv.and.hifispeaker.fill")
+                .font(.system(size: 44))
+                .foregroundStyle(.white.opacity(0.6))
+            Text("Streaming to external display")
+                .font(.headline).foregroundStyle(.white)
+            Text("This screen is free — switch to another app or the Home Screen.")
+                .font(.footnote).foregroundStyle(.gray)
+                .multilineTextAlignment(.center).padding(.horizontal, 40)
+            if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
+            if client.softwareEncoding { SoftwareEncodingBanner() }
+            QualityIndicator(client: client)
+            HStack(spacing: 24) {
+                Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape.fill") }
+                Button(role: .destructive) { connection.disconnect() } label: {
+                    Label("Disconnect", systemImage: "xmark.circle.fill")
+                }
+            }
+            .buttonStyle(.bordered)
+            .tint(.white)
+        }
+        .padding()
     }
 
     private var connectForm: some View {
@@ -275,6 +349,9 @@ struct ContentView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
                 Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
+                    .frame(maxWidth: 420)
+                    .foregroundStyle(.gray)
+                Toggle("External display only (frees this screen)", isOn: $connection.externalOnlyMode)
                     .frame(maxWidth: 420)
                     .foregroundStyle(.gray)
                 switch client.status {
