@@ -27,6 +27,13 @@ Compression=lzma
 SolidCompression=yes
 ArchitecturesAllowed=x64
 ArchitecturesInstallIn64BitMode=x64
+; Must match Program.cs's Mutex name exactly. Without this, Setup had no
+; reliable way to detect a running Clamshell instance during an upgrade --
+; it would overwrite the exe under a live process instead of closing it
+; first, leaving the old instance orphaned in Task Manager even after the
+; tray icon was gone. CloseApplications/RestartApplications default to yes
+; and now have something to actually detect. Confirmed live 2026-07-31.
+AppMutex=ClamshellServer-SingleInstance,Global\ClamshellServer-SingleInstance
 ; UninstallDisplayIcon already picks this up automatically since the exe
 ; itself now carries it (ClamshellServer.csproj's ApplicationIcon) — this is
 ; just for Setup.exe's own icon (Explorer, Downloads, the wizard window).
