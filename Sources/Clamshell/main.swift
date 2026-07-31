@@ -24,8 +24,17 @@ if args.count > 1 {
         print("sent \(args[1])\(info.isEmpty ? "" : " \(info["width"]!)x\(info["height"]!)") to running Clamshell")
         exit(0)
     case "test-virtual-display":
+        // Optional custom pixel size (e.g. `test-virtual-display 3440 1440`
+        // to stand in for a physical ultrawide monitor when no real one is
+        // available) — defaults to the iPad Air 13" preset.
+        let preset: DisplayPreset
+        if args.count >= 4, let w = UInt32(args[2]), let h = UInt32(args[3]) {
+            preset = DisplayPreset(name: "custom \(w)x\(h)", pointsWide: w / 2, pointsHigh: h / 2)
+        } else {
+            preset = .iPadAir13
+        }
         let controller = VirtualDisplayController()
-        guard let id = controller.create(preset: .iPadAir13) else {
+        guard let id = controller.create(preset: preset) else {
             print("FAILED: could not create virtual display")
             exit(1)
         }
@@ -59,6 +68,32 @@ if args.count > 1 {
         }
         print("Streaming from port \(basePort) (one port per active display, main first) — ctrl-C to stop")
         withExtendedLifetime(fleet) { RunLoop.main.run() }
+    case "test-ultrawide-stream":
+        // clamshell test-ultrawide-stream <width> <height> [basePort]
+        // Combines test-virtual-display + stream, held open (no 10s teardown)
+        // so an external client can actually connect — the sandbox test rig
+        // for pan+zoom/cursor-follow (README "Manual pan+zoom &
+        // cursor-follow auto-pan") when no real ultrawide monitor is on hand.
+        guard args.count >= 4, let w = UInt32(args[2]), let h = UInt32(args[3]) else {
+            print("Usage: clamshell test-ultrawide-stream <width> <height> [basePort]")
+            exit(64)
+        }
+        let basePort = args.count > 4 ? (UInt16(args[4]) ?? streamDefaultPort) : streamDefaultPort
+        let preset = DisplayPreset(name: "custom \(w)x\(h)", pointsWide: w / 2, pointsHigh: h / 2)
+        let controller = VirtualDisplayController()
+        guard let id = controller.create(preset: preset) else {
+            print("FAILED: could not create \(w)x\(h) virtual display")
+            exit(1)
+        }
+        print("Virtual display \(w)x\(h) created (id \(id))")
+        let fleet = StreamFleet(basePort: basePort)
+        fleet.rebuild()
+        guard fleet.isServing else {
+            print("FAILED to start any stream server (ports in use?) — see log")
+            exit(1)
+        }
+        print("Streaming \(w)x\(h) from port \(basePort) — ctrl-C to stop")
+        withExtendedLifetime((controller, fleet)) { RunLoop.main.run() }
     case "stream-selftest":
         // Hardware encode -> TCP loopback -> hardware decode sanity check.
         exit(StreamSelfTest.run() ? 0 : 1)
