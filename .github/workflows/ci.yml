@@ -18,10 +18,18 @@ jobs:
       - name: Build iOS viewer (simulator, compile check only)
         run: |
           cd ClamshellViewer
-          xcodebuild -project ClamshellViewer.xcodeproj -target ClamshellViewer \
-            -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
+          # -scheme, not -project/-target: ClamshellViewer depends on the local
+          # FreeRDPKit SPM package, and only scheme builds resolve/build SPM
+          # package products before compiling — a bare -target build fails with
+          # "module map file ... RDPBridge.modulemap not found" because nothing
+          # triggers the package build first.
+          # EXCLUDED_ARCHS=x86_64: FreeRDPKit's vendored CFreeRDP.xcframework
+          # is arm64-only (build-freerdp-ios.sh doesn't cross-compile an x86_64
+          # slice), so a default multi-arch simulator build fails linking it.
+          xcodebuild -scheme ClamshellViewer \
+            -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO EXCLUDED_ARCHS=x86_64 build
       - name: Build iPhone control app (simulator, compile check only)
         run: |
           cd ClamshellViewer
-          xcodebuild -project ClamshellViewer.xcodeproj -target ClamshellControl \
+          xcodebuild -scheme ClamshellControl \
             -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
