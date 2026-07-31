@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Threading;
+
 namespace Clamshell;
 
 // Video + adaptive-bitrate half of StreamServer. Split into its own partial so
@@ -9,6 +12,8 @@ internal sealed partial class StreamServer
     private VideoEncoder? _encoder;
     private DisplayCapture? _capture;
     private AudioEncoder? _audio;
+    private Timer? _cursorTimer;
+    private (float x, float y)? _lastSentCursor;
 
     // Adaptive bitrate (PROTOCOL.md "Adaptive bitrate"): reactive, driven by
     // WebSocket send backpressure. _inFlight counts frames handed to Send but
@@ -55,12 +60,17 @@ internal sealed partial class StreamServer
             _audio = audio;
         }
 
+        StartCursorReporting();
+
         Log.Line($"port {_port}: session started — {_encoder.Codec} {_display.Bounds.Width}x{_display.Bounds.Height}" +
                  $"{(_encoder.Status == EncoderStatus.HardwareActive ? "" : " [SOFTWARE ENCODE]")}");
     }
 
     private void TeardownVideo()
     {
+        _cursorTimer?.Dispose();
+        _cursorTimer = null;
+        _lastSentCursor = null;
         _audio?.Dispose();
         _audio = null;
         _capture?.Dispose();
@@ -68,6 +78,37 @@ internal sealed partial class StreamServer
         _encoder?.Dispose();
         _encoder = null;
     }
+
+    // MARK: - Cursor-follow auto-pan
+    //
+    // Mirrors the Mac's CGEvent-based cursor poll: 20 Hz, skipped when the
+    // cursor hasn't moved (beyond a small epsilon) since the last send, so an
+    // idle mouse costs nothing. GetCursorPos returns virtual-desktop screen
+    // pixels (same top-left-origin space InputInjector maps into via
+    // _display.Bounds), so normalizing against this display's bounds is a
+    // direct mirror of the Mac's CGDisplayBounds math.
+    private void StartCursorReporting()
+    {
+        _cursorTimer = new Timer(_ =>
+        {
+            if (_ws is null) return;
+            if (!GetCursorPos(out var pt)) return;
+            var b = _display.Bounds;
+            if (b.Width <= 0 || b.Height <= 0) return;
+            float nx = (pt.X - b.X) / (float)b.Width;
+            float ny = (pt.Y - b.Y) / (float)b.Height;
+            if (_lastSentCursor is { } last &&
+                Math.Abs(last.x - nx) < 0.001f && Math.Abs(last.y - ny) < 0.001f) return;
+            _lastSentCursor = (nx, ny);
+            _ = SendAsync(Proto.CursorPos(nx, ny));
+        }, null, TimeSpan.Zero, TimeSpan.FromMilliseconds(50)); // 20 Hz
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT { public int X, Y; }
+
+    [DllImport("user32.dll")]
+    private static extern bool GetCursorPos(out POINT lpPoint);
 
     private void RequestKeyframe() => _encoder?.RequestKeyframe();
 

@@ -68,8 +68,12 @@ final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
         // back to the connect/status view (or the user can leave the app
         // entirely) while the video plays out only on the monitor.
         let externalClient = Connection.shared.externalOnlyMode ? Connection.shared.primary : Connection.shared.external
+        // Manual pan+zoom / cursor-follow auto-pan only applies to External
+        // Display Only mode's single-stream path — Display B keeps its plain
+        // aspect-fit behavior unchanged.
+        let viewport = Connection.shared.externalOnlyMode ? Connection.shared.viewport : nil
         window.rootViewController = UIHostingController(
-            rootView: ExternalDisplayView(client: externalClient))
+            rootView: ExternalDisplayView(client: externalClient, viewport: viewport))
         window.isHidden = false
         self.window = window
         Connection.shared.externalDisplayConnected(size: windowScene.screen.nativeBounds.size)
@@ -92,6 +96,11 @@ final class Connection: ObservableObject {
 
     let primary = StreamClient()
     let external = StreamClient()
+    /// Manual pan+zoom / cursor-follow auto-pan state for External Display
+    /// Only mode's external screen — see VideoView.swift. One instance for
+    /// the app's lifetime (reset on each new connection, not recreated) since
+    /// it's rendered from a UIKit scene delegate outside SwiftUI's view tree.
+    let viewport = Viewport()
 
     private var connectedHost: String?
     /// True whenever a physical external screen is currently attached
@@ -117,6 +126,7 @@ final class Connection: ObservableObject {
     }
 
     func connect(host: String) {
+        viewport.reset()
         connectedHost = host
         // A leading "A|B" carries an explicit Display B address; the primary
         // connects only to the A part.
@@ -295,32 +305,69 @@ struct ContentView: View {
     /// Shown on the iPad's own screen instead of the video, while External
     /// Display Only mode is on and a monitor is attached — the actual video
     /// is playing on the external scene (see ExternalDisplaySceneDelegate).
-    /// Deliberately minimal, matching ClamshellControl's control-surface
-    /// screen: status + the same session controls, no video surface to steal
-    /// focus from whatever else the user does on the iPad.
+    /// Doubles as the manual pan+zoom gesture surface (PanZoomGestureSurface,
+    /// full-screen underneath the status card): two-finger drag pans, pinch
+    /// zooms — same "control surface on the device, video on the external
+    /// screen" split ClamshellControl's trackpad already uses. See
+    /// VideoView.swift for the render/gesture/protocol pieces.
     private var externalOnlyStatusView: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "tv.and.hifispeaker.fill")
-                .font(.system(size: 44))
-                .foregroundStyle(.white.opacity(0.6))
-            Text("Streaming to external display")
-                .font(.headline).foregroundStyle(.white)
-            Text("This screen is free — switch to another app or the Home Screen.")
-                .font(.footnote).foregroundStyle(.gray)
-                .multilineTextAlignment(.center).padding(.horizontal, 40)
-            if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
-            if client.softwareEncoding { SoftwareEncodingBanner() }
-            QualityIndicator(client: client)
-            HStack(spacing: 24) {
-                Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape.fill") }
-                Button(role: .destructive) { connection.disconnect() } label: {
-                    Label("Disconnect", systemImage: "xmark.circle.fill")
+        ZStack {
+            // Full-screen, behind the status card. The card below only
+            // occupies its own intrinsic size (it's not given a full-screen
+            // frame), so its 1-finger buttons and this view's 2-finger
+            // pan / pinch never compete for the same touches, and blank space
+            // around the card still reaches this gesture surface.
+            PanZoomGestureSurface(viewport: connection.viewport)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 16) {
+                Image(systemName: "tv.and.hifispeaker.fill")
+                    .font(.system(size: 44))
+                    .foregroundStyle(.white.opacity(0.6))
+                Text("Streaming to external display")
+                    .font(.headline).foregroundStyle(.white)
+                Text("Two-finger drag pans, pinch zooms the external display.")
+                    .font(.footnote).foregroundStyle(.gray)
+                    .multilineTextAlignment(.center).padding(.horizontal, 40)
+                if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
+                if client.softwareEncoding { SoftwareEncodingBanner() }
+                QualityIndicator(client: client)
+                panZoomControls
+                HStack(spacing: 24) {
+                    Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape.fill") }
+                    Button(role: .destructive) { connection.disconnect() } label: {
+                        Label("Disconnect", systemImage: "xmark.circle.fill")
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(.white)
+            }
+            .padding()
+        }
+    }
+
+    /// Auto-Follow toggle + Reset, and the live zoom readout — small enough
+    /// to not compete with the status card, big enough to find without
+    /// hunting. Auto-Follow starts on; a manual pan/pinch flips it off (see
+    /// Viewport's manual-override doc comment) and this is how the user turns
+    /// it back on.
+    @ObservedObject private var viewportState = Connection.shared.viewport
+    private var panZoomControls: some View {
+        VStack(spacing: 10) {
+            Toggle(isOn: $viewportState.autoFollow) {
+                Label("Auto-Follow Cursor", systemImage: "cursorarrow.motionlines")
+            }
+            .toggleStyle(.button)
+            .tint(.white.opacity(0.25))
+            .foregroundStyle(.white)
+            if viewportState.zoom > 1.01 {
+                HStack(spacing: 12) {
+                    Text("Zoom \(String(format: "%.1fx", viewportState.zoom))")
+                        .font(.caption).foregroundStyle(.gray)
+                    Button("Reset View") { viewportState.reset() }
+                        .font(.caption)
                 }
             }
-            .buttonStyle(.bordered)
-            .tint(.white)
         }
-        .padding()
     }
 
     private var connectForm: some View {

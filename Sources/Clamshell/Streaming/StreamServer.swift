@@ -56,6 +56,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var lastCongestionAt: CFAbsoluteTime = 0
     private var lastStepAt: CFAbsoluteTime = 0
 
+    // Cursor-follow auto-pan (see PROTOCOL.md): a lightweight, throttled
+    // CURSOR_POS report so the client can auto-pan its viewport without the
+    // cursor being decoded from pixels. 20 Hz is plenty for a smooth-feeling
+    // follow and is trivial bandwidth (14 bytes/msg) next to the video stream.
+    private var cursorTimer: DispatchSourceTimer?
+    private var lastSentCursor: CGPoint?
+
     init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
         self.displayID = displayID
         self.port = port
@@ -163,6 +170,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         bitrate = VideoEncoder.maxBitrate
         lastCongestionAt = 0
         lastStepAt = 0
+        cursorTimer?.cancel()
+        cursorTimer = nil
+        lastSentCursor = nil
         if let s = stream {
             s.stopCapture { _ in }
             stream = nil
@@ -204,7 +214,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
         case .clipboard:
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
-        case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState:
+        case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
         }
     }
@@ -369,6 +379,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                                                      hardwareEncoder: encoder.isHardware))
                     self.sendStreamStatus() // initial bitrate for the quality indicator
                     self.send(StreamMessage.hostLockState(self.hostLocked)) // so a client joining a locked Mac knows now
+                    self.startCursorReporting(displayID: displayID)
                     clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))\(encoder.isHardware ? "" : " [SOFTWARE ENCODE]")")
                 }
             } catch {
@@ -376,6 +387,31 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 self.queue.async { self.teardownSession() }
             }
         }
+    }
+
+    // MARK: - Cursor-follow auto-pan (on `queue`)
+
+    /// Polls the global cursor position at 20 Hz and reports it normalized to
+    /// this display's bounds — skipped when it hasn't moved (beyond a small
+    /// epsilon) since the last send, so an idle mouse costs nothing. `CGEvent`
+    /// location is in the same top-left-origin global point space as
+    /// `CGDisplayBounds`, matching `InputInjector.map` exactly.
+    private func startCursorReporting(displayID: CGDirectDisplayID) {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(50)) // 20 Hz
+        timer.setEventHandler { [weak self] in
+            guard let self, let global = CGEvent(source: nil)?.location else { return }
+            let bounds = CGDisplayBounds(displayID)
+            guard bounds.width > 0, bounds.height > 0 else { return }
+            let norm = CGPoint(x: (global.x - bounds.origin.x) / bounds.width,
+                               y: (global.y - bounds.origin.y) / bounds.height)
+            if let last = self.lastSentCursor,
+               abs(last.x - norm.x) < 0.001, abs(last.y - norm.y) < 0.001 { return }
+            self.lastSentCursor = norm
+            self.send(StreamMessage.cursorPos(x: Float32(norm.x), y: Float32(norm.y)))
+        }
+        timer.resume()
+        cursorTimer = timer
     }
 
     // MARK: - Sending (on `queue`)
