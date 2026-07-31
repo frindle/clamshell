@@ -454,6 +454,25 @@ form.
   entering host/user/pass manually, saved targets with Keychain-stored
   passwords. Cross-compile and full app build verified; live-host handshake
   is not yet — see "RDP support" above.
+- **External Display Only mode (iPad viewer, ⚠ code-reviewed only — see below)**:
+  new toggle ("External display only (frees this screen)" — connect form,
+  and in the mid-session settings sheet) makes an attached external monitor
+  show the single Mac stream that would otherwise be on the iPad's own
+  screen; the iPad's screen drops to a small status card ("Streaming to
+  external display" + Settings/Disconnect) instead of full-screen video, so
+  it's free for Home Screen / other apps / Split View while the session
+  keeps running elsewhere. Off by default — existing Dual Display Mode
+  behavior (Display A on the iPad + Display B external) is unchanged unless
+  you opt in. If the monitor is unplugged mid-session, video falls back to
+  the iPad's own screen automatically (no pause/reconnect step). Detection
+  is the same `UIScreen.didConnectNotification`/`didDisconnectNotification`
+  → `UIWindowScene` machinery Dual Display Mode already used; this mode just
+  points the external scene at `primary` instead of a second Display B
+  client and skips the Display B negotiation entirely. Verified: both Xcode
+  targets (`ClamshellViewer`, `ClamshellControl`) build clean for iOS
+  Simulator. Not yet exercised against a real external monitor — do that via
+  Simulator's I/O → External Displays menu or a real device before relying
+  on it for a live session.
 - **Lock-screen fallback to browser VNC (automatic)**: the host now detects when
   the Mac's screen locks (`com.apple.screenIsLocked` / `...Unlocked`) and pushes
   it to native clients via a new `HOST_LOCK_STATE` protocol message. The iPad and
