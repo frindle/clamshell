@@ -447,6 +447,35 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Manual pan+zoom & cursor-follow auto-pan (External Display Only mode, ⚠
+  code-reviewed only, NOT verified rendering live — see below)**: built for
+  an ultrawide (or otherwise larger/differently-shaped) Mac display viewed on
+  a smaller portable monitor plugged into the iPad. The external screen can
+  now render a controllable zoomed-in crop instead of shrinking the whole
+  ultrawide frame to fit — two-finger drag pans, pinch zooms, both live on
+  the iPad's own free screen (same status view as External Display Only
+  mode) rather than the video itself, matching ClamshellControl's existing
+  control-surface-on-device / video-on-external-screen split. A new "Auto-
+  Follow Cursor" toggle keeps the remote mouse cursor in view automatically as
+  it moves, driven by a new low-frequency **CURSOR_POS** protocol message
+  (host → client, 20 Hz, throttled to skip unchanged positions) — implemented
+  on both the Mac (`CGEvent` polling) and Windows (`GetCursorPos` polling)
+  hosts, since cursor position isn't otherwise available to the client (it's
+  baked into the captured pixels like any screen capture). A manual pan or
+  pinch immediately suspends auto-follow rather than fighting it or fading
+  back in after an idle timeout — see PROTOCOL.md "Cursor-follow auto-pan" for
+  the full design rationale. Off the manual-pan/pinch path this is
+  additive/opt-in: plain External Display Only sessions with no gestures
+  behave exactly as before. **What was actually verified**: `swift build`
+  and both Xcode targets build clean; a local `CGVirtualDisplay` at
+  3440×1440 served correctly over the stream protocol; a raw WebSocket probe
+  got its HELLO accepted by that virtual display. What was NOT verified:
+  actual on-screen pan/zoom/cursor-follow rendering — blocked in this
+  sandboxed environment by a TCC Screen Recording permission prompt
+  (`SCStream` error -3801) that can't be granted headlessly, and no
+  UI-automation tool was available to tap through the Simulator. Needs a
+  human to grant Screen Recording to a local build and actually drive the
+  UI (Simulator or real device) before trusting this feature.
 - **RDP connection mode (ClamshellViewer, in progress)**: connect straight to
   a Windows machine's built-in RDP server, no Clamshell agent required on that
   machine. Wraps FreeRDP via a vendored XCFramework + Objective-C bridge

@@ -28,6 +28,13 @@ final class StreamClient: ObservableObject {
     /// native capture path can't survive the macOS lock screen, so the UI shows
     /// a banner pointing at the browser VNC fallback until the host unlocks.
     @Published var hostLocked = false
+    /// Remote cursor position from the host's periodic CURSOR_POS reports,
+    /// normalized 0..1 in this display's source-frame space — nil until the
+    /// first report arrives. Values outside 0...1 mean the cursor is
+    /// currently on a different display than this connection; consumers
+    /// (auto-pan) should treat that as "not visible here". See
+    /// PROTOCOL.md "Cursor-follow auto-pan".
+    @Published var cursorPos: CGPoint?
 
     /// Whether audio plays through this client. Only the primary (iPad-screen)
     /// client plays audio; the external-display client stays muted.
@@ -170,6 +177,7 @@ final class StreamClient: ObservableObject {
         currentBitrateKbps = 0
         hostLocked = false
         lastError = nil
+        cursorPos = nil
     }
 
     /// The Mac's browser VNC bridge (noVNC on http://<mac>:5901), derived from
@@ -268,6 +276,10 @@ final class StreamClient: ObservableObject {
             let locked = byte == 1
             clogViewer("HOST_LOCK_STATE: host screen \(locked ? "LOCKED — showing browser VNC fallback" : "unlocked")")
             DispatchQueue.main.async { self.hostLocked = locked }
+        case .cursorPos:
+            guard payload.count >= 8 else { return }
+            let p = CGPoint(x: Double(payload.beFloat32(at: 0)), y: Double(payload.beFloat32(at: 4)))
+            DispatchQueue.main.async { self.cursorPos = p }
         case .videoFrame:
             guard let sample = assembler?.assemble(payload: payload) else { return }
             onSampleBuffer?(sample)

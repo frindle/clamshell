@@ -10,6 +10,7 @@ enum StreamMessageType: UInt8 {
     case clientDisplays = 0x03 // client -> host: display size / second-screen update
     case streamStatus = 0x04   // host -> client: live status (current bitrate)
     case hostLockState = 0x05  // host -> client: screen locked/unlocked (1 byte bool)
+    case cursorPos = 0x06      // host -> client: remote cursor position (see "Cursor-follow auto-pan")
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
@@ -158,6 +159,17 @@ enum StreamMessage {
     /// screen, so the client shows the browser-VNC fallback banner when locked.
     static func hostLockState(_ locked: Bool) -> Data {
         frame(type: .hostLockState, payload: Data([locked ? 1 : 0]))
+    }
+
+    /// Remote cursor position, normalized 0..1 in this display's source-frame
+    /// space (same convention as INPUT_MOUSE_MOVE), origin top-left. Drives
+    /// client-side cursor-follow auto-pan — see "Cursor-follow auto-pan" in
+    /// PROTOCOL.md. Values can fall outside 0...1 (cursor is on a different
+    /// display than this connection); the client treats that as "not visible
+    /// here" and skips auto-pan.
+    static func cursorPos(x: Float32, y: Float32) -> Data {
+        var p = Data(); p.appendBE(x); p.appendBE(y)
+        return frame(type: .cursorPos, payload: p)
     }
 }
 
