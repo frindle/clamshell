@@ -252,7 +252,20 @@ struct WindowSizeReader: UIViewRepresentable {
             guard let screen = window?.screen, bounds.width > 0, bounds.height > 0 else { return }
             let scale = screen.scale
             let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-            guard size != lastSize else { return }
+            if let last = lastSize {
+                // Real bug hit 2026-07-31: this view's bounds settle a beat
+                // after the window first appears (safe-area/layout pass),
+                // producing a small ~2-3% correction on top of the initial
+                // HELLO estimate. That was enough to trigger a full display
+                // rebuild on EVERY connect, which raced with capture-session
+                // setup ("display not found in shareable content") and
+                // caused real disconnects. Not worth a rebuild for a sliver
+                // this small — only report changes that actually matter
+                // (going fullscreen, a genuinely different monitor, etc).
+                let dw = abs(size.width - last.width) / last.width
+                let dh = abs(size.height - last.height) / last.height
+                guard dw > 0.03 || dh > 0.03 else { return }
+            }
             lastSize = size
             onChange?(size, screen == UIScreen.main)
         }
@@ -372,6 +385,16 @@ struct ContentView: View {
             Color.black.ignoresSafeArea()
             if targetType == .rdp, rdpSession.status != .idle {
                 RDPStreamView(session: rdpSession, onClose: { rdpSession.disconnect() })
+            } else if case .streaming = client.status, client.hostLocked {
+                // Auto-forward into the embedded browser VNC bridge while
+                // locked — was a manual "tap to open Safari" link before;
+                // the Mac being locked isn't a rare edge case worth extra
+                // taps, and native video is paused anyway (Screen Recording
+                // can't see a locked screen, only screensharingd can).
+                // Reverts to VideoView on its own once client.hostLocked
+                // flips false (HOST_LOCK_STATE from the Mac) — no manual
+                // "reconnect" step, the native stream was never torn down.
+                LockedHostView(url: client.browserFallbackURL)
             } else if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
@@ -390,7 +413,6 @@ struct ContentView: View {
                     )
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
-                            if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
                             if client.softwareEncoding { SoftwareEncodingBanner() }
                             QualityIndicator(client: client)
                         }
