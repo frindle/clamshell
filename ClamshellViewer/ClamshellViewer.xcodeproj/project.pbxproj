@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		BB0000000000000000000030 /* RDPBridge in Frameworks */ = {isa = PBXBuildFile; productRef = FD0000000000000000000001 /* RDPBridge */; };
 		BB0000000000000000000001 /* ViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000001 /* ViewerApp.swift */; };
 		BB0000000000000000000002 /* StreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* StreamProtocol.swift */; };
 		BB0000000000000000000003 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
@@ -23,6 +24,12 @@
 		BB0000000000000000000015 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
 		BB0000000000000000000016 /* StreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* StreamProtocol.swift */; };
 		BB0000000000000000000017 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
+		BB0000000000000000000041 /* RDPSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000040 /* RDPSession.swift */; };
+		BB0000000000000000000043 /* RDPView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000042 /* RDPView.swift */; };
+		BB0000000000000000000045 /* RDPKeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000044 /* RDPKeyMap.swift */; };
+		BB0000000000000000000047 /* RDPFile.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000046 /* RDPFile.swift */; };
+		BB0000000000000000000049 /* RDPCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000048 /* RDPCredentialStore.swift */; };
+		BB000000000000000000004B /* RDPConnectView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000000000000000000004A /* RDPConnectView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -37,6 +44,12 @@
 		FF0000000000000000000020 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
 		FF0000000000000000000009 /* ControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlApp.swift; sourceTree = "<group>"; };
 		FF000000000000000000000A /* ClamshellControl.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF0000000000000000000040 /* RDPSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPSession.swift; sourceTree = "<group>"; };
+		FF0000000000000000000042 /* RDPView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPView.swift; sourceTree = "<group>"; };
+		FF0000000000000000000044 /* RDPKeyMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPKeyMap.swift; sourceTree = "<group>"; };
+		FF0000000000000000000046 /* RDPFile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPFile.swift; sourceTree = "<group>"; };
+		FF0000000000000000000048 /* RDPCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPCredentialStore.swift; sourceTree = "<group>"; };
+		FF000000000000000000004A /* RDPConnectView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPConnectView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -44,6 +57,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB0000000000000000000030 /* RDPBridge in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -76,6 +90,12 @@
 				FF0000000000000000000020 /* SharedUI.swift */,
 				FF0000000000000000000005 /* AudioPlayer.swift */,
 				FF0000000000000000000006 /* KeyMap.swift */,
+				FF0000000000000000000040 /* RDPSession.swift */,
+				FF0000000000000000000042 /* RDPView.swift */,
+				FF0000000000000000000044 /* RDPKeyMap.swift */,
+				FF0000000000000000000046 /* RDPFile.swift */,
+				FF0000000000000000000048 /* RDPCredentialStore.swift */,
+				FF000000000000000000004A /* RDPConnectView.swift */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -121,6 +141,9 @@
 			dependencies = (
 			);
 			name = ClamshellViewer;
+			packageProductDependencies = (
+				FD0000000000000000000001 /* RDPBridge */,
+			);
 			productName = ClamshellViewer;
 			productReference = FF0000000000000000000004 /* ClamshellViewer.app */;
 			productType = "com.apple.product-type.application";
@@ -160,6 +183,9 @@
 				Base,
 			);
 			mainGroup = AA0000000000000000000001;
+			packageReferences = (
+				FE0000000000000000000001 /* XCLocalSwiftPackageReference "FreeRDPKit" */,
+			);
 			productRefGroup = AA0000000000000000000004 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -183,6 +209,12 @@
 				BB0000000000000000000006 /* KeyMap.swift in Sources */,
 				BB0000000000000000000002 /* StreamProtocol.swift in Sources */,
 				BB0000000000000000000003 /* FrameAssembler.swift in Sources */,
+				BB0000000000000000000041 /* RDPSession.swift in Sources */,
+				BB0000000000000000000043 /* RDPView.swift in Sources */,
+				BB0000000000000000000045 /* RDPKeyMap.swift in Sources */,
+				BB0000000000000000000047 /* RDPFile.swift in Sources */,
+				BB0000000000000000000049 /* RDPCredentialStore.swift in Sources */,
+				BB000000000000000000004B /* RDPConnectView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -202,6 +234,21 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		FE0000000000000000000001 /* XCLocalSwiftPackageReference "FreeRDPKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = FreeRDPKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FD0000000000000000000001 /* RDPBridge */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FE0000000000000000000001 /* XCLocalSwiftPackageReference "FreeRDPKit" */;
+			productName = RDPBridge;
+		};
+/* End XCSwiftPackageProductDependency section */
 
 /* Begin XCBuildConfiguration section */
 		DC0000000000000000000001 /* Debug */ = {

@@ -412,6 +412,32 @@ remains a **settings tradeoff you choose** — Clamshell won't change those for 
   audio, and dynamic resolution; Clamshell provides the collapse + restore.
   Disable Jump's own virtual-display option so Clamshell owns the screen.
 
+## RDP support (in progress, UNTESTED against a live host)
+
+ClamshellViewer can also connect directly to a Windows machine's *built-in*
+Remote Desktop server — no Clamshell agent needed on that machine, unlike
+every other connection mode above. This wraps
+[FreeRDP](https://www.freerdp.com/) (Apache-2.0), cross-compiled to an
+XCFramework vendored at `ClamshellViewer/FreeRDPKit/CFreeRDP.xcframework`
+(rebuild with `scripts/build-freerdp-ios.sh` — see that script's header for
+why the binary is checked in rather than built by SwiftPM itself).
+
+What's verified: the cross-compile itself (libfreerdp/libwinpr/OpenSSL for
+iOS device + Simulator arm64), the Objective-C bridge (`RDPBridge`) compiling
+and linking clean against those real libs, and the whole app (`xcodebuild
+build`, both targets, device + Simulator) building clean with the RDP UI
+wired in. What's **not** verified: an actual RDP handshake/session against a
+live Windows host — there was no Windows machine reachable from the
+environment this was built in. Treat it as needing a real-network smoke test
+(connect to any RDP-enabled Windows box, confirm the framebuffer renders and
+mouse/keyboard round-trip) before relying on it.
+
+Pick "RDP" instead of "Clamshell" on the connect screen, then either import a
+`.rdp` file or enter host/port/username/password/domain manually. Passwords
+are stored in the Keychain, never in `UserDefaults`. Self-signed/untrusted
+certificates prompt a trust dialog rather than failing silently or accepting
+blindly.
+
 ## Caveats
 
 Uses one private API (`CGVirtualDisplay`) — behavior should be re-verified
@@ -422,13 +448,13 @@ form.
 
 ### Unreleased
 - **Manual pan+zoom & cursor-follow auto-pan (External Display Only mode, ⚠
-  code-reviewed + iOS-Simulator-verified only, see below)**: built for an
-  ultrawide (or otherwise larger/differently-shaped) Mac display viewed on a
-  smaller portable monitor plugged into the iPad. The external screen can now
-  render a controllable zoomed-in crop instead of shrinking the whole
-  ultrawide frame to fit — two-finger drag pans, pinch zooms, both live on the
-  iPad's own free screen (same status view as External Display Only mode)
-  rather than the video itself, matching ClamshellControl's existing
+  code-reviewed only, NOT verified rendering live — see below)**: built for
+  an ultrawide (or otherwise larger/differently-shaped) Mac display viewed on
+  a smaller portable monitor plugged into the iPad. The external screen can
+  now render a controllable zoomed-in crop instead of shrinking the whole
+  ultrawide frame to fit — two-finger drag pans, pinch zooms, both live on
+  the iPad's own free screen (same status view as External Display Only
+  mode) rather than the video itself, matching ClamshellControl's existing
   control-surface-on-device / video-on-external-screen split. A new "Auto-
   Follow Cursor" toggle keeps the remote mouse cursor in view automatically as
   it moves, driven by a new low-frequency **CURSOR_POS** protocol message
@@ -440,13 +466,23 @@ form.
   back in after an idle timeout — see PROTOCOL.md "Cursor-follow auto-pan" for
   the full design rationale. Off the manual-pan/pinch path this is
   additive/opt-in: plain External Display Only sessions with no gestures
-  behave exactly as before. Verified via a local sandbox loop (Mac host
-  streaming a `CGVirtualDisplay`-created 3440×1440 virtual display, iOS
-  Simulator with a simulated external display, manual pan/pinch confirmed
-  live); auto-follow was exercised by injecting synthetic CURSOR_POS traffic
-  rather than a real mouse crossing a real ultrawide monitor — see the PR/
-  commit notes for exactly what ran versus what still needs a human at a real
-  ultrawide monitor.
+  behave exactly as before. **What was actually verified**: `swift build`
+  and both Xcode targets build clean; a local `CGVirtualDisplay` at
+  3440×1440 served correctly over the stream protocol; a raw WebSocket probe
+  got its HELLO accepted by that virtual display. What was NOT verified:
+  actual on-screen pan/zoom/cursor-follow rendering — blocked in this
+  sandboxed environment by a TCC Screen Recording permission prompt
+  (`SCStream` error -3801) that can't be granted headlessly, and no
+  UI-automation tool was available to tap through the Simulator. Needs a
+  human to grant Screen Recording to a local build and actually drive the
+  UI (Simulator or real device) before trusting this feature.
+- **RDP connection mode (ClamshellViewer, in progress)**: connect straight to
+  a Windows machine's built-in RDP server, no Clamshell agent required on that
+  machine. Wraps FreeRDP via a vendored XCFramework + Objective-C bridge
+  (`ClamshellViewer/FreeRDPKit`); connect by importing a `.rdp` file or
+  entering host/user/pass manually, saved targets with Keychain-stored
+  passwords. Cross-compile and full app build verified; live-host handshake
+  is not yet — see "RDP support" above.
 - **External Display Only mode (iPad viewer, ⚠ code-reviewed only — see below)**:
   new toggle ("External display only (frees this screen)" — connect form,
   and in the mid-session settings sheet) makes an attached external monitor
