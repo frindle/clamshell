@@ -156,13 +156,33 @@ final class Connection: ObservableObject {
     /// just opens an ordinary second window), so `externalAttached` never
     /// flips on its own. This is the same effect as `externalDisplayConnected`,
     /// triggered by an explicit user choice (the mirror/extend toggle) instead
-    /// of a scene notification that doesn't fire. No real screen size to
-    /// report (no external UIWindowScene exists to read bounds from), so the
-    /// Mac falls back to its fixed presetB size rather than auto-matching.
-    func requestDisplayB() {
+    /// of a scene notification that doesn't fire. `size`, when known, is the
+    /// Display-B window's own frame in pixels — same-session testing found
+    /// this is exactly the real external monitor's resolution once that
+    /// window goes fullscreen there (see `WindowSizeReader`), so the Mac can
+    /// still auto-size Display B correctly despite having no external
+    /// UIWindowScene to read bounds from directly.
+    func requestDisplayB(size: CGSize? = nil) {
         externalAttached = true
-        primary.updateReportedDisplay(secondDisplay: true)
+        primary.updateReportedDisplay(secondDisplay: true, secondPixelSize: size)
         connectExternalIfAttached()
+    }
+
+    /// Re-report Display B's size after it's already connected — e.g. the
+    /// window goes fullscreen (or un-fullscreens) after the initial toggle.
+    func updateDisplayBSize(_ size: CGSize) {
+        guard externalAttached else { return }
+        primary.updateReportedDisplay(secondDisplay: true, secondPixelSize: size)
+    }
+
+    /// Re-report the iPad's own window size, live — Display A's size was
+    /// previously only read once at launch (`UIScreen.main.nativeBounds` in
+    /// `init()`), which doesn't reflect Stage Manager resizing that window
+    /// after connect (e.g. going fullscreen after HELLO already sent a
+    /// smaller tile size) — the same real-hardware black-bars bug Display B
+    /// had, just on the primary side. Preserves the existing dual-mode flag.
+    func updatePrimarySize(_ size: CGSize) {
+        primary.updateReportedDisplay(pixelSize: size, secondDisplay: externalAttached)
     }
 
     func releaseDisplayB() {
@@ -182,6 +202,60 @@ final class Connection: ObservableObject {
         }
         if host.contains("://") { return nil } // tunnel URL, can't derive port
         return "ws://\(host):\(streamDefaultPort + 1)"
+    }
+}
+
+/// Reports this window's own real pixel size, live, via
+/// `view.window?.screen.nativeBounds` — used for both the Display A and
+/// Display B windows so each reports whatever physical screen IT is
+/// actually showing on right now, rather than a size read once at connect
+/// time (real-hardware testing 2026-07-31 found the latter causes
+/// letterboxing/black bars whenever Stage Manager resizes the window, e.g.
+/// going fullscreen, after the size was already reported).
+struct WindowSizeReader: UIViewRepresentable {
+    /// (size, isDeviceScreen) — isDeviceScreen distinguishes the iPad's own
+    /// built-in screen from any external monitor. Real bug hit 2026-07-31:
+    /// with two windows both mirroring Display A (neither toggled to
+    /// Extend), each reported its OWN real screen size for Display A — the
+    /// iPad's and the external monitor's, whichever different sizes — and
+    /// they fought over it, each report triggering a re-collapse that
+    /// triggered another layout pass that reported again. Only the device's
+    /// own screen should ever drive Display A's size; a window mirroring A
+    /// on any other screen just aspect-fits locally.
+    var onChange: (CGSize, Bool) -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = SizeReaderView()
+        view.onChange = onChange
+        return view
+    }
+    // Without this, the closure captured in makeUIView (and everything it
+    // closes over — critically, `showingDisplayB` at that moment) would
+    // freeze at the window's first layout pass, before the user ever taps
+    // the toggle — misrouting size reports permanently.
+    func updateUIView(_ uiView: UIView, context: Context) {
+        (uiView as? SizeReaderView)?.onChange = onChange
+    }
+
+    private final class SizeReaderView: UIView {
+        var onChange: ((CGSize, Bool) -> Void)?
+        private var lastSize: CGSize?
+        override func didMoveToWindow() { super.didMoveToWindow(); report() }
+        override func layoutSubviews() { super.layoutSubviews(); report() }
+        // Measures THIS VIEW's own rendered area, not the screen's full
+        // nativeBounds — real bug hit 2026-07-31: the video only fills the
+        // window's own bounds, but iPadOS reserves some space on an external
+        // display that the window doesn't actually cover even fullscreen, so
+        // reporting the raw screen size made the Mac size Display B larger
+        // than what the video actually renders into, causing black bars.
+        private func report() {
+            guard let screen = window?.screen, bounds.width > 0, bounds.height > 0 else { return }
+            let scale = screen.scale
+            let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+            guard size != lastSize else { return }
+            lastSize = size
+            onChange?(size, screen == UIScreen.main)
+        }
     }
 }
 
@@ -215,12 +289,25 @@ struct ContentView: View {
     @ObservedObject private var primaryClient = Connection.shared.primary
     @ObservedObject private var externalClient = Connection.shared.external
     @State private var showingDisplayB = false
+    // This window's own real pixel size — see WindowSizeReader. Only
+    // meaningful/read while showingDisplayB, but kept updated regardless
+    // so the first report on toggle isn't stale.
+    @State private var windowPixelSize: CGSize?
     private var client: StreamClient { showingDisplayB ? externalClient : primaryClient }
     @StateObject private var store = MachineStore()
     @AppStorage("hostAddress") private var host = ""
+    @State private var machineName = ""
     @AppStorage("nerdMode") private var nerdMode = false
     @State private var showScanner = false
     @State private var showSettings = false
+    // Icon toolbar (top-right) stays hidden until the pointer hovers that
+    // corner, or a touch taps the invisible catcher there — otherwise the
+    // icons permanently cover the spot Stage Manager/the Dock reveal from.
+    @State private var toolbarVisible = false
+    // Grace period before hiding again after the pointer leaves — without
+    // this, a slight overshoot while moving toward a button hides it again
+    // before the tap lands.
+    @State private var hideToolbarTask: DispatchWorkItem?
 
     // RDP connection mode — a second target type alongside the native
     // Clamshell protocol (see RDPSession.swift / RDPConnectView.swift).
@@ -235,9 +322,16 @@ struct ContentView: View {
     private func startConnection() {
         let h = host.trimmingCharacters(in: .whitespaces)
         guard !h.isEmpty else { return }
-        // Both manual and scanned connections are saved (dedup by host).
-        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(h), host: h))
+        let n = machineName.trimmingCharacters(in: .whitespaces)
+        // A blank name field must NOT clobber an already-saved custom name
+        // on a later reconnect to the same host (upsert always overwrites
+        // the whole profile) — fall back to the existing name first, then
+        // the auto-derived one only for a genuinely new host.
+        let name = !n.isEmpty ? n
+            : (store.machines.first(where: { $0.host == h })?.name ?? ContentViewNaming.deriveName(h))
+        store.upsert(MachineProfile(name: name, host: h))
         store.markUsed(h)
+        machineName = ""
         connection.connect(host: h)
     }
 
@@ -281,6 +375,19 @@ struct ContentView: View {
             } else if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
+                    .background(
+                        WindowSizeReader { size, isDeviceScreen in
+                            windowPixelSize = size
+                            if showingDisplayB {
+                                connection.updateDisplayBSize(size)
+                            } else if isDeviceScreen {
+                                connection.updatePrimarySize(size)
+                            }
+                            // else: mirroring Display A on a non-device
+                            // screen (Extend not toggled here) — let it
+                            // aspect-fit locally, don't fight over A's size.
+                        }
+                    )
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
                             if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
@@ -290,33 +397,57 @@ struct ContentView: View {
                         .padding(.top, 8)
                     }
                     .overlay(alignment: .topTrailing) {
-                        HStack(spacing: 16) {
-                            // Only meaningful with a second window to put
-                            // Display B in (see WindowCount's doc comment).
-                            if windowCount.count >= 2 {
+                        ZStack(alignment: .topTrailing) {
+                            // Always-present, invisible hover/tap catcher —
+                            // hover reveals for pointer users, tap toggles
+                            // for touch-only, so the corner stays free the
+                            // rest of the time for Stage Manager/Dock reveal.
+                            Color.clear
+                                .frame(width: 220, height: 90)
+                                .contentShape(Rectangle())
+                                .onHover { hovering in
+                                    hideToolbarTask?.cancel()
+                                    if hovering {
+                                        withAnimation(.easeInOut(duration: 0.15)) { toolbarVisible = true }
+                                    } else {
+                                        let task = DispatchWorkItem {
+                                            withAnimation(.easeInOut(duration: 0.15)) { toolbarVisible = false }
+                                        }
+                                        hideToolbarTask = task
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: task)
+                                    }
+                                }
+                                .onTapGesture { withAnimation(.easeInOut(duration: 0.15)) { toolbarVisible.toggle() } }
+                            HStack(spacing: 16) {
+                                // Only meaningful with a second window to put
+                                // Display B in (see WindowCount's doc comment).
+                                if windowCount.count >= 2 {
+                                    Button {
+                                        showingDisplayB.toggle()
+                                    } label: {
+                                        Label(showingDisplayB ? "Extend" : "Mirror",
+                                              systemImage: showingDisplayB ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                                Button { showSettings = true } label: {
+                                    Image(systemName: "gearshape.fill")
+                                        .font(.title)
+                                        .foregroundStyle(.white.opacity(0.35))
+                                }
                                 Button {
-                                    showingDisplayB.toggle()
+                                    connection.disconnect()
                                 } label: {
-                                    Label(showingDisplayB ? "Extend" : "Mirror",
-                                          systemImage: showingDisplayB ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.white.opacity(0.7))
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.title)
+                                        .foregroundStyle(.white.opacity(0.35))
                                 }
                             }
-                            Button { showSettings = true } label: {
-                                Image(systemName: "gearshape.fill")
-                                    .font(.title)
-                                    .foregroundStyle(.white.opacity(0.35))
-                            }
-                            Button {
-                                connection.disconnect()
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.title)
-                                    .foregroundStyle(.white.opacity(0.35))
-                            }
+                            .padding()
+                            .opacity(toolbarVisible ? 1 : 0)
+                            .allowsHitTesting(toolbarVisible)
                         }
-                        .padding()
                     }
             } else if showingDisplayB {
                 // Toggled to Display B but `external` hasn't reached
@@ -344,7 +475,7 @@ struct ContentView: View {
         }
         .onChange(of: showingDisplayB) { isB in
             if isB {
-                connection.requestDisplayB()
+                connection.requestDisplayB(size: windowPixelSize)
             } else {
                 connection.releaseDisplayB()
             }
@@ -405,6 +536,11 @@ struct ContentView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                         .keyboardType(.URL)
+                        .frame(maxWidth: 420)
+                    // Optional — blank falls back to the auto-derived host name.
+                    TextField("Name (optional)", text: $machineName)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled()
                         .frame(maxWidth: 420)
                     Button("Connect") { startConnection() }
                         .buttonStyle(.borderedProminent)
