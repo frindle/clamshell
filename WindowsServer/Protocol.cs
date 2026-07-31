@@ -13,6 +13,8 @@ internal enum MessageType : byte
     HelloAck = 0x02,
     ClientDisplays = 0x03,
     StreamStatus = 0x04,
+    HostLockState = 0x05,
+    CursorPos = 0x06,
     VideoFrame = 0x10,
     KeyframeRequest = 0x11,
     AudioFrame = 0x13,
@@ -82,6 +84,17 @@ internal static class Proto
 
     public static byte[] Clipboard(string text) =>
         Frame(MessageType.Clipboard, System.Text.Encoding.UTF8.GetBytes(text));
+
+    /// <summary>CURSOR_POS: remote cursor position, normalized 0..1 in this
+    /// display's source-frame space (same convention as mouse input), origin
+    /// top-left. See PROTOCOL.md "Cursor-follow auto-pan".</summary>
+    public static byte[] CursorPos(float x, float y)
+    {
+        Span<byte> p = stackalloc byte[8];
+        BinaryPrimitives.WriteInt32BigEndian(p.Slice(0, 4), BitConverter.SingleToInt32Bits(x));
+        BinaryPrimitives.WriteInt32BigEndian(p.Slice(4, 4), BitConverter.SingleToInt32Bits(y));
+        return Frame(MessageType.CursorPos, p);
+    }
 }
 
 // MARK: - Big-endian readers over a payload span (mirrors Data.beUInt* helpers)
