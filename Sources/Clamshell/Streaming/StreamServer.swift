@@ -89,10 +89,26 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         clog("STREAM: listening on port \(port) for display \(displayID)")
     }
 
-    func stop() {
+    /// `completion` fires only once the listener has actually released its
+    /// port (NWListener.cancel() is itself fire-and-forget) — callers that
+    /// start a new listener on the same port right after stop() must wait
+    /// for this, or the bind races the old socket's teardown and fails with
+    /// EADDRINUSE. Confirmed live 2026-07-31: this raced during
+    /// collapse/restore, the resulting failed bind cancelled the
+    /// connection, which looked like the client dropping and reconnecting
+    /// in an infinite loop.
+    func stop(completion: @escaping () -> Void = {}) {
         queue.async { [self] in
             teardownSession()
-            listener?.cancel()
+            if let l = listener {
+                l.stateUpdateHandler = { state in
+                    clog("STREAM: listener \(state)")
+                    if case .cancelled = state { completion() }
+                }
+                l.cancel()
+            } else {
+                completion()
+            }
             listener = nil
         }
     }
@@ -609,20 +625,25 @@ final class StreamFleet {
     func rebuild() {
         let ids = Self.activeIDs()
         guard ids != currentIDs else { return }
-        for s in servers { s.stop() }
+        let group = DispatchGroup()
+        for s in servers { group.enter(); s.stop { group.leave() } }
         servers = []
         currentIDs = ids
-        for (i, id) in ids.enumerated() {
-            let server = StreamServer(displayID: id, port: basePort + UInt16(i), isPrimary: i == 0)
-            do {
-                try server.start()
-                server.setLockState(screenLocked) // inherit current lock state
-                servers.append(server)
-            } catch {
-                clog("STREAM: failed to start server on port \(basePort + UInt16(i)): \(error)")
+        // Wait for every old listener's port to actually release before
+        // binding new ones on the same ports — see stop()'s doc comment.
+        group.notify(queue: .main) { [self] in
+            for (i, id) in ids.enumerated() {
+                let server = StreamServer(displayID: id, port: basePort + UInt16(i), isPrimary: i == 0)
+                do {
+                    try server.start()
+                    server.setLockState(screenLocked) // inherit current lock state
+                    servers.append(server)
+                } catch {
+                    clog("STREAM: failed to start server on port \(basePort + UInt16(i)): \(error)")
+                }
             }
+            clog("STREAM: serving \(servers.count) display(s) on ports \(basePort)–\(basePort + UInt16(max(servers.count, 1) - 1))")
         }
-        clog("STREAM: serving \(servers.count) display(s) on ports \(basePort)–\(basePort + UInt16(max(servers.count, 1) - 1))")
     }
 
     /// Collapse/restore reconfigures displays several times over ~2s;
