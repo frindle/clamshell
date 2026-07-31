@@ -52,7 +52,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     // network can't drain 20 Mbps — halve the encoder bitrate (min once per
     // second, floor 2 Mbps). After 5 s without congestion, step back up by 25%
     // (min 5 s between up-steps, ceiling 20 Mbps).
-    private var bitrate = VideoEncoder.maxBitrate
+    // Matches VideoEncoder's own cold-start value — see its comment on
+    // kVTCompressionPropertyKey_AverageBitRate for why this starts low.
+    private var bitrate = VideoEncoder.minBitrate
     private var lastCongestionAt: CFAbsoluteTime = 0
     private var lastStepAt: CFAbsoluteTime = 0
 
@@ -183,7 +185,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         connection = nil
         parser = nil
         framesInFlight = 0
-        bitrate = VideoEncoder.maxBitrate
+        bitrate = VideoEncoder.minBitrate
         lastCongestionAt = 0
         lastStepAt = 0
         cursorTimer?.cancel()

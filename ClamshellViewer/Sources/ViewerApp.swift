@@ -6,13 +6,13 @@ import SwiftUI
 // (network), VideoView (render/input), StreamProtocol and FrameAssembler are
 // shared with the iPhone ClamshellControl target and/or the Mac host.
 //
-// "External Display Only" mode (Connection.externalOnlyMode, off by default)
-// is a second, simpler pairing for the same external-scene plumbing: instead
-// of a second virtual Mac display (Display B), the single `primary` stream is
-// what plays on the external screen, and the iPad's own screen drops the
-// video for a small status view — so the iPad itself stays free for other
-// apps while a monitor is attached. See ExternalDisplaySceneDelegate and
-// ContentView.externalOnlyStatusView.
+// Stage-Manager-capable iPads (confirmed on a real M4 iPad Air, 2026-07-31):
+// dragging the app's single window onto an external display already works
+// with zero app code — SwiftUI renders wherever the window's UIWindowScene
+// physically sits, no scene-role detection needed. `ExternalDisplaySceneDelegate`
+// below (and genuine Display B) only matters for iPads without Stage Manager,
+// where dragging isn't possible and the external screen can only be claimed
+// via the legacy external-display scene role.
 
 @main
 struct ViewerApp: App {
@@ -41,10 +41,18 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
                      configurationForConnecting connectingSceneSession: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
-        // .windowExternalDisplayNonInteractive is the iOS 16+ replacement for the
-        // deprecated .windowExternalDisplay; deployment target is iOS 17.
+        // Real hardware test 2026-07-31: a wired external display connected
+        // via USB-C only ever showed the OS's own default mirroring (dock +
+        // wallpaper), never ExternalDisplaySceneDelegate — meaning this
+        // check's role never matched. Both .windowExternalDisplay and
+        // .windowExternalDisplayNonInteractive are real, distinct roles;
+        // which one iOS actually hands a given external display depends on
+        // context/OS version, not a strict "one replaced the other"
+        // relationship the previous comment here assumed. Check both rather
+        // than bet on a single role.
         clogViewer("scene connecting with role \(connectingSceneSession.role.rawValue)")
-        if connectingSceneSession.role == .windowExternalDisplayNonInteractive {
+        if connectingSceneSession.role == .windowExternalDisplayNonInteractive
+            || connectingSceneSession.role == .windowExternalDisplay {
             config.delegateClass = ExternalDisplaySceneDelegate.self
         }
         return config
@@ -62,18 +70,8 @@ final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
         }
         clogViewer("external display scene CONNECTED: \(describeScreen(windowScene.screen))")
         let window = UIWindow(windowScene: windowScene) // sized to the external screen's own bounds
-        // External Display Only mode: the external screen shows the single
-        // `primary` stream (same one that would otherwise be on the iPad's own
-        // screen) instead of Display B, so the iPad's screen is free to go
-        // back to the connect/status view (or the user can leave the app
-        // entirely) while the video plays out only on the monitor.
-        let externalClient = Connection.shared.externalOnlyMode ? Connection.shared.primary : Connection.shared.external
-        // Manual pan+zoom / cursor-follow auto-pan only applies to External
-        // Display Only mode's single-stream path — Display B keeps its plain
-        // aspect-fit behavior unchanged.
-        let viewport = Connection.shared.externalOnlyMode ? Connection.shared.viewport : nil
         window.rootViewController = UIHostingController(
-            rootView: ExternalDisplayView(client: externalClient, viewport: viewport))
+            rootView: ExternalDisplayView(client: Connection.shared.external))
         window.isHidden = false
         self.window = window
         Connection.shared.externalDisplayConnected(size: windowScene.screen.nativeBounds.size)
@@ -96,29 +94,13 @@ final class Connection: ObservableObject {
 
     let primary = StreamClient()
     let external = StreamClient()
-    /// Manual pan+zoom / cursor-follow auto-pan state for External Display
-    /// Only mode's external screen — see VideoView.swift. One instance for
-    /// the app's lifetime (reset on each new connection, not recreated) since
-    /// it's rendered from a UIKit scene delegate outside SwiftUI's view tree.
-    let viewport = Viewport()
 
     private var connectedHost: String?
-    /// True whenever a physical external screen is currently attached
-    /// (regardless of `externalOnlyMode`) — drives the iPad-screen UI.
+    /// True whenever a physical external screen is currently attached —
+    /// drives dual-display negotiation with the Mac.
     @Published var externalAttached = false
-    /// When on, an attached external display shows the single Mac screen
-    /// (the `primary` stream) instead of Display B, and the iPad's own screen
-    /// switches to a lightweight status view instead of the video — freeing
-    /// it for Home Screen / other apps while the session keeps running.
-    /// Persisted; **off by default** so existing dual-display behavior
-    /// (Display A on iPad + Display B external) is unaffected unless the
-    /// user opts in.
-    @Published var externalOnlyMode: Bool {
-        didSet { UserDefaults.standard.set(externalOnlyMode, forKey: "externalOnlyMode") }
-    }
 
     init() {
-        externalOnlyMode = UserDefaults.standard.bool(forKey: "externalOnlyMode")
         external.playsAudio = false
         // Report the iPad's real screen size in HELLO so the Mac auto-sizes
         // its virtual display to this device (no manual preset needed).
@@ -126,7 +108,6 @@ final class Connection: ObservableObject {
     }
 
     func connect(host: String) {
-        viewport.reset()
         connectedHost = host
         // A leading "A|B" carries an explicit Display B address; the primary
         // connects only to the A part.
@@ -147,9 +128,6 @@ final class Connection: ObservableObject {
     // auto-enter/leave dual display mode (Auto-Detect Dual Display).
     func externalDisplayConnected(size: CGSize) {
         externalAttached = true
-        // External Display Only: no Display B to negotiate — the external
-        // screen just plays the primary client's existing single stream.
-        guard !externalOnlyMode else { return }
         // The primary connection carries Display B's size too (only the
         // primary's report is honored host-side), so the Mac sizes Display B
         // to the real external monitor instead of the fixed presetB.
@@ -158,26 +136,39 @@ final class Connection: ObservableObject {
     }
     func externalDisplayDisconnected() {
         externalAttached = false
-        // Mid-session unplug while in External Display Only mode: nothing to
-        // tear down here — `primary` was never paused, so ContentView falls
-        // straight back to showing its video on the iPad's own screen the
-        // moment `externalAttached` flips (see ContentView.body). This is the
-        // "fall back rather than freeze" choice for a live session.
-        guard !externalOnlyMode else { return }
         primary.updateReportedDisplay(secondDisplay: false)
         external.disconnect()
     }
 
     /// Connect Display B only when a physical external screen is actually
-    /// attached and dual-display mode applies — otherwise we'd waste a whole
-    /// encode+stream pipeline (or spin reconnecting to a port the Mac isn't
-    /// serving). No-op in External Display Only mode (no Display B exists).
+    /// attached — otherwise we'd waste a whole encode+stream pipeline (or
+    /// spin reconnecting to a port the Mac isn't serving).
     private func connectExternalIfAttached() {
-        guard !externalOnlyMode,
-              externalAttached,
+        guard externalAttached,
               let host = connectedHost,
               let bHost = Self.secondDisplayEndpoint(from: host) else { return }
         external.connect(host: bHost)
+    }
+
+    /// Manual Display B request for Stage Manager iPads: real hardware testing
+    /// 2026-07-31 found the OS never signals this app when a window lands on
+    /// an external display (no scene role change, no notification — dragging
+    /// just opens an ordinary second window), so `externalAttached` never
+    /// flips on its own. This is the same effect as `externalDisplayConnected`,
+    /// triggered by an explicit user choice (the mirror/extend toggle) instead
+    /// of a scene notification that doesn't fire. No real screen size to
+    /// report (no external UIWindowScene exists to read bounds from), so the
+    /// Mac falls back to its fixed presetB size rather than auto-matching.
+    func requestDisplayB() {
+        externalAttached = true
+        primary.updateReportedDisplay(secondDisplay: true)
+        connectExternalIfAttached()
+    }
+
+    func releaseDisplayB() {
+        externalAttached = false
+        primary.updateReportedDisplay(secondDisplay: false)
+        external.disconnect()
     }
 
     /// Display B's endpoint. For a bare LAN host the Mac serves display index 1
@@ -194,11 +185,37 @@ final class Connection: ObservableObject {
     }
 }
 
+/// Number of this app's own windows currently open — drives whether the
+/// mirror/extend toggle appears (only meaningful with a second window to put
+/// Display B in). No dedicated "scene did connect" notification exists, so
+/// this refreshes from `UIApplication.connectedScenes` on the two events that
+/// actually change it: a window's own ContentView appearing, and any scene
+/// disconnecting.
+final class WindowCount: ObservableObject {
+    static let shared = WindowCount()
+    @Published private(set) var count = 1
+    private init() {
+        NotificationCenter.default.addObserver(
+            forName: UIScene.didDisconnectNotification, object: nil, queue: .main
+        ) { [weak self] _ in self?.refresh() }
+    }
+    func refresh() {
+        count = UIApplication.shared.connectedScenes.filter { $0 is UIWindowScene }.count
+    }
+}
+
 // MARK: - UI
 
 struct ContentView: View {
     @ObservedObject private var connection = Connection.shared
-    @ObservedObject private var client = Connection.shared.primary
+    @ObservedObject private var windowCount = WindowCount.shared
+    // Both permanently observed — SwiftUI can't reassign which object an
+    // @ObservedObject points to from a struct View's non-mutating context.
+    // `client` below just picks which one THIS window renders.
+    @ObservedObject private var primaryClient = Connection.shared.primary
+    @ObservedObject private var externalClient = Connection.shared.external
+    @State private var showingDisplayB = false
+    private var client: StreamClient { showingDisplayB ? externalClient : primaryClient }
     @StateObject private var store = MachineStore()
     @AppStorage("hostAddress") private var host = ""
     @AppStorage("nerdMode") private var nerdMode = false
@@ -262,36 +279,58 @@ struct ContentView: View {
             if targetType == .rdp, rdpSession.status != .idle {
                 RDPStreamView(session: rdpSession, onClose: { rdpSession.disconnect() })
             } else if case .streaming = client.status {
-                if connection.externalOnlyMode && connection.externalAttached {
-                    externalOnlyStatusView
-                } else {
-                    VideoView(client: client)
-                        .ignoresSafeArea()
-                        .overlay(alignment: .top) {
-                            VStack(spacing: 6) {
-                                if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
-                                if client.softwareEncoding { SoftwareEncodingBanner() }
-                                QualityIndicator(client: client)
-                            }
-                            .padding(.top, 8)
+                VideoView(client: client)
+                    .ignoresSafeArea()
+                    .overlay(alignment: .top) {
+                        VStack(spacing: 6) {
+                            if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
+                            if client.softwareEncoding { SoftwareEncodingBanner() }
+                            QualityIndicator(client: client)
                         }
-                        .overlay(alignment: .topTrailing) {
-                            HStack(spacing: 16) {
-                                Button { showSettings = true } label: {
-                                    Image(systemName: "gearshape.fill")
-                                        .font(.title)
-                                        .foregroundStyle(.white.opacity(0.35))
-                                }
+                        .padding(.top, 8)
+                    }
+                    .overlay(alignment: .topTrailing) {
+                        HStack(spacing: 16) {
+                            // Only meaningful with a second window to put
+                            // Display B in (see WindowCount's doc comment).
+                            if windowCount.count >= 2 {
                                 Button {
-                                    connection.disconnect()
+                                    showingDisplayB.toggle()
                                 } label: {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .font(.title)
-                                        .foregroundStyle(.white.opacity(0.35))
+                                    Label(showingDisplayB ? "Extend" : "Mirror",
+                                          systemImage: showingDisplayB ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.white.opacity(0.7))
                                 }
                             }
-                            .padding()
+                            Button { showSettings = true } label: {
+                                Image(systemName: "gearshape.fill")
+                                    .font(.title)
+                                    .foregroundStyle(.white.opacity(0.35))
+                            }
+                            Button {
+                                connection.disconnect()
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.title)
+                                    .foregroundStyle(.white.opacity(0.35))
+                            }
                         }
+                        .padding()
+                    }
+            } else if showingDisplayB {
+                // Toggled to Display B but `external` hasn't reached
+                // .streaming yet (Mac still spinning up the second virtual
+                // display) — a dedicated wait state instead of falling to
+                // connectForm, which would wrongly suggest re-entering a host.
+                VStack(spacing: 12) {
+                    ProgressView().tint(.white)
+                    Text("Connecting to Display B…").foregroundStyle(.white)
+                    if let e = externalClient.lastError {
+                        Text(e).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
+                    }
+                    Button("Back to Display A") { showingDisplayB = false }
+                        .buttonStyle(.bordered).tint(.white)
                 }
             } else {
                 connectForm
@@ -299,11 +338,20 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .onAppear(perform: preselectLastUsed)
+        .onAppear {
+            preselectLastUsed()
+            windowCount.refresh()
+        }
+        .onChange(of: showingDisplayB) { isB in
+            if isB {
+                connection.requestDisplayB()
+            } else {
+                connection.releaseDisplayB()
+            }
+        }
         .sheet(isPresented: $showSettings) {
             InSessionSettingsView(store: store, currentHost: host,
-                                  onSwitch: switchTo, onClose: { showSettings = false },
-                                  externalOnlyToggle: $connection.externalOnlyMode)
+                                  onSwitch: switchTo, onClose: { showSettings = false })
         }
         .fullScreenCover(isPresented: $showScanner) {
             QRScannerView(onScan: applyScan, onCancel: { showScanner = false })
@@ -317,74 +365,6 @@ struct ContentView: View {
             rdpSession.onCertificatePrompt = { subject, issuer, fingerprint, completion in
                 DispatchQueue.main.async {
                     pendingCertificate = (subject, issuer, fingerprint, completion)
-                }
-            }
-        }
-    }
-
-    /// Shown on the iPad's own screen instead of the video, while External
-    /// Display Only mode is on and a monitor is attached — the actual video
-    /// is playing on the external scene (see ExternalDisplaySceneDelegate).
-    /// Doubles as the manual pan+zoom gesture surface (PanZoomGestureSurface,
-    /// full-screen underneath the status card): two-finger drag pans, pinch
-    /// zooms — same "control surface on the device, video on the external
-    /// screen" split ClamshellControl's trackpad already uses. See
-    /// VideoView.swift for the render/gesture/protocol pieces.
-    private var externalOnlyStatusView: some View {
-        ZStack {
-            // Full-screen, behind the status card. The card below only
-            // occupies its own intrinsic size (it's not given a full-screen
-            // frame), so its 1-finger buttons and this view's 2-finger
-            // pan / pinch never compete for the same touches, and blank space
-            // around the card still reaches this gesture surface.
-            PanZoomGestureSurface(viewport: connection.viewport)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            VStack(spacing: 16) {
-                Image(systemName: "tv.and.hifispeaker.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.white.opacity(0.6))
-                Text("Streaming to external display")
-                    .font(.headline).foregroundStyle(.white)
-                Text("Two-finger drag pans, pinch zooms the external display.")
-                    .font(.footnote).foregroundStyle(.gray)
-                    .multilineTextAlignment(.center).padding(.horizontal, 40)
-                if client.hostLocked { LockScreenBanner(fallbackURL: client.browserFallbackURL) }
-                if client.softwareEncoding { SoftwareEncodingBanner() }
-                QualityIndicator(client: client)
-                panZoomControls
-                HStack(spacing: 24) {
-                    Button { showSettings = true } label: { Label("Settings", systemImage: "gearshape.fill") }
-                    Button(role: .destructive) { connection.disconnect() } label: {
-                        Label("Disconnect", systemImage: "xmark.circle.fill")
-                    }
-                }
-                .buttonStyle(.bordered)
-                .tint(.white)
-            }
-            .padding()
-        }
-    }
-
-    /// Auto-Follow toggle + Reset, and the live zoom readout — small enough
-    /// to not compete with the status card, big enough to find without
-    /// hunting. Auto-Follow starts on; a manual pan/pinch flips it off (see
-    /// Viewport's manual-override doc comment) and this is how the user turns
-    /// it back on.
-    @ObservedObject private var viewportState = Connection.shared.viewport
-    private var panZoomControls: some View {
-        VStack(spacing: 10) {
-            Toggle(isOn: $viewportState.autoFollow) {
-                Label("Auto-Follow Cursor", systemImage: "cursorarrow.motionlines")
-            }
-            .toggleStyle(.button)
-            .tint(.white.opacity(0.25))
-            .foregroundStyle(.white)
-            if viewportState.zoom > 1.01 {
-                HStack(spacing: 12) {
-                    Text("Zoom \(String(format: "%.1fx", viewportState.zoom))")
-                        .font(.caption).foregroundStyle(.gray)
-                    Button("Reset View") { viewportState.reset() }
-                        .font(.caption)
                 }
             }
         }
@@ -430,9 +410,6 @@ struct ContentView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
                     Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
-                        .frame(maxWidth: 420)
-                        .foregroundStyle(.gray)
-                    Toggle("External display only (frees this screen)", isOn: $connection.externalOnlyMode)
                         .frame(maxWidth: 420)
                         .foregroundStyle(.gray)
                     switch client.status {

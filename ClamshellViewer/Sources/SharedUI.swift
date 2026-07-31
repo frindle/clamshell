@@ -296,20 +296,12 @@ struct InSessionSettingsView: View {
     /// reconnects to it.
     var onSwitch: (MachineProfile) -> Void
     var onClose: () -> Void
-    /// iPad-viewer-only: binding for Connection.externalOnlyMode, so the
-    /// toggle can be flipped mid-session without leaving the settings sheet.
-    /// nil on the iPhone control app, where the external screen is always the
-    /// only video output and the toggle has no meaning.
-    var externalOnlyToggle: Binding<Bool>? = nil
     @AppStorage("nerdMode") private var nerdMode = false
 
     var body: some View {
         NavigationStack {
             Form {
                 Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
-                if let externalOnlyToggle {
-                    Toggle("External display only (frees this screen)", isOn: externalOnlyToggle)
-                }
                 if !store.machines.isEmpty {
                     Section("Switch machine (reconnects)") {
                         ForEach(store.machines) { m in

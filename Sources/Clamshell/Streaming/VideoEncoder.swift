@@ -131,7 +131,12 @@ final class VideoEncoder: @unchecked Sendable {
         setProp(kVTCompressionPropertyKey_MaxKeyFrameInterval, 120 as CFNumber)
         setProp(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 2 as CFNumber)
         // Starting bitrate; StreamServer adapts it live via setBitrate(_:).
-        setProp(kVTCompressionPropertyKey_AverageBitRate, VideoEncoder.maxBitrate as CFNumber)
+        // Starts at the floor, not the ceiling — a cold connection (esp. Wi-Fi,
+        // fresh TCP slow-start) can't absorb a 20 Mbps first I-frame, which was
+        // triggering immediate congestion (and sometimes a client-side RST) on
+        // every connect. StreamServer's 5s-healthy ramp-up (maybeStepBitrateUp)
+        // climbs from here instead.
+        setProp(kVTCompressionPropertyKey_AverageBitRate, VideoEncoder.minBitrate as CFNumber)
         setProp(kVTCompressionPropertyKey_ProfileLevel,
                 codec == .hevc ? kVTProfileLevel_HEVC_Main_AutoLevel
                                : kVTProfileLevel_H264_High_AutoLevel)
