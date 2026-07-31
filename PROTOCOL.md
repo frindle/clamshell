@@ -50,6 +50,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
 | 0x04 | STREAM_STATUS    | host → client | currentBitrateKbps(2 BE) — see "Connection quality" |
 | 0x05 | HOST_LOCK_STATE  | host → client | locked(1: 0/1) — see "Lock screen fallback" |
+| 0x06 | CURSOR_POS       | host → client | x(Float32 BE), y(Float32 BE) — normalized 0..1 in this display's source-frame space; see "Cursor-follow auto-pan" |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -200,6 +201,41 @@ the browser fallback. On `locked = 0` the banner clears and the native video
 resumes on its own through the existing reconnect/keyframe flow — no separate
 resume message. Pre-lock-state hosts simply never send it; the client shows no
 banner.
+
+## Cursor-follow auto-pan (CURSOR_POS)
+
+Built for viewing a large/ultrawide Mac display on a smaller/differently-shaped
+portable monitor plugged into an iPad in External Display Only mode (see the
+README): the client can render a zoomed-in crop of the frame instead of
+shrinking the whole thing to fit, and auto-pan that crop to keep the remote
+mouse cursor in view as it moves. The cursor is baked into the captured frame
+pixels like any normal screen capture — it isn't otherwise available to the
+client — so the host reports it out-of-band.
+
+Each display's `StreamServer`/`StreamServer` (Mac/Windows) independently polls
+the *global* cursor position at **20 Hz** (Mac: `CGEvent(source: nil)?.location`,
+matching the coordinate space `CGDisplayBounds`/`InputInjector` already use;
+Windows: `GetCursorPos`, matching `InputInjector`'s virtual-desktop mapping),
+normalizes it against that display's own bounds, and sends CURSOR_POS — but
+only when the client-facing socket is connected, and skipped (no message)
+when the position hasn't moved by more than a small epsilon since the last
+send, so an idle mouse costs nothing. 20 Hz is deliberately much lower than
+the video frame rate: it's plenty for a smooth-feeling auto-pan and the
+payload is 8 bytes versus a full video frame.
+
+Because each display server reports independently and un-clamped, a value
+outside `0...1` on a given connection means the cursor is currently on a
+*different* display than that connection streams — clients use that to know
+whether auto-pan should apply on this screen at all. Only clients that opted
+into a pan/zoom viewport act on it; a client with no viewport (the plain
+aspect-fit render path) simply ignores CURSOR_POS.
+
+Client-side, manual pan/zoom and cursor-follow share one small piece of state
+(`Viewport` in `ClamshellViewer/Sources/VideoView.swift`): a two-finger drag
+pans, a pinch zooms, and either one immediately turns auto-follow off (rather
+than blending with it or resuming after an idle timeout) — the user re-enables
+it with a toggle. Pre-CURSOR_POS hosts simply never send it; the client's
+viewport just never auto-pans.
 
 ## Audio (AUDIO_FRAME)
 

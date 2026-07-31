@@ -421,6 +421,32 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Manual pan+zoom & cursor-follow auto-pan (External Display Only mode, ⚠
+  code-reviewed + iOS-Simulator-verified only, see below)**: built for an
+  ultrawide (or otherwise larger/differently-shaped) Mac display viewed on a
+  smaller portable monitor plugged into the iPad. The external screen can now
+  render a controllable zoomed-in crop instead of shrinking the whole
+  ultrawide frame to fit — two-finger drag pans, pinch zooms, both live on the
+  iPad's own free screen (same status view as External Display Only mode)
+  rather than the video itself, matching ClamshellControl's existing
+  control-surface-on-device / video-on-external-screen split. A new "Auto-
+  Follow Cursor" toggle keeps the remote mouse cursor in view automatically as
+  it moves, driven by a new low-frequency **CURSOR_POS** protocol message
+  (host → client, 20 Hz, throttled to skip unchanged positions) — implemented
+  on both the Mac (`CGEvent` polling) and Windows (`GetCursorPos` polling)
+  hosts, since cursor position isn't otherwise available to the client (it's
+  baked into the captured pixels like any screen capture). A manual pan or
+  pinch immediately suspends auto-follow rather than fighting it or fading
+  back in after an idle timeout — see PROTOCOL.md "Cursor-follow auto-pan" for
+  the full design rationale. Off the manual-pan/pinch path this is
+  additive/opt-in: plain External Display Only sessions with no gestures
+  behave exactly as before. Verified via a local sandbox loop (Mac host
+  streaming a `CGVirtualDisplay`-created 3440×1440 virtual display, iOS
+  Simulator with a simulated external display, manual pan/pinch confirmed
+  live); auto-follow was exercised by injecting synthetic CURSOR_POS traffic
+  rather than a real mouse crossing a real ultrawide monitor — see the PR/
+  commit notes for exactly what ran versus what still needs a human at a real
+  ultrawide monitor.
 - **External Display Only mode (iPad viewer, ⚠ code-reviewed only — see below)**:
   new toggle ("External display only (frees this screen)" — connect form,
   and in the mid-session settings sheet) makes an attached external monitor
