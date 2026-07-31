@@ -12,7 +12,11 @@ internal sealed partial class StreamServer
     private VideoEncoder? _encoder;
     private DisplayCapture? _capture;
     private AudioEncoder? _audio;
-    private Timer? _cursorTimer;
+    // Explicit System.Threading.Timer: this project's WinForms + ImplicitUsings
+    // combo brings System.Windows.Forms into global scope, so a bare "Timer"
+    // is ambiguous with System.Windows.Forms.Timer (CS0104) even though only
+    // System.Threading is imported here.
+    private System.Threading.Timer? _cursorTimer;
     private (float x, float y)? _lastSentCursor;
 
     // Adaptive bitrate (PROTOCOL.md "Adaptive bitrate"): reactive, driven by
@@ -89,7 +93,7 @@ internal sealed partial class StreamServer
     // direct mirror of the Mac's CGDisplayBounds math.
     private void StartCursorReporting()
     {
-        _cursorTimer = new Timer(_ =>
+        _cursorTimer = new System.Threading.Timer(_ =>
         {
             if (_ws is null) return;
             if (!GetCursorPos(out var pt)) return;
