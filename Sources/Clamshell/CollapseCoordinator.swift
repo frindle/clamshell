@@ -252,4 +252,48 @@ final class CollapseCoordinator {
         clog("un-mirrored \(mirroredDisplays.count) display(s): \(err == .success ? "ok" : "error \(err.rawValue)")")
         mirroredDisplays = []
     }
+
+    // MARK: - Crash/force-quit recovery
+
+    /// `mirroredDisplays`/`state` only track what THIS process instance did —
+    /// if a previous instance crashed or was force-quit mid-collapse (no
+    /// `applicationWillTerminate` ran), its mirror relationship survives at
+    /// the OS level with no in-memory record anywhere to undo it. A fresh
+    /// launch's `restore()` is then a no-op (`state` starts `.idle`), leaving
+    /// real displays permanently mirroring a dead/orphaned virtual display —
+    /// confirmed live 2026-08-01: a real MacBook display stayed mirrored onto
+    /// an orphaned virtual display through multiple quit+relaunch cycles,
+    /// because the in-memory `mirroredDisplays` tracking used by the normal
+    /// restore path only ever reflects this process's own actions.
+    ///
+    /// This scans the LIVE display list — ground truth, independent of any
+    /// process's memory — and un-mirrors anything currently mirroring
+    /// anything else. Called on every launch, before any collapse of our own
+    /// could possibly exist yet, so it can never undo a real one we're
+    /// mid-setting-up. Doesn't (can't) destroy the orphaned virtual display
+    /// itself — that needs the original `CGVirtualDisplay` object, which is
+    /// gone once its owning process exits without calling `destroy()` — but
+    /// un-mirroring is what actually matters: it's what makes the real
+    /// screens show a real desktop again instead of a dead framebuffer.
+    static func recoverOrphanedMirrors() {
+        var count: UInt32 = 0
+        CGGetOnlineDisplayList(0, nil, &count)
+        guard count > 0 else { return }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetOnlineDisplayList(count, &ids, &count)
+
+        let mirrored = ids.prefix(Int(count)).filter { CGDisplayMirrorsDisplay($0) != 0 }
+        guard !mirrored.isEmpty else { return }
+
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let cfg = config else {
+            clog("recoverOrphanedMirrors: CGBeginDisplayConfiguration failed")
+            return
+        }
+        for id in mirrored {
+            CGConfigureDisplayMirrorOfDisplay(cfg, id, kCGNullDirectDisplay)
+        }
+        let err = CGCompleteDisplayConfiguration(cfg, .permanently)
+        clog("recoverOrphanedMirrors: found \(mirrored.count) display(s) stuck mirroring from a prior instance, un-mirrored: \(err == .success ? "ok" : "error \(err.rawValue)")")
+    }
 }
