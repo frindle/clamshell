@@ -1,7 +1,8 @@
 import SwiftUI
 import AVFoundation
 
-// ClamshellControl — iPhone client for the Clamshell stream protocol.
+// Control UI — the iPhone half of the universal app (see ../Sources/ViewerApp.swift,
+// which owns @main and routes to ControlContentView on the .phone idiom).
 // Unlike the iPad viewer, the iPhone shows NO video of its own: the external
 // monitor plugged into the phone (USB-C monitor, or AR glasses — they enumerate
 // as ordinary external UIScreens) is the only video output, showing whichever
@@ -11,55 +12,10 @@ import AVFoundation
 // on the iPad (KeyMap press forwarding, hover, indirect scroll).
 //
 // StreamClient, VideoView/ExternalDisplayView, AudioPlayer, KeyMap and the
-// protocol/assembler files are shared with the iPad target unchanged.
-
-@main
-struct ControlApp: App {
-    @UIApplicationDelegateAdaptor(ControlAppDelegate.self) private var appDelegate
-    var body: some Scene {
-        WindowGroup { ControlContentView() }
-    }
-}
-
-// MARK: - External display scene (same generic UIScreen-driven routing as iPad)
-
-final class ControlAppDelegate: NSObject, UIApplicationDelegate {
-    func application(_ application: UIApplication,
-                     configurationForConnecting connectingSceneSession: UISceneSession,
-                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
-        let config = UISceneConfiguration(name: nil, sessionRole: connectingSceneSession.role)
-        clogViewer("scene connecting with role \(connectingSceneSession.role.rawValue)")
-        if connectingSceneSession.role == .windowExternalDisplayNonInteractive {
-            config.delegateClass = ControlExternalSceneDelegate.self
-        }
-        return config
-    }
-}
-
-final class ControlExternalSceneDelegate: NSObject, UIWindowSceneDelegate {
-    var window: UIWindow?
-
-    func scene(_ scene: UIScene, willConnectTo session: UISceneSession,
-               options: UIScene.ConnectionOptions) {
-        guard let windowScene = scene as? UIWindowScene else {
-            clogViewer("external scene connected but is not a UIWindowScene — ignoring")
-            return
-        }
-        clogViewer("external display scene CONNECTED: \(describeScreen(windowScene.screen))")
-        let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = UIHostingController(
-            rootView: ExternalDisplayView(client: ControlSession.shared.client))
-        window.isHidden = false
-        self.window = window
-        ControlSession.shared.externalScreenChanged(windowScene.screen)
-    }
-
-    func sceneDidDisconnect(_ scene: UIScene) {
-        clogViewer("external display scene DISCONNECTED")
-        ControlSession.shared.externalScreenChanged(nil)
-        window = nil
-    }
-}
+// protocol/assembler files are shared with the iPad UI unchanged, as is the
+// external-display scene wiring in ViewerApp.swift (AppDelegate /
+// ExternalDisplaySceneDelegate, which branch on idiom to hand the external
+// screen this session's client).
 
 // MARK: - Session (one client: the picked Mac display)
 

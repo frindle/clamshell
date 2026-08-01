@@ -2,8 +2,8 @@ import Foundation
 import CoreMedia
 import UIKit
 
-// WebSocket protocol client shared by both iOS targets (ClamshellViewer on
-// iPad, ClamshellControl on iPhone): connect, parse framed messages, assemble
+// WebSocket protocol client shared by both UIs of the universal iOS app (the
+// iPad viewer and the iPhone control surface): connect, parse framed messages, assemble
 // video samples, play audio, forward input, sync clipboard, auto-reconnect.
 
 final class StreamClient: ObservableObject {

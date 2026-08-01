@@ -327,21 +327,26 @@ terminal for debugging:
 .build/debug/Clamshell stream-selftest   # encode → TCP loopback → decode check
 ```
 
-`stream` needs **Screen Recording** permission. The iPad client is the
+`stream` needs **Screen Recording** permission. The iOS client is the
 `ClamshellViewer/` Xcode project (SwiftUI, `AVSampleBufferDisplayLayer`,
-touch → mouse forwarding) — open it in Xcode and run on an iPad on the same
-LAN/Tailscale network. Every active display is served independently (one port
-per display, main display first at the base port); hardware encode is strongly
-preferred, but the host falls back to a **software** encoder rather than
-refusing to start — the viewer shows a warning banner when it does.
+touch → mouse forwarding) — one universal app, single target/scheme
+(`ClamshellViewer`), that picks its UI from `UIDevice.current.userInterfaceIdiom`
+at launch. Open it in Xcode and run on a device on the same LAN/Tailscale
+network. Every active display is served independently (one port per display,
+main display first at the base port); hardware encode is strongly preferred,
+but the host falls back to a **software** encoder rather than refusing to
+start — the viewer shows a warning banner when it does.
 
-The same project has a second target, **ClamshellControl** (iPhone): the
-phone shows no video of its own — an external monitor plugged into the phone
-over USB-C (or AR glasses, which enumerate as ordinary external screens) is
-the only video output, showing whichever Mac display you pick, while the
-phone's screen is a laptop-style trackpad (pan = pointer, tap = click,
-two-finger tap = right click, two-finger pan = scroll) with a software
-keyboard toggle. Hardware Bluetooth keyboards/mice work like on the iPad.
+**On iPad** you get the full viewer: Display A on the iPad's own screen,
+Display B on an attached external screen, and the RDP client.
+
+**On iPhone** the same app launches the Control UI instead: the phone shows no
+video of its own — an external monitor plugged into the phone over USB-C (or
+AR glasses, which enumerate as ordinary external screens) is the only video
+output, showing whichever Mac display you pick, while the phone's screen is a
+laptop-style trackpad (pan = pointer, tap = click, two-finger tap = right
+click, two-finger pan = scroll) with a software keyboard toggle. Hardware
+Bluetooth keyboards/mice work like on the iPad. RDP and Display B are iPad-only.
 
 ### Known limitation: the lock screen (idle auto-lock / screensaver)
 
@@ -447,6 +452,19 @@ form.
 ## Changelog
 
 ### Unreleased
+- **One universal iOS app instead of two targets**: `ClamshellViewer` and
+  `ClamshellControl` are merged into a single target/scheme/app bundle
+  (`ClamshellViewer`, `com.frindle.clamshell.viewer`) that branches on
+  `UIDevice.current.userInterfaceIdiom` at runtime — iPad gets the full viewer
+  (Display A/B, RDP, mid-session settings), iPhone gets the trackpad-only
+  Control UI, both unchanged from what their separate apps did. The
+  external-display scene delegate branches the same way, handing the external
+  screen Display B on iPad and the single Control client on iPhone. CI now
+  builds one scheme. **Distribution change**: this replaces two installable
+  apps with one; the old `com.frindle.clamshell.control` bundle ID is retired
+  and its saved machines/`UserDefaults` do not migrate (no release ever
+  shipped the two-app layout to real users). Verified: builds and *runs* on
+  both iPad and iPhone Simulator, each showing its own connect screen.
 - **Manual pan+zoom & cursor-follow auto-pan (External Display Only mode, ⚠
   code-reviewed only, NOT verified rendering live — see below)**: built for
   an ultrawide (or otherwise larger/differently-shaped) Mac display viewed on
