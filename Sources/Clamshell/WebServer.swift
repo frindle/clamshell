@@ -65,8 +65,19 @@ final class WebServer {
 
     private var httpListeners: [NWListener] = []
     private var wsListeners: [NWListener] = []
+    private var streamBridgeListeners: [NWListener] = []
     private let queue = DispatchQueue(label: "clamshell.web")
     private var activeSessions = 0
+
+    /// Browser-facing WS bridge ports for the /client web streaming client —
+    /// one per display, each proxying to the matching local StreamServer WS
+    /// port below. Network.framework's server-side WS listener doesn't expose
+    /// the handshake's request path for routing (the handshake is consumed
+    /// internally), so path-based routing like "/stream/a" on a single port
+    /// isn't available — a dedicated port per display sidesteps that and
+    /// mirrors StreamServer's own "base port + display index" convention.
+    private static let streamBridgePorts: [NWEndpoint.Port] = [5906, 5907, 5908]
+    private static let streamTargetPorts: [UInt16] = [streamDefaultPort, streamDefaultPort + 1, streamDefaultPort + 2]
 
     private(set) var isRunning = false
 
@@ -77,6 +88,7 @@ final class WebServer {
         do {
             try startHTTP()
             try startWS()
+            try startStreamBridges()
             isRunning = true
             let bound = bindHosts.isEmpty ? "all interfaces" : bindHosts.joined(separator: ", ")
             clog("web access ON: http://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bound))")
@@ -91,6 +103,8 @@ final class WebServer {
         httpListeners = []
         for l in wsListeners { l.cancel() }
         wsListeners = []
+        for l in streamBridgeListeners { l.cancel() }
+        streamBridgeListeners = []
         isRunning = false
         clog("web access OFF")
     }
@@ -189,6 +203,31 @@ final class WebServer {
             return
         }
 
+        // Web streaming client (Step 3/4): serves Resources/webclient at
+        // /client, separate from the noVNC bridge at "/" — native clients
+        // hardcode http://<host>:5901 as the lock-screen fallback URL, so "/"
+        // itself must keep behaving exactly as it does today.
+        if path == "/client" || path == "/client/" {
+            guard let root = Self.webclientRoot,
+                  let html = try? Data(contentsOf: root.appendingPathComponent("index.html")) else {
+                send(conn, status: "500 Internal Server Error", contentType: "text/plain",
+                     body: Data("web client resources missing from bundle".utf8))
+                return
+            }
+            send(conn, status: "200 OK", contentType: "text/html; charset=utf-8", body: html)
+            return
+        }
+        if path.hasPrefix("/client/") {
+            guard let root = Self.webclientRoot,
+                  let fileURL = Self.resolveSafely(root: root, relativePath: String(path.dropFirst("/client/".count))),
+                  let fileBody = try? Data(contentsOf: fileURL) else {
+                send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
+                return
+            }
+            send(conn, status: "200 OK", contentType: Self.contentType(for: fileURL.pathExtension), body: fileBody)
+            return
+        }
+
         // Dual display mode: picker at "/", cropped per-display views.
         if let dual = dualPresets {
             switch path {
@@ -236,10 +275,7 @@ final class WebServer {
         // Resolve against the vendored noVNC tree; refuse traversal by
         // checking the fully resolved path stays inside the root (catches
         // percent-encoded ".." and symlinks, unlike string-stripping).
-        let decoded = path.removingPercentEncoding ?? path
-        let fileURL = root.appendingPathComponent(String(decoded.dropFirst())).standardizedFileURL
-        let rootPath = root.resolvingSymlinksInPath().path
-        guard fileURL.resolvingSymlinksInPath().path.hasPrefix(rootPath + "/") else {
+        guard let fileURL = Self.resolveSafely(root: root, relativePath: String(path.dropFirst())) else {
             send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
             return
         }
@@ -346,6 +382,26 @@ final class WebServer {
         // SwiftPM resource bundle (works for both bare binary and .app —
         // package.sh copies the bundle into Contents/Resources).
         Bundle.module.url(forResource: "novnc", withExtension: nil)
+    }
+
+    /// The web streaming client's static assets — bundled the same way as
+    /// novncRoot (declared as a resource in Package.swift, so package.sh's
+    /// wholesale copy of the SwiftPM resource bundle into Contents/Resources
+    /// picks it up automatically; no packaging changes needed).
+    static var webclientRoot: URL? {
+        Bundle.module.url(forResource: "webclient", withExtension: nil)
+    }
+
+    /// Resolves `relativePath` against `root`, refusing traversal by checking
+    /// the fully resolved path stays inside the root (catches percent-encoded
+    /// ".." and symlinks, unlike string-stripping). Shared by both the noVNC
+    /// static file server and the web client's.
+    static func resolveSafely(root: URL, relativePath: String) -> URL? {
+        let decoded = relativePath.removingPercentEncoding ?? relativePath
+        let fileURL = root.appendingPathComponent(decoded).standardizedFileURL
+        let rootPath = root.resolvingSymlinksInPath().path
+        guard fileURL.resolvingSymlinksInPath().path.hasPrefix(rootPath + "/") else { return nil }
+        return fileURL
     }
 
     static func contentType(for ext: String) -> String {
@@ -537,6 +593,103 @@ final class WebServer {
         vnc.start(queue: queue)
         pumpWSToVNC()
         pumpVNCToWS()
+    }
+
+    // MARK: - WebSocket → StreamServer WS bridge (web streaming client)
+
+    /// One listener per display (see `streamBridgePorts`'s doc comment for
+    /// why a single path-routed port isn't viable), each proxying binary WS
+    /// messages to the matching local StreamServer WS listener.
+    private func startStreamBridges() throws {
+        var listeners: [NWListener] = []
+        for (i, port) in Self.streamBridgePorts.enumerated() {
+            let targetPort = Self.streamTargetPorts[i]
+            let ls = try makeListeners(port: port) {
+                let wsParams = NWParameters.tcp
+                let wsOptions = NWProtocolWebSocket.Options()
+                wsOptions.autoReplyPing = true
+                wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
+                return wsParams
+            }
+            for listener in ls {
+                listener.newConnectionHandler = { [weak self] browserWS in
+                    self?.streamBridge(browserWS, toPort: targetPort)
+                }
+                listener.start(queue: queue)
+            }
+            listeners += ls
+        }
+        streamBridgeListeners = listeners
+    }
+
+    /// Browser WS (accepted on a `streamBridgePorts` listener) <-> a WS
+    /// *client* connection this process dials to StreamServer's own WS
+    /// listener on 127.0.0.1. Both ends speak binary WS messages (unlike
+    /// `bridge()`'s WS<->raw-TCP VNC pump), since StreamServer natively
+    /// speaks NWProtocolWebSocket rather than raw TCP — Network.framework
+    /// performs the client-side WS handshake automatically when a connection
+    /// is created with WS options in its parameters, same as any WS client.
+    private func streamBridge(_ browserWS: NWConnection, toPort targetPort: UInt16) {
+        let innerParams = NWParameters.tcp
+        let innerOptions = NWProtocolWebSocket.Options()
+        innerOptions.autoReplyPing = true
+        innerParams.defaultProtocolStack.applicationProtocols.insert(innerOptions, at: 0)
+        let inner = NWConnection(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: targetPort)!, using: innerParams)
+
+        var closed = false
+        let close: () -> Void = { [weak self] in
+            guard !closed else { return }
+            closed = true
+            browserWS.cancel()
+            inner.cancel()
+            self?.sessionEnded()
+        }
+
+        sessionStarted()
+        clog("browser stream session opened -> 127.0.0.1:\(targetPort)")
+
+        browserWS.stateUpdateHandler = { state in
+            if case .failed = state { close() }
+            if case .cancelled = state { close() }
+        }
+        inner.stateUpdateHandler = { state in
+            if case .failed = state { close() }
+            if case .cancelled = state { close() }
+        }
+
+        func pumpBrowserToInner() {
+            browserWS.receiveMessage { data, _, _, error in
+                guard error == nil else { close(); return }
+                if let data, !data.isEmpty {
+                    let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
+                    let ctx = NWConnection.ContentContext(identifier: "toStream", metadata: [meta])
+                    inner.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
+                        if sendErr != nil { close() } else { pumpBrowserToInner() }
+                    })
+                } else {
+                    pumpBrowserToInner()
+                }
+            }
+        }
+        func pumpInnerToBrowser() {
+            inner.receiveMessage { data, _, _, error in
+                guard error == nil else { close(); return }
+                if let data, !data.isEmpty {
+                    let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
+                    let ctx = NWConnection.ContentContext(identifier: "toBrowser", metadata: [meta])
+                    browserWS.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
+                        if sendErr != nil { close() } else { pumpInnerToBrowser() }
+                    })
+                } else {
+                    pumpInnerToBrowser()
+                }
+            }
+        }
+
+        browserWS.start(queue: queue)
+        inner.start(queue: queue)
+        pumpBrowserToInner()
+        pumpInnerToBrowser()
     }
 
     private func sessionStarted() {
