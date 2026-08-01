@@ -332,6 +332,11 @@ struct ContentView: View {
     // Clamshell protocol (see RDPSession.swift / RDPConnectView.swift).
     // Kept as separate state/views rather than woven into StreamClient so
     // the existing Clamshell path is untouched.
+    //
+    // Both protocols' saved lists show together on the connect screen now;
+    // `targetType` only picks which protocol the NEW-connection fields below
+    // them are for (and, transitively, which stream view is active once a
+    // connect attempt is under way — see `body`'s routing).
     enum TargetType: String, CaseIterable { case clamshell = "Clamshell", rdp = "RDP" }
     @State private var targetType: TargetType = .clamshell
     @StateObject private var rdpSession = RDPSession()
@@ -551,48 +556,75 @@ struct ContentView: View {
             VStack(spacing: 16) {
                 Text("Clamshell Viewer").font(.title2).foregroundStyle(.white)
 
-                Picker("Target", selection: $targetType) {
-                    ForEach(ContentView.TargetType.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                // Both protocols' saved lists are always visible together —
+                // no more page-wide toggle gating one or the other.
+                SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
+
+                Button {
+                    showScanner = true
+                } label: {
+                    Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 420)
+                .buttonStyle(.bordered)
 
-                if targetType == .rdp {
-                    RDPConnectForm(store: rdpStore) { rdpHost, port, username, password, domain in
-                        let size = UIScreen.main.nativeBounds.size
-                        rdpSession.connect(host: rdpHost, port: port, username: username, password: password,
-                                          domain: domain, width: Int(max(size.width, size.height)),
-                                          height: Int(min(size.width, size.height)), ignoreCertErrors: false)
+                RDPConnectForm(store: rdpStore, onConnect: { rdpHost, port, username, password, domain in
+                    let size = UIScreen.main.nativeBounds.size
+                    rdpSession.connect(host: rdpHost, port: port, username: username, password: password,
+                                      domain: domain, width: Int(max(size.width, size.height)),
+                                      height: Int(min(size.width, size.height)), ignoreCertErrors: false)
+                }, showManualFields: targetType == .rdp, onSelectedProfileNeedsManual: {
+                    targetType = .rdp
+                })
+
+                Divider().overlay(.white.opacity(0.15)).frame(maxWidth: 420)
+
+                VStack(spacing: 12) {
+                    Text("New Connection").font(.footnote).foregroundStyle(.gray)
+                        .frame(maxWidth: 420, alignment: .leading)
+
+                    // Per-entry protocol choice — radio-row style, scoped only
+                    // to the fields below it (not the whole page).
+                    HStack(spacing: 12) {
+                        ForEach(ContentView.TargetType.allCases, id: \.self) { type in
+                            Button { targetType = type } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: targetType == type ? "largecircle.fill.circle" : "circle")
+                                        .foregroundStyle(targetType == type ? .green : .gray)
+                                    Text(type.rawValue).foregroundStyle(.white)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                } else {
-                    SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
+                    .frame(maxWidth: 420, alignment: .leading)
 
-                    Button {
-                        showScanner = true
-                    } label: {
-                        Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
+                    if targetType == .clamshell {
+                        // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
+                        // append "|wss://displayB..." to place a second screen externally.
+                        TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
+                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                            .frame(maxWidth: 420)
+                        // Optional — blank falls back to the auto-derived host name.
+                        TextField("Name (optional)", text: $machineName)
+                            .textFieldStyle(.roundedBorder)
+                            .autocorrectionDisabled()
+                            .frame(maxWidth: 420)
+                        Button("Connect") { startConnection() }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
-                    .buttonStyle(.bordered)
+                    // RDP's manual fields render inside the RDPConnectForm
+                    // instance above (showManualFields toggles with targetType).
+                }
 
-                    // A bare LAN host auto-derives Display B at port+1; for a tunnel URL
-                    // append "|wss://displayB..." to place a second screen externally.
-                    TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                        .frame(maxWidth: 420)
-                    // Optional — blank falls back to the auto-derived host name.
-                    TextField("Name (optional)", text: $machineName)
-                        .textFieldStyle(.roundedBorder)
-                        .autocorrectionDisabled()
-                        .frame(maxWidth: 420)
-                    Button("Connect") { startConnection() }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty)
-                    Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
-                        .frame(maxWidth: 420)
-                        .foregroundStyle(.gray)
+                Toggle("Nerd Mode (show stream stats)", isOn: $nerdMode)
+                    .frame(maxWidth: 420)
+                    .foregroundStyle(.gray)
+
+                if targetType == .clamshell {
                     switch client.status {
                     case .connecting:
                         VStack(spacing: 6) {
