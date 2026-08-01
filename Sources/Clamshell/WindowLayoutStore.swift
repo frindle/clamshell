@@ -51,13 +51,24 @@ final class WindowLayoutStore {
 
     func restore() {
         var restored = 0
+        // Title match is nondeterministic when an app has multiple windows
+        // with the identical title (e.g. several unsaved-document windows) —
+        // `.first { title == w.title }` could match any of them and swap
+        // their positions. Only trust title matching per-app when that
+        // app's saved windows all have distinct titles; otherwise fall back
+        // to positional/index matching (AXWindows order), the same fallback
+        // already used when there's no title match at all.
+        var titleCounts: [pid_t: [String: Int]] = [:]
+        for w in saved where !w.title.isEmpty {
+            titleCounts[w.pid, default: [:]][w.title, default: 0] += 1
+        }
         for w in saved {
             let axApp = AXUIElementCreateApplication(w.pid)
             AXUIElementSetMessagingTimeout(axApp, 0.5)
             guard let windows = copyAttribute(axApp, kAXWindowsAttribute) as? [AXUIElement] else { continue }
-            // Prefer identity by title; fall back to positional index.
+            let titleIsUniqueForApp = !w.title.isEmpty && (titleCounts[w.pid]?[w.title] ?? 0) <= 1
             var target: AXUIElement?
-            if !w.title.isEmpty {
+            if titleIsUniqueForApp {
                 target = windows.first { (copyAttribute($0, kAXTitleAttribute) as? String) == w.title }
             }
             if target == nil, w.index < windows.count {

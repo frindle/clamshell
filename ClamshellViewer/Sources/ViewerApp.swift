@@ -302,6 +302,12 @@ struct ContentView: View {
     @ObservedObject private var primaryClient = Connection.shared.primary
     @ObservedObject private var externalClient = Connection.shared.external
     @State private var showingDisplayB = false
+    /// True once the Display B wait screen has waited past a reasonable
+    /// timeout without reaching .streaming — e.g. VirtualDisplayController's
+    /// create() gave up after its 8 retry attempts host-side, a failure mode
+    /// that may never populate externalClient.lastError, so without this the
+    /// spinner would sit there forever.
+    @State private var displayBTimedOut = false
     // This window's own real pixel size — see WindowSizeReader. Only
     // meaningful/read while showingDisplayB, but kept updated regardless
     // so the first report on toggle isn't stale.
@@ -477,13 +483,30 @@ struct ContentView: View {
                 // display) — a dedicated wait state instead of falling to
                 // connectForm, which would wrongly suggest re-entering a host.
                 VStack(spacing: 12) {
-                    ProgressView().tint(.white)
-                    Text("Connecting to Display B…").foregroundStyle(.white)
+                    if displayBTimedOut {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.title).foregroundStyle(.orange)
+                        Text("Display B failed to start").foregroundStyle(.white)
+                    } else {
+                        ProgressView().tint(.white)
+                        Text("Connecting to Display B…").foregroundStyle(.white)
+                    }
                     if let e = externalClient.lastError {
                         Text(e).font(.footnote).foregroundStyle(.orange).multilineTextAlignment(.center)
                     }
                     Button("Back to Display A") { showingDisplayB = false }
                         .buttonStyle(.bordered).tint(.white)
+                }
+                // Host-side retry (VirtualDisplayController) gives up after
+                // 8 attempts ~0.25s apart (~2s); 8s leaves headroom for
+                // connection/session setup on top of that before we call it.
+                .task {
+                    displayBTimedOut = false
+                    try? await Task.sleep(nanoseconds: 8_000_000_000)
+                    guard showingDisplayB else { return }
+                    if case .streaming = externalClient.status {} else {
+                        displayBTimedOut = true
+                    }
                 }
             } else {
                 connectForm

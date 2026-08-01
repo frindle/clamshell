@@ -39,7 +39,11 @@ internal sealed class VideoEncoder : IDisposable
     private readonly bool _hardware;
     private IMFTransform _mft = null!;
     private byte[] _paramSetsAvcc = Array.Empty<byte>(); // SPS/PPS(/VPS), AVCC framed
-    private int _bitrate = MaxBitrate;
+    // Starting bitrate for the initial MFT build. Starts at the floor, not the
+    // ceiling — mirrors VideoEncoder.swift: a cold connection can't absorb a
+    // 20 Mbps first I-frame without immediate congestion. StreamServer's
+    // 5s-healthy ramp (MaybeStepBitrateUp) climbs from here via SetBitrate.
+    private int _bitrate = MinBitrate;
     private bool _rebuild;          // rebuild before next frame (bitrate/keyframe)
     private bool _firstAfterBuild = true;
     private readonly object _lock = new();

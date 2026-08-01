@@ -29,7 +29,8 @@ final class VideoUIView: UIView {
         self.interactive = interactive
         super.init(frame: frame)
         displayLayer.videoGravity = .resizeAspect
-        isMultipleTouchEnabled = false
+        // Two fingers needed for the right-click tap below.
+        isMultipleTouchEnabled = true
         backgroundColor = .black
         guard interactive else { return }
 
@@ -41,6 +42,11 @@ final class VideoUIView: UIView {
         scroll.allowedScrollTypesMask = .all
         scroll.maximumNumberOfTouches = 0 // indirect (trackpad/wheel) scroll only
         addGestureRecognizer(scroll)
+        // Finger-only right-click: two-finger tap. (A real mouse's secondary
+        // button is instead read off the raw touch in touchesBegan/Ended.)
+        let twoFingerTap = UITapGestureRecognizer(target: self, action: #selector(onTwoFingerTap))
+        twoFingerTap.numberOfTouchesRequired = 2
+        addGestureRecognizer(twoFingerTap)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -97,22 +103,62 @@ final class VideoUIView: UIView {
         return (x, y)
     }
 
-    // Single touch = left mouse: down on begin, drag on move, up on end.
+    /// True while a single-touch left-click/drag is in progress, i.e. we
+    /// actually sent button-0-down in touchesBegan. Gates Moved/Ended/
+    /// Cancelled so a second finger landing mid-drag (headed for the
+    /// two-finger-tap right-click gesture) can't also emit a left-click.
+    private var leftDown = false
+
+    /// Single touch = left mouse (down on begin, drag on move, up on end);
+    /// a two-finger touch is left for the UITapGestureRecognizer right-click
+    /// below and must not also fire a left-click here.
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard (event?.allTouches?.count ?? touches.count) == 1 else {
+            // A second finger landed while a first-finger left-down was
+            // already sent (iOS doesn't guarantee both fingers of a
+            // two-finger tap begin in the same touchesBegan call). Retract
+            // it immediately instead of leaving it stuck down for the whole
+            // two-finger gesture — otherwise a subsequent touchesMoved would
+            // drag with the left button and the eventual tap would fire a
+            // right-click on top of an unreleased left one.
+            if leftDown, let t = touches.first ?? event?.allTouches?.first,
+               let (x, y) = normalized(t.location(in: self)) {
+                leftDown = false
+                client?.sendMouseButton(button: 0, down: false, x: x, y: y)
+            }
+            return
+        }
         guard let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
-        client?.sendMouseButton(button: 0, down: true, x: x, y: y)
+        // A real mouse's right button reports as .secondary in the buttonMask;
+        // finger touches have no buttonMask, so this is a no-op for touch.
+        let right = event?.buttonMask.contains(.secondary) ?? false
+        leftDown = true
+        client?.sendMouseButton(button: right ? 1 : 0, down: true, x: x, y: y)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
         client?.sendMouseMove(x: x, y: y)
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
-        client?.sendMouseButton(button: 0, down: false, x: x, y: y)
+        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        leftDown = false
+        let right = event?.buttonMask.contains(.secondary) ?? false
+        client?.sendMouseButton(button: right ? 1 : 0, down: false, x: x, y: y)
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        leftDown = false
         client?.sendMouseButton(button: 0, down: false, x: x, y: y)
+    }
+
+    /// Finger-only right-click: two-finger tap sends button-1 down+up at the
+    /// gesture's location. Left-click for the same touches is suppressed
+    /// above (touchesBegan only fires the left click when exactly one touch
+    /// is active), so this doesn't double-fire.
+    @objc private func onTwoFingerTap(_ g: UITapGestureRecognizer) {
+        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        client?.sendMouseButton(button: 1, down: true, x: x, y: y)
+        client?.sendMouseButton(button: 1, down: false, x: x, y: y)
     }
 }
 
