@@ -30,15 +30,25 @@ final class ClipboardBridge {
     func stop() { timer?.cancel(); timer = nil }
 
     private func poll() {
-        let c = pasteboard.changeCount
-        guard c != lastChangeCount else { return }
-        lastChangeCount = c
-        if let s = pasteboard.string(forType: .string) { onLocalChange?(s) }
+        // NSPasteboard access is main-thread-only in practice; hop like
+        // WebServer's handleClipboard does. This timer fires on a background
+        // queue, and receiveFromClient(_:) is called from StreamServer's
+        // background queue too.
+        var changed: String?
+        DispatchQueue.main.sync {
+            let c = pasteboard.changeCount
+            guard c != lastChangeCount else { return }
+            lastChangeCount = c
+            changed = pasteboard.string(forType: .string)
+        }
+        if let changed { onLocalChange?(changed) }
     }
 
     func receiveFromClient(_ text: String) {
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-        lastChangeCount = pasteboard.changeCount // don't echo our own write back
+        DispatchQueue.main.sync {
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
+            lastChangeCount = pasteboard.changeCount // don't echo our own write back
+        }
     }
 }

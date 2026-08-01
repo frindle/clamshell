@@ -19,9 +19,23 @@ struct RDPConnectForm: View {
     @State private var showImporter = false
     @State private var importError: String?
 
+    /// Single source of truth for "is this form fillable enough to connect" —
+    /// used by both the Connect button's `disabled` state and `connect()`'s
+    /// guard, so they can't drift apart (previously two separate trim/parse
+    /// implementations could disagree, leaving the button enabled while
+    /// connect() silently no-op'd).
+    private var validatedPort: UInt16? {
+        let h = host.trimmingCharacters(in: .whitespaces)
+        guard !h.isEmpty, !username.isEmpty else { return nil }
+        return UInt16(port.trimmingCharacters(in: .whitespaces))
+    }
+
     private func connect() {
         let h = host.trimmingCharacters(in: .whitespaces)
-        guard !h.isEmpty, let p = UInt16(port.trimmingCharacters(in: .whitespaces)), !username.isEmpty else { return }
+        guard let p = validatedPort else {
+            importError = "Enter a valid host, port, and username before connecting."
+            return
+        }
         let d = domain.trimmingCharacters(in: .whitespaces)
         let profile = store.upsert(
             RDPProfile(name: h, host: h, port: p, username: username, domain: d.isEmpty ? nil : d),
@@ -41,7 +55,7 @@ struct RDPConnectForm: View {
 
     private func applyImportedFile(_ url: URL) {
         importError = nil
-        guard url.startAccessingSecurityScopedResource() != false || true else { return }
+        guard url.startAccessingSecurityScopedResource() else { return }
         defer { url.stopAccessingSecurityScopedResource() }
         guard let text = try? String(contentsOf: url, encoding: .utf8),
               let info = RDPFileParser.parse(text) else {
@@ -111,9 +125,7 @@ struct RDPConnectForm: View {
 
             Button("Connect") { connect() }
                 .buttonStyle(.borderedProminent)
-                .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty
-                          || username.isEmpty
-                          || UInt16(port.trimmingCharacters(in: .whitespaces)) == nil)
+                .disabled(validatedPort == nil)
         }
         .onAppear {
             if host.isEmpty, let last = store.lastUsed { select(last) }

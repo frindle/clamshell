@@ -109,7 +109,8 @@ if args.count > 1 {
         exit(0)
     default:
         print("Unknown command: \(args[1])")
-        print("Usage: clamshell [test-virtual-display | test-detect | reboot-readiness]")
+        print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
+              "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect]")
         exit(64)
     }
 }

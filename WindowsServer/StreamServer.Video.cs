@@ -22,10 +22,14 @@ internal sealed partial class StreamServer
     // Adaptive bitrate (PROTOCOL.md "Adaptive bitrate"): reactive, driven by
     // WebSocket send backpressure. _inFlight counts frames handed to Send but
     // not yet completed; at the cap we drop deltas and resync on a keyframe,
-    // stepping the live MFT bitrate down. Same bounds/timings as the Mac.
+    // stepping the live MFT bitrate down. Same bounds/timings as the Mac —
+    // including starting at the floor, not the ceiling: a cold connection
+    // can't absorb a 20 Mbps first I-frame without immediate congestion
+    // (sometimes a client-side RST). The 5s-healthy ramp (MaybeStepBitrateUp)
+    // climbs from there, mirroring StreamServer.swift.
     private int _inFlight;
     private const int MaxInFlight = 8;
-    private int _bitrate = VideoEncoder.MaxBitrate;
+    private int _bitrate = VideoEncoder.MinBitrate;
     private long _lastCongestionTicks;
     private long _lastStepTicks;
 
@@ -45,7 +49,7 @@ internal sealed partial class StreamServer
         }
 
         _inFlight = 0;
-        _bitrate = VideoEncoder.MaxBitrate;
+        _bitrate = VideoEncoder.MinBitrate;
         _lastCongestionTicks = _lastStepTicks = 0;
 
         _encoder.OnFrame = (keyframe, ptsMicros, avcc) => SendFrame(keyframe, ptsMicros, avcc);
