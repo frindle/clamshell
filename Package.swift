@@ -12,7 +12,7 @@ let package = Package(
         .executableTarget(
             name: "Clamshell",
             dependencies: ["CGVirtualDisplayShim"],
-            resources: [.copy("Resources/novnc")]
+            resources: [.copy("Resources/novnc"), .copy("Resources/webclient")]
         ),
     ]
 )
