@@ -215,7 +215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             : "rectangle.expand.vertical"
         statusItem.button?.image = NSImage(
             systemSymbolName: symbol,
-            accessibilityDescription: "Clamshell"
+            accessibilityDescription: "Clamshell Server"
         )
     }
 

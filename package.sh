@@ -29,8 +29,8 @@ cat > "${APP}/Contents/Info.plist" <<EOF
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleName</key><string>Clamshell</string>
-    <key>CFBundleDisplayName</key><string>Clamshell</string>
+    <key>CFBundleName</key><string>Clamshell Server</string>
+    <key>CFBundleDisplayName</key><string>Clamshell Server</string>
     <key>CFBundleIdentifier</key><string>com.frindle.clamshell</string>
     <key>CFBundleExecutable</key><string>Clamshell</string>
     <key>CFBundlePackageType</key><string>APPL</string>

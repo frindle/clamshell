@@ -36,7 +36,7 @@ internal sealed class TrayApp : ApplicationContext
             _icon = new NotifyIcon
             {
                 Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath) ?? System.Drawing.SystemIcons.Application,
-                Text = "Clamshell",
+                Text = "Clamshell Server",
                 Visible = true,
             };
             _icon.DoubleClick += (_, _) => OpenSettings();

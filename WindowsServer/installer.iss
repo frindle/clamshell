@@ -8,7 +8,7 @@
   #define MyAppVersion "0.0.0"
 #endif
 
-#define MyAppName "Clamshell"
+#define MyAppName "Clamshell Server"
 #define MyAppPublisher "frindle"
 #define MyAppExeName "ClamshellServer.exe"
 #define PublishDir "..\publish"
