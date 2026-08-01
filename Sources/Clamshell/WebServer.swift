@@ -653,7 +653,7 @@ final class WebServer {
             if case .cancelled = state { close() }
         }
         inner.stateUpdateHandler = { state in
-            if case .failed = state { close() }
+            if case .failed(let err) = state { clog("stream bridge: inner connection to 127.0.0.1:\(targetPort) failed: \(err)"); close() }
             if case .cancelled = state { close() }
         }
 

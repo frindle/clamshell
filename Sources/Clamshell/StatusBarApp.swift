@@ -37,6 +37,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var autoDualDetect = UserDefaults.standard.object(forKey: "autoDualDetect") as? Bool ?? true
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Must run before anything else touches display config — a prior
+        // instance that crashed/was force-quit mid-collapse can leave real
+        // displays mirroring an orphaned virtual one with zero in-memory
+        // record anywhere to undo it (see CollapseCoordinator's doc comment).
+        CollapseCoordinator.recoverOrphanedMirrors()
+
         if !WindowLayoutStore.hasAccessibilityPermission {
             WindowLayoutStore.requestAccessibilityPermission()
         }
@@ -160,6 +166,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             self?.checkForUpdate()
         }
+    }
+
+    /// Best-effort cleanup on a clean quit (Cmd+Q / menu Quit) — un-mirrors
+    /// and destroys any active collapse synchronously before the process
+    /// exits, so a normal quit never leaves the orphaned-mirror state
+    /// `recoverOrphanedMirrors()` exists to clean up after. Can't help with
+    /// a crash or force-quit (nothing runs then, by definition) — that's
+    /// what the launch-time recovery sweep is for.
+    func applicationWillTerminate(_ notification: Notification) {
+        guard coordinator.state != .idle else { return }
+        clog("quitting while collapsed — restoring before exit")
+        coordinator.restore()
     }
 
     /// Compares the running bundle version against the latest GitHub release
