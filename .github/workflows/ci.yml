@@ -15,7 +15,7 @@ jobs:
         run: .build/debug/Clamshell test-detect
       - name: Package (release build, ad-hoc signed DMG)
         run: ./package.sh 0.0.0
-      - name: Build iOS viewer (simulator, compile check only)
+      - name: Build iOS app (universal iPad+iPhone, simulator, compile check only)
         run: |
           cd ClamshellViewer
           # -scheme, not -project/-target: ClamshellViewer depends on the local
@@ -28,8 +28,3 @@ jobs:
           # slice), so a default multi-arch simulator build fails linking it.
           xcodebuild -scheme ClamshellViewer \
             -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO EXCLUDED_ARCHS=x86_64 build
-      - name: Build iPhone control app (simulator, compile check only)
-        run: |
-          cd ClamshellViewer
-          xcodebuild -scheme ClamshellControl \
-            -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
