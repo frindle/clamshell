@@ -299,7 +299,6 @@ struct ControlContentView: View {
     @AppStorage("displayIndex") private var displayIndex = 0
     @AppStorage("nerdMode") private var nerdMode = false
     @State private var keyboardVisible = false
-    @State private var showScanner = false
     @State private var showSettings = false
 
     var body: some View {
@@ -326,10 +325,6 @@ struct ControlContentView: View {
         .sheet(isPresented: $showSettings) {
             InSessionSettingsView(store: store, currentHost: host,
                                   onSwitch: switchTo, onClose: { showSettings = false })
-        }
-        .fullScreenCover(isPresented: $showScanner) {
-            QRScannerView(onScan: applyScan, onCancel: { showScanner = false })
-                .ignoresSafeArea()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIPasteboard.changedNotification)) { _ in
             if let text = UIPasteboard.general.string { client.syncClipboard(text) }
@@ -363,17 +358,6 @@ struct ControlContentView: View {
     private func preselectLastUsed() {
         guard host.trimmingCharacters(in: .whitespaces).isEmpty, let m = store.lastUsed else { return }
         host = m.host; displayIndex = m.displayIndex
-    }
-
-    private func applyScan(_ code: String) {
-        showScanner = false
-        guard let pairing = ClamshellPairing(url: code) else {
-            clogViewer("QR scan ignored: not a clamshell pairing code"); return
-        }
-        host = pairing.host
-        store.upsert(MachineProfile(name: ContentViewNaming.deriveName(pairing.host), host: pairing.host,
-                                    displayIndex: displayIndex))
-        clogViewer("QR scan filled connection for \(pairing.host)")
     }
 
     private var controlSurface: some View {
@@ -433,11 +417,6 @@ struct ControlContentView: View {
                     .font(.footnote).foregroundStyle(.gray)
 
                 SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
-
-                Button { showScanner = true } label: {
-                    Label("Scan QR to Pair", systemImage: "qrcode.viewfinder")
-                }
-                .buttonStyle(.bordered)
 
                 TextField("Mac address (192.168.1.5) or wss:// URL", text: $host)
                     .textFieldStyle(.roundedBorder)
