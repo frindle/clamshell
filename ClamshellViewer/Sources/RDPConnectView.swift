@@ -10,6 +10,15 @@ import UniformTypeIdentifiers
 struct RDPConnectForm: View {
     @ObservedObject var store: RDPProfileStore
     var onConnect: (_ host: String, _ port: UInt16, _ username: String, _ password: String, _ domain: String?) -> Void
+    /// Whether the manual-entry fields + Connect button are shown. The saved
+    /// targets list above them is always shown regardless — ContentView now
+    /// displays Clamshell and RDP saved lists together, gating only the
+    /// new-connection fields behind its per-entry protocol picker.
+    var showManualFields: Bool = true
+    /// Selecting a saved profile while `showManualFields` is false fills the
+    /// fields as before, but they'd be invisible — this tells the parent to
+    /// flip its protocol picker to RDP so the filled fields (and Connect) show.
+    var onSelectedProfileNeedsManual: (() -> Void)? = nil
 
     @State private var host = ""
     @State private var port = "3389"
@@ -30,13 +39,17 @@ struct RDPConnectForm: View {
         onConnect(h, p, username, password, d.isEmpty ? nil : d)
     }
 
-    private func select(_ profile: RDPProfile) {
+    /// `notifyParent: false` is used for the silent on-appear preload, which
+    /// must not flip the parent's protocol picker just because a saved RDP
+    /// profile happens to exist — only an explicit tap on a saved target should.
+    private func select(_ profile: RDPProfile, notifyParent: Bool = true) {
         host = profile.host
         port = String(profile.port)
         username = profile.username
         domain = profile.domain ?? ""
         password = store.password(for: profile) ?? ""
         store.markUsed(profile)
+        if notifyParent, !showManualFields { onSelectedProfileNeedsManual?() }
     }
 
     private func applyImportedFile(_ url: URL) {
@@ -82,41 +95,43 @@ struct RDPConnectForm: View {
                 .frame(maxWidth: 420)
             }
 
-            Button { showImporter = true } label: {
-                Label("Import .rdp File", systemImage: "doc.badge.arrow.up")
-            }
-            .buttonStyle(.bordered)
-            if let importError {
-                Text(importError).font(.caption2).foregroundStyle(.red)
-            }
+            if showManualFields {
+                Button { showImporter = true } label: {
+                    Label("Import .rdp File", systemImage: "doc.badge.arrow.up")
+                }
+                .buttonStyle(.bordered)
+                if let importError {
+                    Text(importError).font(.caption2).foregroundStyle(.red)
+                }
 
-            Group {
-                TextField("Host or IP", text: $host)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                    .keyboardType(.URL)
-                TextField("Port", text: $port)
-                    .textFieldStyle(.roundedBorder)
-                    .keyboardType(.numberPad)
-                TextField("Username", text: $username)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                TextField("Domain (optional)", text: $domain)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled().textInputAutocapitalization(.never)
-                SecureField("Password", text: $password)
-                    .textFieldStyle(.roundedBorder)
-            }
-            .frame(maxWidth: 420)
+                Group {
+                    TextField("Host or IP", text: $host)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled().textInputAutocapitalization(.never)
+                        .keyboardType(.URL)
+                    TextField("Port", text: $port)
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.numberPad)
+                    TextField("Username", text: $username)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    TextField("Domain (optional)", text: $domain)
+                        .textFieldStyle(.roundedBorder)
+                        .autocorrectionDisabled().textInputAutocapitalization(.never)
+                    SecureField("Password", text: $password)
+                        .textFieldStyle(.roundedBorder)
+                }
+                .frame(maxWidth: 420)
 
-            Button("Connect") { connect() }
-                .buttonStyle(.borderedProminent)
-                .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty
-                          || username.isEmpty
-                          || UInt16(port.trimmingCharacters(in: .whitespaces)) == nil)
+                Button("Connect") { connect() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(host.trimmingCharacters(in: .whitespaces).isEmpty
+                              || username.isEmpty
+                              || UInt16(port.trimmingCharacters(in: .whitespaces)) == nil)
+            }
         }
         .onAppear {
-            if host.isEmpty, let last = store.lastUsed { select(last) }
+            if host.isEmpty, let last = store.lastUsed { select(last, notifyParent: false) }
         }
         .fileImporter(isPresented: $showImporter, allowedContentTypes: [.data, .item], allowsMultipleSelection: false) { result in
             if case .success(let urls) = result, let url = urls.first { applyImportedFile(url) }
