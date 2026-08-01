@@ -1,10 +1,14 @@
 import SwiftUI
 
-// ClamshellViewer — iPad client for the Clamshell stream protocol
-// (see ../PROTOCOL.md). Displays Display A full-screen on the iPad and, when a
-// physical external screen is attached, Display B on that screen. StreamClient
-// (network), VideoView (render/input), StreamProtocol and FrameAssembler are
-// shared with the iPhone ClamshellControl target and/or the Mac host.
+// ClamshellViewer — universal iOS client for the Clamshell stream protocol
+// (see ../PROTOCOL.md). One app, two UIs picked by device idiom at runtime:
+//   .pad   → ContentView (this file): Display A full-screen on the iPad, plus
+//            Display B on an attached external screen, and the RDP client.
+//   .phone → ControlContentView (../ControlSources/ControlApp.swift): no local
+//            video at all, the phone is a trackpad and the external monitor is
+//            the only video surface.
+// StreamClient (network), VideoView (render/input), StreamProtocol and
+// FrameAssembler are shared between both UIs and/or the Mac host.
 //
 // Stage-Manager-capable iPads (confirmed on a real M4 iPad Air, 2026-07-31):
 // dragging the app's single window onto an external display already works
@@ -14,11 +18,22 @@ import SwiftUI
 // where dragging isn't possible and the external screen can only be claimed
 // via the legacy external-display scene role.
 
+/// True on iPhone (and iPod touch) — picks the trackpad-only Control UI over
+/// the full iPad viewer. Read at every use site rather than cached so it stays
+/// correct if the app ever runs iPad-app-on-Mac/Vision style.
+var isPhoneIdiom: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+
 @main
 struct ViewerApp: App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
-        WindowGroup { ContentView() }
+        WindowGroup {
+            if isPhoneIdiom {
+                ControlContentView()
+            } else {
+                ContentView()
+            }
+        }
     }
 }
 
@@ -69,17 +84,28 @@ final class ExternalDisplaySceneDelegate: NSObject, UIWindowSceneDelegate {
             return
         }
         clogViewer("external display scene CONNECTED: \(describeScreen(windowScene.screen))")
+        // On iPhone the external screen shows the app's ONE and only client
+        // (ControlSession); on iPad it shows Display B (Connection.external).
         let window = UIWindow(windowScene: windowScene) // sized to the external screen's own bounds
         window.rootViewController = UIHostingController(
-            rootView: ExternalDisplayView(client: Connection.shared.external))
+            rootView: ExternalDisplayView(
+                client: isPhoneIdiom ? ControlSession.shared.client : Connection.shared.external))
         window.isHidden = false
         self.window = window
-        Connection.shared.externalDisplayConnected(size: windowScene.screen.nativeBounds.size)
+        if isPhoneIdiom {
+            ControlSession.shared.externalScreenChanged(windowScene.screen)
+        } else {
+            Connection.shared.externalDisplayConnected(size: windowScene.screen.nativeBounds.size)
+        }
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
         clogViewer("external display scene DISCONNECTED")
-        Connection.shared.externalDisplayDisconnected()
+        if isPhoneIdiom {
+            ControlSession.shared.externalScreenChanged(nil)
+        } else {
+            Connection.shared.externalDisplayDisconnected()
+        }
         window = nil
     }
 }
