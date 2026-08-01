@@ -173,36 +173,6 @@ enum StreamMessage {
     }
 }
 
-// MARK: - QR pairing payload
-
-/// Connection info encoded in the pairing QR code the Mac displays and the
-/// iOS apps scan. Format is a custom URL so a generic QR reader shows
-/// something recognizable: `clamshell://pair?host=<h>`.
-struct ClamshellPairing: Equatable {
-    var host: String
-
-    var url: String {
-        var c = URLComponents()
-        c.scheme = "clamshell"
-        c.host = "pair"
-        c.queryItems = [URLQueryItem(name: "host", value: host)]
-        return c.string ?? "clamshell://pair?host=\(host)"
-    }
-
-    /// Parses a scanned string; nil if it isn't a clamshell pairing URL with a host.
-    init?(url string: String) {
-        guard let c = URLComponents(string: string.trimmingCharacters(in: .whitespacesAndNewlines)),
-              c.scheme == "clamshell" else { return nil }
-        let items = c.queryItems ?? []
-        guard let h = items.first(where: { $0.name == "host" })?.value, !h.isEmpty else { return nil }
-        host = h
-    }
-
-    init(host: String) {
-        self.host = host
-    }
-}
-
 // MARK: - Incremental parser
 
 /// Feed raw bytes from the socket; emits complete (type, payload) messages.

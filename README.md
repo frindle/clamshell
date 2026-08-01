@@ -532,12 +532,11 @@ form.
   one real bug (a mis-sized HELLO_ACK payload) before it ever reached a
   real machine.
 - **Cloudflare Access fields removed**: the CF-Access-Client-Id/-Secret
-  Service Token fields are gone from both connect screens, the QR pairing
-  format, and saved machine profiles — WARP-enrolled-device auth doesn't
-  need them, and Service Tokens don't fit a non-browser client's login flow
-  anyway. Cloudflare Access, if used at all, is now assumed to be enforced
-  at the edge via an enrolled device or a policy that doesn't require
-  app-level headers.
+  Service Token fields are gone from both connect screens and saved machine
+  profiles — WARP-enrolled-device auth doesn't need them, and Service
+  Tokens don't fit a non-browser client's login flow anyway. Cloudflare
+  Access, if used at all, is now assumed to be enforced at the edge via an
+  enrolled device or a policy that doesn't require app-level headers.
 - **Mid-session settings (iPad + iPhone)**: a gear button beside the disconnect
   X on the streaming view opens a lightweight sheet — flip Nerd Mode live (also
   tap the quality dot to toggle it) with no reconnect, and switch to another

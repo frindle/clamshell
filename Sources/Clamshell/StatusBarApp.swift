@@ -11,7 +11,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `stream` command uses — nil when the "Native Streaming" toggle is off.
     private(set) var streamFleet: StreamFleet?
     private var diagnosticsWC: NSWindowController?
-    private var qrWC: NSWindowController?
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
     // Remote-session state is the OR of the two signals: polled VNC/Jump
@@ -337,8 +336,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(withTitle: "Diagnostics…", action: #selector(openDiagnostics), keyEquivalent: "d")
             .target = self
-        menu.addItem(withTitle: "Show Pairing QR Code…", action: #selector(openPairingQR), keyEquivalent: "")
-            .target = self
         menu.addItem(withTitle: "Open Log File", action: #selector(openLog), keyEquivalent: "l")
             .target = self
 
@@ -489,13 +486,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         startNativeStreaming()
         UserDefaults.standard.set(true, forKey: "nativeStreaming")
         rebuildMenu()
-    }
-
-    @objc private func openPairingQR() {
-        if qrWC == nil { qrWC = PairingQRWindowController() }
-        NSApp.activate(ignoringOtherApps: true)
-        qrWC?.showWindow(nil)
-        qrWC?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func selectBind(_ sender: NSMenuItem) {
