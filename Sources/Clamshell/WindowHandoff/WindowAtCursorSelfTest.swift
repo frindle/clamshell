@@ -14,17 +14,37 @@ import AppKit
 // no click/drag) at Terminal's exact known on-screen center -- both times
 // this returned "loginwindow" (pid 605), not the real window actually at
 // that location. That's a THIRD independent AX technique (after title-match
-// and the private _AXUIElementGetWindow) all showing the same shape of
-// failure: the call succeeds and returns *something*, but not the correct
-// real answer. Three different APIs failing the same way is a much stronger
-// signal than any one of them alone -- it points at the common denominator
-// (this ad-hoc-signed bare `.build/debug/Clamshell` binary's AX trust level)
-// rather than at any individual technique being wrong. Testing from inside
-// the real signed Clamshell.app bundle is the next step, deliberately not
-// done yet tonight: it would mean either overwriting the live, currently-
-// running production /Applications/Clamshell.app, or building to a new path
-// that would need a fresh interactive permission grant -- both need the
-// user, not something to do silently.
+// and the private _AXUIElementGetWindow) showing the same shape of failure:
+// the call succeeds and returns *something*, but not the correct real answer.
+//
+// UPDATE, same night: the leading theory at that point ("this ad-hoc-signed
+// bare CLI binary's AX trust level") is now DISPROVEN, not just unverified.
+// Cross-checked with `osascript`/System Events -- a fully-trusted, always-
+// signed Apple system component, not this binary at all:
+//   osascript -e 'tell application "System Events" to tell process "Terminal" to count windows'
+// returned **0** (Terminal genuinely has one real, visible, frontmost window
+// at the time). Same 0-windows result for Finder AND Google Chrome -- every
+// app tested, not Terminal-specific. `get properties of process "Terminal"`
+// (the actual frontmost, focused, visible=true process) reports
+// `position:missing value, size:missing value, focused:missing value` even
+// at the AXApplication level. This is a genuine, system-wide Accessibility
+// reporting problem on this Mac RIGHT NOW, independent of which binary or
+// which app is asking.
+//
+// Ruled out as the cause: (1) headless/virtual-display state -- both
+// `system_profiler SPDisplaysDataType` displays (built-in + an external
+// Odyssey G95C ultrawide) report Online:Yes, this is NOT a lid-closed/
+// Clamshell-collapsed Mac despite Clamshell.app running in the background;
+// (2) an active remote Clamshell session interfering -- `clamshell
+// test-detect` reports none, no established connections on its ports.
+// Reading TCC.db directly to check the actual Accessibility grant list was
+// attempted and correctly refused (SIP-protected, needs Full Disk Access) --
+// appropriate OS behavior, not something to work around.
+//
+// Not yet tried, needs the user (state-changing, not something to do
+// silently): rebooting/restarting the Accessibility-related daemons, or
+// simply checking System Settings > Privacy & Security > Accessibility's
+// actual toggle state directly instead of inferring it from AXIsProcessTrusted().
 enum WindowAtCursorSelfTest {
     static func run() -> Int32 {
         guard AXIsProcessTrusted() else {
