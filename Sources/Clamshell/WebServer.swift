@@ -629,6 +629,40 @@ final class WebServer {
     /// speaks NWProtocolWebSocket rather than raw TCP — Network.framework
     /// performs the client-side WS handshake automatically when a connection
     /// is created with WS options in its parameters, same as any WS client.
+    ///
+    /// KNOWN BUG, confirmed live 2026-08-08, not fixed: the browser client
+    /// (`Resources/webclient/client.js`, the `/client` route) gets stuck on
+    /// "Reconnecting..." forever. Live debug logging (added and left in this
+    /// commit -- every state transition and byte count on both legs) showed
+    /// `browserWS` (the listener-accepted side) reaches `.ready` fine, but
+    /// `inner` (this process dialing OUT to StreamServer on
+    /// 127.0.0.1:<targetPort>) gets stuck at `.preparing` and then aborts
+    /// with `POSIXErrorCode(53)` ("Software caused connection abort") --
+    /// StreamServer's own log shows "connection preparing" then immediate
+    /// "client disconnected (eof)", so it sees the same abort from its side.
+    /// This happens on every attempt, consistently, not intermittently.
+    ///
+    /// One real bug WAS found and fixed along the way (kept in this commit,
+    /// verified not to be the whole story): the pumps used to start
+    /// immediately after `.start()`, before either connection had reached
+    /// `.ready` -- sending through a not-yet-ready `inner` is a real race.
+    /// Fixed via `browserReady`/`innerReady`/`startPumpsIfBothReady()`
+    /// below, gating both pumps on BOTH connections actually reaching
+    /// `.ready` first. This did NOT resolve the bug: `inner` now fails
+    /// during its own handshake, before pumps start at all and before any
+    /// data is sent -- so this is not (or not only) a send-before-ready
+    /// race. Root cause not isolated: `inner`'s WS client parameters
+    /// (`NWParameters.tcp` + `NWProtocolWebSocket.Options()`) look
+    /// identical in shape to StreamServer's own listener parameters and to
+    /// `browserWS`'s (which works), so the asymmetry isn't obviously in
+    /// this file. Next step for whoever picks this up: isolate whether this
+    /// is specific to loopback WS-client-to-WS-server within the same
+    /// process (two independent `NWProtocolWebSocket` stacks -- one server
+    /// role on the bridge listener, one client role dialing StreamServer --
+    /// coexisting in one process), vs. something about StreamServer's
+    /// listener specifically; a minimal standalone repro (separate process,
+    /// same two NWParameters configs) would isolate that faster than more
+    /// live debugging on this codebase directly.
     private func streamBridge(_ browserWS: NWConnection, toPort targetPort: UInt16) {
         let innerParams = NWParameters.tcp
         let innerOptions = NWProtocolWebSocket.Options()
@@ -648,22 +682,48 @@ final class WebServer {
         sessionStarted()
         clog("browser stream session opened -> 127.0.0.1:\(targetPort)")
 
+        // Both ends must actually finish their OWN WS handshake (reach
+        // .ready) before either pump starts relaying data through them.
+        // Starting immediately after .start() -- the previous behavior --
+        // races: browserWS often reaches .ready and delivers the client's
+        // HELLO before inner's handshake to StreamServer has completed,
+        // and sending through a not-yet-ready WS connection aborts it
+        // (observed live: inner stuck in .preparing, then
+        // ECONNABORTED/"Software caused connection abort" the instant
+        // browser data arrives to relay).
+        var browserReady = false
+        var innerReady = false
+        var pumpsStarted = false
+        func startPumpsIfBothReady() {
+            guard browserReady, innerReady, !pumpsStarted else { return }
+            pumpsStarted = true
+            pumpBrowserToInner()
+            pumpInnerToBrowser()
+        }
+
         browserWS.stateUpdateHandler = { state in
-            if case .failed = state { close() }
+            clog("stream bridge: browserWS state -> \(state)")
+            if case .ready = state { browserReady = true; startPumpsIfBothReady() }
+            if case .failed(let err) = state { clog("stream bridge: browserWS failed: \(err)"); close() }
             if case .cancelled = state { close() }
         }
         inner.stateUpdateHandler = { state in
+            clog("stream bridge: inner state -> \(state)")
+            if case .ready = state { innerReady = true; startPumpsIfBothReady() }
             if case .failed(let err) = state { clog("stream bridge: inner connection to 127.0.0.1:\(targetPort) failed: \(err)"); close() }
             if case .cancelled = state { close() }
         }
 
         func pumpBrowserToInner() {
-            browserWS.receiveMessage { data, _, _, error in
+            browserWS.receiveMessage { data, context, isComplete, error in
+                if let error { clog("stream bridge: browserWS.receiveMessage error: \(error)") }
                 guard error == nil else { close(); return }
                 if let data, !data.isEmpty {
+                    clog("stream bridge: browser->inner \(data.count) bytes")
                     let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
                     let ctx = NWConnection.ContentContext(identifier: "toStream", metadata: [meta])
                     inner.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
+                        if let sendErr { clog("stream bridge: inner.send error: \(sendErr)") }
                         if sendErr != nil { close() } else { pumpBrowserToInner() }
                     })
                 } else {
@@ -672,12 +732,15 @@ final class WebServer {
             }
         }
         func pumpInnerToBrowser() {
-            inner.receiveMessage { data, _, _, error in
+            inner.receiveMessage { data, context, isComplete, error in
+                if let error { clog("stream bridge: inner.receiveMessage error: \(error)") }
                 guard error == nil else { close(); return }
                 if let data, !data.isEmpty {
+                    clog("stream bridge: inner->browser \(data.count) bytes")
                     let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
                     let ctx = NWConnection.ContentContext(identifier: "toBrowser", metadata: [meta])
                     browserWS.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
+                        if let sendErr { clog("stream bridge: browserWS.send error: \(sendErr)") }
                         if sendErr != nil { close() } else { pumpInnerToBrowser() }
                     })
                 } else {
@@ -688,8 +751,6 @@ final class WebServer {
 
         browserWS.start(queue: queue)
         inner.start(queue: queue)
-        pumpBrowserToInner()
-        pumpInnerToBrowser()
     }
 
     private func sessionStarted() {
