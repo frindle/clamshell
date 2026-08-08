@@ -6,7 +6,7 @@
     <!-- Windows-only: DXGI capture, Media Foundation, WASAPI, SendInput, Win32 clipboard.
          Versioned moniker (not bare net8.0-windows) so the C#/WinRT source
          generator projects Windows.Graphics.Capture for window-handoff
-         capture (WindowCaptureSelfTest.cs) -- 19041.0 is the floor for
+         capture (WindowCaptureSelfTest.cs): 19041.0 is the floor for
          reliable per-window GraphicsCaptureItem creation. Raises this app's
          minimum Windows version to 10 20H1 (May 2020 Update) / Server 2022. -->
     <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
