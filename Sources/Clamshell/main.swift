@@ -140,11 +140,25 @@ if args.count > 1 {
         }
         sema2.wait()
         exit(exitCode2)
+    case "window-hide-selftest":
+        // Third slice: prove the actual hiding mechanism -- move a window
+        // off-screen via Accessibility (not minimize, which breaks capture)
+        // and confirm window-capture-selftest still gets frames while it's
+        // off-screen. `clamshell window-hide-selftest [windowId]`.
+        let windowId3 = args.count > 2 ? UInt32(args[2]) : nil
+        let sema3 = DispatchSemaphore(value: 0)
+        var exitCode3: Int32 = 1
+        Task {
+            exitCode3 = await WindowHideSelfTest.run(windowId: windowId3)
+            sema3.signal()
+        }
+        sema3.wait()
+        exit(exitCode3)
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
-              "window-capture-selftest]")
+              "window-capture-selftest | window-hide-selftest]")
         exit(64)
     }
 }
