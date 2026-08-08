@@ -1,4 +1,5 @@
 import AppKit
+import AXPrivateShim
 @preconcurrency import ScreenCaptureKit
 
 // `clamshell window-hide-selftest [windowId]` — third slice of Window Handoff.
@@ -10,27 +11,34 @@ import AppKit
 // window's original position. Needs Accessibility permission (separate from
 // window-list/window-capture-selftest's Screen Recording permission).
 //
-// KNOWN LIMITATION, confirmed live 2026-08-08, not yet fixed: matching an
-// SCWindow to its AXUIElement by title (the "official", documented approach)
-// does not work reliably. Tested against both Terminal and Finder via this
-// binary (Accessibility permission genuinely granted, AXIsProcessTrusted()
-// true, AXUIElementCopyAttributeValue calls return .success) --
-// kAXWindowsAttribute's array does not contain an element matching the
-// target window's real title OR its real frame. Finder's two "windows" were
-// a zero-size stub and what looks like a full-desktop-bounds phantom element
-// -- neither is the actual 920x436 "Applications" window SCShareableContent
-// correctly reports. Root cause not yet isolated: possibly a genuine AX
-// quirk for these specific apps, possibly degraded AX tree fidelity for an
-// ad-hoc-signed bare CLI binary (untested: whether this behaves differently
-// from inside the real signed Clamshell.app bundle).
+// STATUS as of 2026-08-08, live-tested, NEITHER approach works yet:
 //
-// The robust fix used by real window-management tools (Rectangle, yabai,
-// Hammerspoon) for exactly this CGWindowID<->AXUIElement mapping problem is
-// `_AXUIElementGetWindow` -- a private, undocumented ApplicationServices
-// function, not part of the public AX API. That's a deliberate tradeoff to
-// make explicitly (private APIs can break across macOS updates without
-// notice), not something to reach for silently. Left unimplemented here
-// until that decision is made on purpose.
+// 1. Matching an SCWindow to its AXUIElement by title (the "official",
+//    documented approach) does NOT work reliably -- confirmed against both
+//    Terminal and Finder: kAXWindowsAttribute's array didn't contain an
+//    element matching either the target window's real title or its real
+//    frame.
+// 2. `_AXUIElementGetWindow` (AXPrivateShim) -- the private, undocumented
+//    ApplicationServices function real window-management tools (Rectangle,
+//    yabai, Hammerspoon) rely on for this exact CGWindowID<->AXUIElement
+//    mapping problem -- ALSO fails: returns AXError -25201 (illegal
+//    argument) for every AX window tried, against both apps, despite a
+//    standard-looking call (valid non-null AXUIElement from a successful
+//    kAXWindowsAttribute read, non-null out-pointer). The shim itself
+//    compiles/links correctly and the call executes without crashing --
+//    this is a genuine behavioral rejection by the system implementation,
+//    not a declaration/linking bug.
+//
+// Both are real dead ends investigated live, not guesses. Not yet isolated:
+// whether this Mac's specific macOS version changed `_AXUIElementGetWindow`'s
+// behavior/requirements, or whether an ad-hoc-signed bare CLI binary (not
+// the real signed Clamshell.app bundle) gets systematically different AX
+// treatment than what AXIsProcessTrusted()==true implies -- that would
+// explain BOTH failures at once. Needs either a reference implementation to
+// diff the exact call convention against, or testing from inside the real
+// signed .app bundle, before spending more time guessing at this private
+// API's undocumented contract. Left in place (not reverted) as the current
+// best attempt and a clear record of what's been tried.
 enum WindowHideSelfTest {
     static func run(windowId: UInt32?) async -> Int32 {
         guard AXIsProcessTrusted() else {
@@ -65,12 +73,12 @@ enum WindowHideSelfTest {
         }
         print("Target: \(owningApp.applicationName) — \(title) (pid \(owningApp.processID))")
 
-        // SCWindow doesn't expose an AXUIElement directly -- get the app's AX
-        // element from its pid, then match the specific window by title
-        // against kAXWindowsAttribute. Title match is good enough here (a
-        // real handoff would also cross-check frame size); multiple
-        // same-titled windows on the same app is a known edge case, not
-        // handled by this self-test.
+        // SCWindow doesn't expose an AXUIElement directly, and matching by
+        // title/frame against kAXWindowsAttribute doesn't work reliably (see
+        // header comment) -- instead, walk the app's AX windows and ask each
+        // one its REAL CGWindowID via the private _AXUIElementGetWindow, then
+        // compare that directly against target.windowID. No title/frame
+        // guessing involved.
         let axApp = AXUIElementCreateApplication(owningApp.processID)
         var axWindowsRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(axApp, kAXWindowsAttribute as CFString, &axWindowsRef) == .success,
@@ -80,20 +88,13 @@ enum WindowHideSelfTest {
         }
         var axWindow: AXUIElement?
         for w in axWindows {
-            var titleRef: CFTypeRef?
-            let titleErr = AXUIElementCopyAttributeValue(w, kAXTitleAttribute as CFString, &titleRef)
-            let axTitle = titleRef as? String
-            var posRef: CFTypeRef?, sizeRef: CFTypeRef?
-            AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &posRef)
-            AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sizeRef)
-            var pos = CGPoint.zero, size = CGSize.zero
-            if let p = posRef { _ = AXValueGetValue(p as! AXValue, .cgPoint, &pos) }
-            if let s = sizeRef { _ = AXValueGetValue(s as! AXValue, .cgSize, &size) }
-            print("  AX candidate: title=\(axTitle.map { "\"\($0)\"" } ?? "nil") err=\(titleErr.rawValue) frame=\(pos) \(size)")
-            if titleErr == .success, axTitle == title { axWindow = w; break }
+            var wid: CGWindowID = 0
+            let err = _AXUIElementGetWindow(w, &wid)
+            print("  AX candidate: _AXUIElementGetWindow -> id=\(wid) err=\(err.rawValue)")
+            if err == .success, wid == target.windowID { axWindow = w; break }
         }
         guard let axWindow else {
-            print("FAILED: no AX window matched title \"\(title)\" in \(owningApp.applicationName)")
+            print("FAILED: no AX window's real CGWindowID matched target \(target.windowID) in \(owningApp.applicationName)")
             return 1
         }
 
