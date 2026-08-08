@@ -3,6 +3,13 @@ import AppKit
 // CLI smoke tests, usable before the menu bar app is trusted with anything:
 //   clamshell test-virtual-display   create the virtual display for 10s, then tear down
 //   clamshell test-detect            print current remote-session detection state
+//
+// SCContentFilter(desktopIndependentWindow:) (window-capture-selftest) hits
+// "CGS_REQUIRE_INIT" without an active WindowServer connection, unlike the
+// display-based filter other capture paths use -- touching NSApplication.shared
+// this early forces that connection before any capture code runs.
+_ = NSApplication.shared
+
 let args = CommandLine.arguments
 if args.count > 1 {
     switch args[1] {
@@ -119,10 +126,25 @@ if args.count > 1 {
         }
         sema.wait()
         exit(exitCode)
+    case "window-capture-selftest":
+        // Second slice: prove single-window capture actually delivers
+        // frames, not just enumerates. `clamshell window-capture-selftest
+        // [windowId]` -- windowId from a prior `window-list` run, same
+        // session (SCWindow IDs aren't stable across app relaunches).
+        let windowId = args.count > 2 ? UInt32(args[2]) : nil
+        let sema2 = DispatchSemaphore(value: 0)
+        var exitCode2: Int32 = 1
+        Task {
+            exitCode2 = await WindowCaptureSelfTest.run(windowId: windowId)
+            sema2.signal()
+        }
+        sema2.wait()
+        exit(exitCode2)
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
-              "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list]")
+              "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
+              "window-capture-selftest]")
         exit(64)
     }
 }
