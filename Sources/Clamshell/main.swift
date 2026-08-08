@@ -154,11 +154,18 @@ if args.count > 1 {
         }
         sema3.wait()
         exit(exitCode3)
+    case "window-at-cursor-selftest":
+        // Fourth slice: prove the position->window lookup drag-trigger
+        // detection needs (identify the window under the cursor at
+        // drag-start) -- a different operation from window-hide-selftest's
+        // failed CGWindowID<->AXUIElement matching. Passive: reads the real
+        // cursor position, no synthetic input. `clamshell window-at-cursor-selftest`.
+        exit(WindowAtCursorSelfTest.run())
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
-              "window-capture-selftest | window-hide-selftest]")
+              "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest]")
         exit(64)
     }
 }
