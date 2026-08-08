@@ -30,6 +30,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
+        if (args.Length > 0 && args[0] == "windowlist") return WindowEnum.RunCli();
 
         using var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         if (!createdNew)
