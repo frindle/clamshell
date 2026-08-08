@@ -3,6 +3,7 @@ using Vortice.Direct3D;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
 using Windows.Graphics.Capture;
+using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
 using WinRT;
 
@@ -21,8 +22,8 @@ internal static class WindowCaptureSelfTest
 {
     public static int Run(IntPtr? windowHandle)
     {
-        var target = windowHandle is { } h
-            ? WindowEnum.Capturable().FirstOrDefault(w => w.Handle == h)
+        var target = windowHandle is { } targetHandle
+            ? WindowEnum.Capturable().FirstOrDefault(w => w.Handle == targetHandle)
             : WindowEnum.Capturable().FirstOrDefault();
         if (target is null)
         {
@@ -73,8 +74,15 @@ internal static class WindowCaptureSelfTest
 
         try
         {
+            // Explicit ID3D11Device/ID3D11DeviceContext out-params (matching
+            // DisplayCapture.cs's exact call shape) -- Vortice has a second
+            // overload returning a FeatureLevel out-param instead of a
+            // context, and `out _`/nullable locals don't disambiguate which
+            // one is meant.
             D3D11.D3D11CreateDevice(null, DriverType.Hardware, DeviceCreationFlags.BgraSupport,
-                Array.Empty<FeatureLevel>(), out d3dDevice, out _).CheckError();
+                Array.Empty<FeatureLevel>(), out ID3D11Device device, out ID3D11DeviceContext context).CheckError();
+            d3dDevice = device;
+            context.Dispose();
             winrtDevice = CreateDirect3DDevice(d3dDevice!);
 
             framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
