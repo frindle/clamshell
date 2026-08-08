@@ -307,6 +307,37 @@ Windows-VM agent once, each saves the other's address.
   since the VM captures its own windows before the passthrough GPU scans them
   out — capture path doesn't touch the passthrough hardware).
 
+  **This is a new capture technology for this codebase, not a port of the
+  existing one.** `WindowsServer`'s current display capture (`DisplayCapture.cs`)
+  is DXGI Desktop Duplication (`IDXGIOutputDuplication`, via Vortice) — a
+  whole-display API with no per-window filter concept. The alternatives that
+  stay within DXGI/Win32 (`PrintWindow`, `BitBlt` from a window's DC) were
+  considered and rejected: `BitBlt` only works for on-screen, unoccluded
+  windows, which breaks the moment the source window is hidden off-screen
+  (the whole mechanism this feature depends on); `PrintWindow` is
+  unreliable for GPU-composited windows (Chrome, video, anything DirectX)
+  even with `PW_RENDERFULLCONTENT`. `Windows.Graphics.Capture` is the only
+  Windows API that reliably captures off-screen, GPU-composited windows —
+  matching what ScreenCaptureKit already does on Mac — so it coexists
+  alongside DXGI Desktop Duplication as a second capture path used only for
+  window handoff, not a replacement for display streaming.
+
+  Practically: needs the project's `TargetFramework` bumped from
+  `net8.0-windows` to a versioned moniker (`net8.0-windows10.0.19041.0`,
+  the floor for reliable per-window `GraphicsCaptureItem` creation) to get
+  WinRT projections for free from the C#/WinRT source generator — no manual
+  CsWinRT NuGet package needed for the standard projected surface. The one
+  piece that *does* need manual COM interop is turning an `HWND` into a
+  `GraphicsCaptureItem`: `IGraphicsCaptureItemInterop.CreateForWindow`
+  isn't part of the standard projection (Microsoft's own WGC samples
+  P/Invoke-declare this interface directly). Also needs a
+  `DispatcherQueueController` running on the calling thread before any WGC
+  call — the Windows analog of the Mac's `NSApplication.shared` fix for
+  `CGS_REQUIRE_INIT` (both are "this capture API needs a real windowing
+  session, not just a bare process" quirks). Bumping the TFM to a versioned
+  Windows moniker also raises the minimum Windows version this app runs on
+  — worth flagging explicitly when this lands, not a silent side effect.
+
 ### Hiding the source window without minimizing it
 
 Capture requires the window to not be minimized, so "hide" means **move it
