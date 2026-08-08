@@ -35,11 +35,20 @@ const T = {
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
+const vncFallback = document.getElementById('vncFallback');
 const statusEl = document.getElementById('status');
 const swBanner = document.getElementById('swBanner');
 const lockBanner = document.getElementById('lockBanner');
+const lockBannerNoTunnel = document.getElementById('lockBannerNoTunnel');
 const errBanner = document.getElementById('errBanner');
 const qualityDot = document.getElementById('qualityDot');
+
+// Mirrors StreamClient.swift's browserFallbackURL: noVNC bridge on
+// http://<mac>:5901, only reachable direct-LAN — a wss:// tunnel session
+// addresses one route (this WS connection) and can't be remapped to reach
+// port 5901, so there's no fallback URL over a tunnel.
+const isTunneled = location.protocol === 'https:';
+const vncFallbackURL = isTunneled ? null : `http://${location.hostname}:5901/`;
 
 // Populate the hover menu with the other two displays.
 {
@@ -169,7 +178,20 @@ async function handle(type, payload) {
     }
     case T.HOST_LOCK_STATE: {
       const locked = payload[0] === 1;
-      lockBanner.classList.toggle('show', locked);
+      // Auto-forward into the noVNC bridge while locked, same as
+      // ViewerApp.swift's LockedHostView — screensharingd can reach a
+      // locked Mac where native Screen Recording capture can't. Reverts to
+      // the canvas on its own once a later HOST_LOCK_STATE reports
+      // unlocked; the native stream is never torn down underneath it.
+      if (locked && vncFallbackURL) {
+        vncFallback.src = vncFallbackURL;
+        vncFallback.classList.add('show');
+      } else {
+        vncFallback.classList.remove('show');
+        vncFallback.src = 'about:blank';
+      }
+      lockBanner.classList.toggle('show', locked && !!vncFallbackURL);
+      lockBannerNoTunnel.classList.toggle('show', locked && !vncFallbackURL);
       break;
     }
     case T.VIDEO_FRAME:
