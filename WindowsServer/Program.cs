@@ -31,6 +31,11 @@ internal static class Program
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
         if (args.Length > 0 && args[0] == "windowlist") return WindowEnum.RunCli();
+        if (args.Length > 0 && args[0] == "windowcaptureselftest")
+        {
+            IntPtr? handle = args.Length > 1 && long.TryParse(args[1], out var h) ? new IntPtr(h) : null;
+            return WindowCaptureSelfTest.Run(handle);
+        }
 
         using var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         if (!createdNew)
