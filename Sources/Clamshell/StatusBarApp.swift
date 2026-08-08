@@ -240,18 +240,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        // Grouped into Display / Streaming / System submenus so the
+        // top-level list stays short as features accumulate — this used to
+        // be ~15 flat items with only 2 separators.
+        let displayMenu = NSMenu()
         if coordinator.state == .collapsed {
-            menu.addItem(withTitle: "Restore Displays Now", action: #selector(restoreNow), keyEquivalent: "r")
+            displayMenu.addItem(withTitle: "Restore Displays Now", action: #selector(restoreNow), keyEquivalent: "r")
                 .target = self
         } else {
-            menu.addItem(withTitle: "Collapse Now", action: #selector(collapseNow), keyEquivalent: "c")
+            displayMenu.addItem(withTitle: "Collapse Now", action: #selector(collapseNow), keyEquivalent: "c")
                 .target = self
         }
+        displayMenu.addItem(.separator())
 
         let auto = NSMenuItem(title: "Auto (collapse on remote connect)", action: #selector(toggleAuto), keyEquivalent: "")
         auto.state = autoMode ? .on : .off
         auto.target = self
-        menu.addItem(auto)
+        displayMenu.addItem(auto)
 
         let presetMenu = NSMenu()
         for preset in DisplayPreset.all {
@@ -265,18 +270,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             title: coordinator.dualMode ? "Remote Screen Size (Display A)" : "Remote Screen Size",
             action: nil, keyEquivalent: ""
         )
-        menu.addItem(presetItem)
-        menu.setSubmenu(presetMenu, for: presetItem)
+        displayMenu.addItem(presetItem)
+        displayMenu.setSubmenu(presetMenu, for: presetItem)
 
         let dual = NSMenuItem(title: "Dual Display Mode (two virtual screens)", action: #selector(toggleDual), keyEquivalent: "")
         dual.state = coordinator.dualMode ? .on : .off
         dual.target = self
-        menu.addItem(dual)
+        displayMenu.addItem(dual)
 
         let autoDual = NSMenuItem(title: "Auto-Detect Dual Display (native stream)", action: #selector(toggleAutoDual), keyEquivalent: "")
         autoDual.state = autoDualDetect ? .on : .off
         autoDual.target = self
-        menu.addItem(autoDual)
+        displayMenu.addItem(autoDual)
 
         if coordinator.dualMode {
             let presetBMenu = NSMenu()
@@ -288,10 +293,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 presetBMenu.addItem(item)
             }
             let presetBItem = NSMenuItem(title: "External Monitor Size (Display B)", action: nil, keyEquivalent: "")
-            menu.addItem(presetBItem)
-            menu.setSubmenu(presetBMenu, for: presetBItem)
+            displayMenu.addItem(presetBItem)
+            displayMenu.setSubmenu(presetBMenu, for: presetBItem)
         }
+        let displayItem = NSMenuItem(title: "Display", action: nil, keyEquivalent: "")
+        menu.addItem(displayItem)
+        menu.setSubmenu(displayMenu, for: displayItem)
 
+        let streamingMenu = NSMenu()
         let web = NSMenuItem(
             title: webServer.isRunning
                 ? "Web Access On — http://\(webServer.displayHost):\(webServer.httpPort)"
@@ -300,7 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         web.state = webServer.isRunning ? .on : .off
         web.target = self
-        menu.addItem(web)
+        streamingMenu.addItem(web)
 
         let stream = NSMenuItem(
             title: streamFleet?.isServing == true
@@ -310,13 +319,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         stream.state = streamFleet != nil ? .on : .off
         stream.target = self
-        menu.addItem(stream)
+        streamingMenu.addItem(stream)
 
         // Bind-address picker — only interesting with more than one LAN IP.
         // Multi-select: each interface toggles independently; "All Interfaces"
         // clears the selection (empty selection = bind everything).
         let ips = WebServer.lanIPv4s()
         if ips.count > 1 {
+            streamingMenu.addItem(.separator())
             let bindMenu = NSMenu()
             let all = NSMenuItem(title: "All Interfaces", action: #selector(selectBind(_:)), keyEquivalent: "")
             all.state = webServer.bindHosts.isEmpty ? .on : .off
@@ -330,14 +340,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 bindMenu.addItem(item)
             }
             let bindItem = NSMenuItem(title: "Listen On", action: nil, keyEquivalent: "")
-            menu.addItem(bindItem)
-            menu.setSubmenu(bindMenu, for: bindItem)
+            streamingMenu.addItem(bindItem)
+            streamingMenu.setSubmenu(bindMenu, for: bindItem)
         }
+        let streamingItem = NSMenuItem(title: "Streaming", action: nil, keyEquivalent: "")
+        menu.addItem(streamingItem)
+        menu.setSubmenu(streamingMenu, for: streamingItem)
 
+        let systemMenu = NSMenu()
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
         mute.state = coordinator.comfort.muteWhileCollapsed ? .on : .off
         mute.target = self
-        menu.addItem(mute)
+        systemMenu.addItem(mute)
 
         // SMAppService only works from a real .app bundle; hide the toggle
         // when running the bare SwiftPM binary during development.
@@ -345,11 +359,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
             login.state = SMAppService.mainApp.status == .enabled ? .on : .off
             login.target = self
-            menu.addItem(login)
+            systemMenu.addItem(login)
 
-            menu.addItem(withTitle: "Check Reboot Readiness…", action: #selector(checkRebootReadiness), keyEquivalent: "")
+            systemMenu.addItem(withTitle: "Check Reboot Readiness…", action: #selector(checkRebootReadiness), keyEquivalent: "")
                 .target = self
         }
+        let systemItem = NSMenuItem(title: "System", action: nil, keyEquivalent: "")
+        menu.addItem(systemItem)
+        menu.setSubmenu(systemMenu, for: systemItem)
 
         menu.addItem(.separator())
         menu.addItem(withTitle: "Diagnostics…", action: #selector(openDiagnostics), keyEquivalent: "d")
