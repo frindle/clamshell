@@ -107,10 +107,22 @@ if args.count > 1 {
         let trigger = ConnectionMonitor.detectActiveSession()
         print("Remote session: \(trigger.map { "ACTIVE via \($0.rawValue)" } ?? "none")")
         exit(0)
+    case "window-list":
+        // First slice of Window Handoff (PROTOCOL.md "Window Handoff (v2,
+        // PROPOSED)") -- enumerate capturable windows before building the
+        // capture/stream/receiver pipeline. `clamshell window-list`.
+        let sema = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 1
+        Task {
+            exitCode = await WindowList.run()
+            sema.signal()
+        }
+        sema.wait()
+        exit(exitCode)
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
-              "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect]")
+              "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list]")
         exit(64)
     }
 }
