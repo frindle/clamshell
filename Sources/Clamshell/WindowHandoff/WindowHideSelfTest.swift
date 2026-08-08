@@ -29,6 +29,18 @@ import AXPrivateShim
 //    this is a genuine behavioral rejection by the system implementation,
 //    not a declaration/linking bug.
 //
+// UPDATE, same night, see WindowAtCursorSelfTest.swift for the full
+// writeup: a THIRD independent technique (position-based hit-testing) also
+// failed, and cross-checking with `osascript`/System Events (a fully-
+// trusted Apple system component, nothing to do with this binary) proved
+// this isn't about binary signing/trust at all -- System Events itself
+// reports 0 windows for Terminal, Finder, AND Chrome, and "missing value"
+// for the frontmost/focused/visible process's own position and size. This
+// is a genuine, system-wide Accessibility reporting problem on this Mac
+// right now, not specific to any app, binary, or technique tried here.
+// Needs the user: check System Settings > Privacy & Security > Accessibility
+// directly, or a reboot -- not something fixable from inside this codebase.
+//
 // Both are real dead ends investigated live, not guesses. Not yet isolated:
 // whether this Mac's specific macOS version changed `_AXUIElementGetWindow`'s
 // behavior/requirements, or whether an ad-hoc-signed bare CLI binary (not
