@@ -39,16 +39,18 @@ const vncFallback = document.getElementById('vncFallback');
 const statusEl = document.getElementById('status');
 const swBanner = document.getElementById('swBanner');
 const lockBanner = document.getElementById('lockBanner');
-const lockBannerNoTunnel = document.getElementById('lockBannerNoTunnel');
 const errBanner = document.getElementById('errBanner');
 const qualityDot = document.getElementById('qualityDot');
 
-// Mirrors StreamClient.swift's browserFallbackURL: noVNC bridge on
-// http://<mac>:5901, only reachable direct-LAN — a wss:// tunnel session
-// addresses one route (this WS connection) and can't be remapped to reach
-// port 5901, so there's no fallback URL over a tunnel.
-const isTunneled = location.protocol === 'https:';
-const vncFallbackURL = isTunneled ? null : `http://${location.hostname}:5901/`;
+// noVNC bridge on port 5901 direct-LAN, or same-origin over a tunnel: the
+// Cloudflare Tunnel config (README "Browser access") routes this same
+// hostname's "/" to :5901 and "/websockify" to :5902, and WebServer's own
+// "/" handler already detects X-Forwarded-Proto and points noVNC at
+// same-origin wss:// with no port override -- so the tunnel case just needs
+// the plain origin, no special-casing.
+const vncFallbackURL = location.protocol === 'https:'
+  ? `${location.origin}/`
+  : `http://${location.hostname}:5901/`;
 
 // Populate the hover menu with the other two displays.
 {
@@ -183,15 +185,14 @@ async function handle(type, payload) {
       // locked Mac where native Screen Recording capture can't. Reverts to
       // the canvas on its own once a later HOST_LOCK_STATE reports
       // unlocked; the native stream is never torn down underneath it.
-      if (locked && vncFallbackURL) {
+      if (locked) {
         vncFallback.src = vncFallbackURL;
         vncFallback.classList.add('show');
       } else {
         vncFallback.classList.remove('show');
         vncFallback.src = 'about:blank';
       }
-      lockBanner.classList.toggle('show', locked && !!vncFallbackURL);
-      lockBannerNoTunnel.classList.toggle('show', locked && !vncFallbackURL);
+      lockBanner.classList.toggle('show', locked);
       break;
     }
     case T.VIDEO_FRAME:
