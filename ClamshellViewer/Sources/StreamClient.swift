@@ -184,17 +184,19 @@ final class StreamClient: ObservableObject {
     /// the connected host — the lock-screen fallback, since Apple's privileged
     /// screensharingd can reach a locked Mac where native capture can't. Works
     /// for a bare LAN host or ws:// URL (swap in the web port); a wss:// tunnel
-    /// URL addresses one route and can't be remapped, so nil there.
+    /// host reuses the same origin instead — the Cloudflare Tunnel config
+    /// (README "Browser access") already routes that hostname's "/" to :5901
+    /// and "/websockify" to :5902, and WebServer's own "/" handler detects
+    /// the proxy and points noVNC at same-origin wss:// with no port override.
     var browserFallbackURL: URL? {
         guard let host = connectHost else { return nil }
-        let bare: String
         if host.contains("://") {
-            guard host.hasPrefix("ws://"), let h = URL(string: host)?.host else { return nil }
-            bare = h
-        } else {
-            bare = host
+            guard let url = URL(string: host), let h = url.host else { return nil }
+            if url.scheme == "wss" { return URL(string: "https://\(h)") }
+            guard url.scheme == "ws" else { return nil }
+            return URL(string: "http://\(h):5901") // WebServer.httpPort
         }
-        return URL(string: "http://\(bare):5901") // WebServer.httpPort
+        return URL(string: "http://\(host):5901") // WebServer.httpPort
     }
 
     private func teardownSocket() {
