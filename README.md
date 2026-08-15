@@ -437,19 +437,26 @@ back over INPUT_*. Full detail (what's proven in CI vs. not) in
 
 **What's real right now:** the Mac host side, proven with a raw WebSocket
 test client (real HELLO → HELLO_ACK → keyframe/delta VIDEO_FRAME flow,
-hardware HEVC, matching the source window's actual size); and the Windows
-viewer's protocol/decode pipeline, proven end-to-end in CI against the
-existing Windows host's *display* stream (real HELLO_ACK, real decoded
-non-degenerate VIDEO_FRAME content through a real Media Foundation decoder,
-on a real `windows-latest` VM — see PROTOCOL.md for exactly what that does
-and doesn't cover). **What's not proven:** the Mac host and Windows viewer
-have not been run against each other on real hardware (no physical Windows
-machine available in this environment), and Windows can't yet act as a
-window-handoff *source* — `WindowEnum.cs` only enumerates windows, it
-doesn't capture/stream them (that's the still-`PROPOSED` v2 design). Also not
-yet built: window selection from the menu bar (today it's CLI-only) and the
-AX-based auto-hide / drag-to-hand-off UX described in PROTOCOL.md's v2
-section — blocked on a real system-wide Accessibility reporting failure on
+hardware HEVC, matching the source window's actual size); and, on the
+Windows viewer, three separate real CI proofs on a real `windows-latest`
+VM — a real WebSocket connect + HELLO_ACK against the real Windows host, a
+real H.264 clip (from an independent encoder, ffmpeg) decoded through the
+viewer's actual wire-payload decode path, and a real WPF window
+constructed and staying up. **What's not proven:** a real VIDEO_FRAME
+actually arriving over the wire and being decoded — the Windows host's
+software encoder currently fails to initialize on that CI runner (a
+pre-existing WindowsServer issue this work discovered, out of scope to fix
+here — see PROTOCOL.md for the exact error and why); rendering a
+network-decoded frame into the window; input forwarding beyond a
+by-inspection check against the host's `Dispatch` wire offsets; the Mac
+host and Windows viewer running against each other on real hardware (no
+physical Windows machine available in this environment); and Windows
+acting as a window-handoff *source* at all — `WindowEnum.cs` only
+enumerates windows, it doesn't capture/stream them (that's the still-
+`PROPOSED` v2 design). Full detail in PROTOCOL.md. Also not yet built:
+window selection from the menu bar (today it's CLI-only) and the AX-based
+auto-hide / drag-to-hand-off UX described in PROTOCOL.md's v2 section —
+blocked on a real system-wide Accessibility reporting failure on
 the dev Mac (System Settings > Accessibility, or a reboot, needs to resolve
 that independently of this codebase).
 
@@ -507,16 +514,25 @@ form.
   INPUT_MOUSE_MOVE/INPUT_MOUSE_BUTTON/INPUT_KEY/INPUT_SCROLL back over the
   exact existing wire messages, translating Windows VK codes to macOS virtual
   key codes via a new `MacKeyMap.cs` (the inverse of the host's map of the
-  same name). Verified end-to-end in CI (`.github/workflows/windows-ci.yml`,
-  a real `windows-latest` VM): the existing Windows host is launched as a
-  real stream source, the new viewer connects for real, and a headless
-  `--verify` mode asserts an actual decoded, non-degenerate video frame was
-  received — not just "the socket didn't throw". That test exercises a
-  *display* stream, not a *window* stream, since `WindowsServer` has no
-  window-capture implementation yet (see PROTOCOL.md for exactly what is and
-  isn't covered). Not verified: the Mac host and this viewer running against
+  same name). Verified in CI (`.github/workflows/windows-ci.yml`, a real
+  `windows-latest` VM), three separate real proofs: (1) a real WebSocket
+  connect + HELLO/HELLO_ACK against the real Windows host; (2) a real H.264
+  clip from an independent encoder (ffmpeg) decoded through the viewer's
+  actual wire-payload path (`Feed` → `Avcc.ToAnnexB` → the Media Foundation
+  decoder MFT), asserting non-degenerate pixel output; (3) the real WPF
+  `Application`/`Window` constructed and staying up on a real virtual
+  display. **Not verified**: a real VIDEO_FRAME actually arriving over the
+  wire — `WindowsServer`'s software H.264 encoder currently fails to
+  initialize on this CI runner once a client connects (`E_FAIL`, a
+  pre-existing bug this work discovered while writing the test, out of
+  scope for this change — see PROTOCOL.md), so proof (1) only reaches
+  HELLO_ACK, not a decoded frame off the wire; rendering a network-decoded
+  frame into the window; input forwarding beyond matching the host's wire
+  offsets by inspection; and the Mac host and this viewer running against
   each other on real hardware (no physical Windows machine in this
-  environment).
+  environment). Also, WindowsServer has no window-capture implementation
+  yet, so none of this exercises an actual *window*-cropped stream (see
+  PROTOCOL.md for exactly what is and isn't covered).
 - **Window Handoff, Mac host side (experimental, CLI-only, no menu-bar picker
   yet)**:
   stream a single macOS window instead of a whole display —
