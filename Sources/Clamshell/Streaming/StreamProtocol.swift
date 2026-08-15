@@ -29,6 +29,12 @@ enum StreamCodec: UInt8 {
 let streamProtocolVersion: UInt8 = 1
 let streamDefaultPort: UInt16 = 5903
 
+// Window Handoff v1 (see PROTOCOL.md "Window Handoff"): explicit-selection
+// single-window streaming reuses this exact protocol/framing unchanged, just
+// on its own fixed port (not basePort+index like displays, since windows are
+// dynamic — opened/closed/reselected, not a small fixed set).
+let windowStreamDefaultPort: UInt16 = 5920
+
 // MARK: - Big-endian append/read helpers
 
 extension Data {

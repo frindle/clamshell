@@ -409,6 +409,34 @@ screensaver / auto-lock (System Settings → Lock Screen → "Start Screen Saver
 inactive: Never" and "Require password after screen saver begins…: Never")
 remains a **settings tradeoff you choose** — Clamshell won't change those for you.
 
+## Window Handoff (experimental, Mac host side only)
+
+Stream a single macOS **window** — not a whole display — so it can show up as
+its own native-feeling window on another machine ("drag a Mac app window onto
+your Windows PC"). Full design and status in
+[PROTOCOL.md](PROTOCOL.md#window-handoff-v1-implemented-mac-host-side--explicit-selection).
+
+```
+.build/debug/Clamshell window-list                    # find a windowId
+.build/debug/Clamshell stream-window <windowId> [port] # serve it, default :5920
+```
+
+It reuses the exact same wire protocol as `stream` above (HELLO/HELLO_ACK,
+VIDEO_FRAME, INPUT_*) — just with a single window as the capture source and
+its own fixed port instead of `basePort + index`. Needs Screen Recording
+permission, same as `stream`.
+
+**What's real right now:** the Mac host side only, proven with a raw
+WebSocket test client (real HELLO → HELLO_ACK → keyframe/delta VIDEO_FRAME
+flow, hardware HEVC, matching the source window's actual size). **What
+doesn't exist yet:** a Windows viewer to actually receive/decode/render the
+stream — until one exists this is only provable from a terminal, not usable
+end-to-end. Also not yet built: window selection from the menu bar (today
+it's CLI-only) and the AX-based auto-hide / drag-to-hand-off UX described in
+PROTOCOL.md's v2 section — blocked on a real system-wide Accessibility
+reporting failure on the dev Mac (System Settings > Accessibility, or a
+reboot, needs to resolve that independently of this codebase).
+
 ## Remote client notes
 
 - **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
@@ -452,6 +480,21 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Window Handoff, Mac host side (experimental, CLI-only, no viewer yet)**:
+  stream a single macOS window instead of a whole display —
+  `clamshell stream-window <windowId>` — reusing v1's exact wire protocol
+  (HELLO/HELLO_ACK/VIDEO_FRAME/INPUT_*) with `SCContentFilter(
+  desktopIndependentWindow:)` as the capture source on its own fixed port
+  (5920) instead of `basePort + index`. `StreamServer` now takes a
+  `StreamSource` (`.display` or `.window`); `InputInjector` maps into either a
+  display's fixed bounds or a window's live (re-queried per event) bounds.
+  Explicit selection only — no AX auto-hide, no drag-trigger — v1 works
+  around a real Accessibility API failure on the dev Mac (see
+  `WindowHideSelfTest.swift`) by skipping AX entirely. See PROTOCOL.md
+  "Window Handoff v1". Verified: live HELLO → HELLO_ACK → keyframe/delta
+  VIDEO_FRAME flow over a real WebSocket against a real window (hardware
+  HEVC, correct window dimensions). **Not built yet**: the Windows viewer
+  client to actually render the stream, and a menu-bar window picker.
 - **One universal iOS app instead of two targets**: `ClamshellViewer` and
   `ClamshellControl` are merged into a single target/scheme/app bundle
   (`ClamshellViewer`, `com.frindle.clamshell.viewer`) that branches on

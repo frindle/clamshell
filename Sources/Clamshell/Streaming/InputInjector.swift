@@ -2,16 +2,32 @@ import Foundation
 import CoreGraphics
 
 // Maps normalized client coordinates (0..1, origin top-left) into the
-// streamed display's global bounds and injects CGEvents.
+// streamed target's global bounds and injects CGEvents. Target is either a
+// whole display (bounds fixed for the session) or a single window (bounds
+// re-queried live since the window can move — see the window init).
 
 final class InputInjector {
-    private let displayID: CGDirectDisplayID
+    private let boundsProvider: () -> CGRect
     private var leftDown = false
     private var rightDown = false
     private var lastPoint = CGPoint.zero
 
     init(displayID: CGDirectDisplayID) {
-        self.displayID = displayID
+        self.boundsProvider = { CGDisplayBounds(displayID) } // global desktop coords, points
+        Self.warnIfNoAccessibilityPermission()
+    }
+
+    /// Window Handoff: map into the *window's* current global frame instead
+    /// of a display's. Looked up live (not cached at connect time) because
+    /// the window can be dragged mid-session; explicit-selection v1 has no
+    /// AX hide/move (see WindowHandoff/WindowHideSelfTest.swift), so the
+    /// window stays wherever the user leaves it while streamed.
+    init(windowID: UInt32) {
+        self.boundsProvider = { Self.liveWindowBounds(windowID) ?? .zero }
+        Self.warnIfNoAccessibilityPermission()
+    }
+
+    private static func warnIfNoAccessibilityPermission() {
         // CGEventPost silently no-ops without Accessibility permission — the
         // stream would look healthy while every click/key vanishes. Say so.
         if !CGPreflightPostEventAccess() {
@@ -19,8 +35,24 @@ final class InputInjector {
         }
     }
 
+    /// Current global-coordinate frame of a window (points, top-left origin —
+    /// same convention as CGDisplayBounds), via the Window Server's own list
+    /// rather than Accessibility (which is blocked on this dev Mac — see
+    /// WindowHideSelfTest.swift). Returns nil if the window has closed.
+    private static func liveWindowBounds(_ windowID: UInt32) -> CGRect? {
+        guard let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(windowID)) as? [[String: Any]])?.first,
+              let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
+              let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) as CGRect? else { return nil }
+        return rect
+    }
+
     private func map(_ x: Float32, _ y: Float32) -> CGPoint {
-        let bounds = CGDisplayBounds(displayID) // global desktop coords, points
+        let bounds = boundsProvider()
+        // Trust boundary: a network-supplied event landing at (0,0) — the
+        // Apple menu — because the window closed/moved mid-lookup would be a
+        // real hazard, not just a cosmetic glitch. Re-inject at the last
+        // known-good point instead of trusting a zeroed bounds rect.
+        guard bounds.width > 0, bounds.height > 0 else { return lastPoint }
         let p = CGPoint(
             x: bounds.origin.x + CGFloat(min(max(x, 0), 1)) * bounds.width,
             y: bounds.origin.y + CGFloat(min(max(y, 0), 1)) * bounds.height

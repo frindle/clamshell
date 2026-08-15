@@ -257,7 +257,77 @@ apps send no `CF-Access-*` headers). Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
 VNC/RDP/SSH, so real support means a custom guacd protocol plugin.
 
-## Window Handoff (v2, PROPOSED — not implemented, not a contract yet)
+## Window Handoff v1 (IMPLEMENTED, Mac host side — explicit selection)
+
+Stream a single macOS **window** (not a whole display) to a viewer, so it
+shows up as its own native-feeling window on the other machine instead of a
+fullscreen remote-desktop view. Built 2026-08-14 as the first real slice of
+the fuller "drag a window across machines" vision below.
+
+**Reuses v1's protocol/framing unchanged** — no new message types. Same
+HELLO/HELLO_ACK handshake, same VIDEO_FRAME AVCC framing, same INPUT_* mouse
+and keyboard messages, same `[type][len][payload]` wire format. The only
+thing that's new is the *capture source*: `StreamServer` (Sources/Clamshell/
+Streaming/StreamServer.swift) takes a `StreamSource` (`.display(id)` or
+`.window(id)`) instead of a bare display ID, and for `.window` builds its
+`SCContentFilter` with `desktopIndependentWindow:` instead of `display:`.
+Everything downstream (VideoEncoder, adaptive bitrate, backpressure, the
+send/receive loop) is identical code, unmodified.
+
+**Why one fixed port, not `basePort + index` like displays:** the display
+fleet is a small, predictable set (see "Displays" above); windows are
+dynamic — opened, closed, reselected between runs — so a fixed port-per-window
+scheme doesn't fit. `clamshell stream-window <windowId> [port]` serves one
+window on one port (default **5920**, `windowStreamDefaultPort` in
+StreamProtocol.swift) for the life of the process.
+
+**No AX auto-hide, no drag-trigger UX (v1, deliberate):** this dev Mac has a
+real system-wide Accessibility reporting failure (see
+`WindowHandoff/WindowHideSelfTest.swift` / `WindowAtCursorSelfTest.swift` —
+confirmed via three independent techniques, not fixable from inside this
+codebase). So v1 skips AX entirely: no "hide the source window" and no
+cursor-drag handoff trigger. Selection is explicit — `clamshell stream-window
+<windowId>` (from `clamshell window-list`) is the whole picker for v1; a menu
+bar UI wrapping the same `WindowList` output is the natural next step. The
+window is captured wherever it currently sits and stays visible on the Mac
+while also streamed out — not moved off-screen.
+
+**Input mapping differs from a display:** a window can move mid-session (no
+AX to pin it), so `InputInjector`'s target bounds are looked up live per
+event via `CGWindowListCopyWindowInfo` keyed on the window ID, instead of the
+fixed `CGDisplayBounds` a display uses — see `InputInjector.swift`. Normalized
+0..1 coordinates now mean "within the window's current frame," not "within
+the display."
+
+**Skipped for v1 (ponytail — ponytail comments at each site):** audio (the
+window server is never `isPrimary`, so no `AudioEncoder`/`ClipboardBridge`
+attach — `SCContentFilter` does support per-window audio if this turns out to
+matter later); cursor-follow auto-pan / CURSOR_POS (a display concept — no
+"which display is the cursor on" question for a single window); native pixel
+(Retina) resolution — capture is at the window's **points** size, not scaled
+by its owning screen's `backingScaleFactor`, since `SCWindow` doesn't expose
+that cheaply; upgrade if remoted windows look soft on a Retina Mac. Also:
+window **resize** mid-session isn't handled — capture stays at the
+connect-time dimensions, so a resized source window scales/distorts in the
+stream until the client reconnects (input mapping stays correct regardless,
+since `InputInjector` re-queries the window's live bounds per event).
+
+**Proven live** (2026-08-14, this dev Mac, real HELLO→HELLO_ACK→VIDEO_FRAME
+over a real WebSocket, not a unit test): `clamshell stream-window 105 5920`
+against Calendar.app's window, connected with a throwaway Python
+`websockets` client sending a real HELLO — got back `HELLO_ACK: version=1
+codec=2(HEVC) 935x598 flags=1(hardware)`, then a real keyframe (28,926 bytes)
+followed by real delta frames, matching the window's actual on-screen size.
+INPUT_MOUSE_MOVE was sent and accepted with no Accessibility-permission
+warning logged (the same warning path already proven for display streaming).
+
+**Not implemented / not proven:** the Windows viewer client (WPF/WinUI —
+receive, decode, render as a native window, forward input) does not exist
+yet; nothing below has changed. Also unimplemented on the Mac side: the
+control-connection / HANDOFF_* multiplexed protocol below, drag-trigger
+detection, and AX-based window hiding (blocked, see above).
+
+## Window Handoff v2 (PROPOSED — not implemented, not a contract yet)
 
 Drag an app window off the edge of one machine's screen and have it reappear,
 live and interactive, as a native-feeling floating window on a *second*
@@ -269,6 +339,10 @@ a later phase, or hardware IP-KVM). This section is capture/stream/handoff
 only, and unlike v1's host-serves/client-connects asymmetry, **both machines
 run every role**: each is a sender (owns real windows, can stream one out) and
 a receiver (can render an incoming stream as a local floating window) at once.
+The single-window streaming pipeline above (fixed port, explicit selection)
+is the capture/encode/stream leg this whole design will eventually reuse; the
+control-connection/HANDOFF_* messages below are the still-unbuilt multiplexed
+discovery/trigger layer on top of it.
 
 **Why not v1's per-display-port model:** v1 serves a small, fixed set of
 displays at predictable ports (`basePort + index`). Windows are dynamic —

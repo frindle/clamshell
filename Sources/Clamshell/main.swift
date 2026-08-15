@@ -154,6 +154,30 @@ if args.count > 1 {
         }
         sema3.wait()
         exit(exitCode3)
+    case "stream-window":
+        // `clamshell stream-window <windowId> [port]` -- Window Handoff v1
+        // (PROTOCOL.md "Window Handoff"): serve ONE window over the exact
+        // same protocol as `stream` (HELLO/VIDEO_FRAME/INPUT_*), reusing
+        // StreamServer with source: .window(id) instead of .display(id).
+        // windowId comes from `window-list`, same session (SCWindow IDs
+        // aren't stable across app relaunches). No AX auto-hide/drag-trigger
+        // (blocked on this dev Mac, see WindowHideSelfTest.swift) -- explicit
+        // selection only, this command IS the selection UI for v1.
+        guard args.count > 2, let windowId = UInt32(args[2]) else {
+            print("Usage: clamshell stream-window <windowId> [port]")
+            print("Run `clamshell window-list` first to find a windowId.")
+            exit(64)
+        }
+        let winPort = args.count > 3 ? (UInt16(args[3]) ?? windowStreamDefaultPort) : windowStreamDefaultPort
+        let winServer = StreamServer(source: .window(windowId), port: winPort, isPrimary: false)
+        do {
+            try winServer.start()
+        } catch {
+            print("FAILED to start window stream server on port \(winPort): \(error)")
+            exit(1)
+        }
+        print("Streaming window \(windowId) on port \(winPort) — ctrl-C to stop")
+        withExtendedLifetime(winServer) { RunLoop.main.run() }
     case "window-at-cursor-selftest":
         // Fourth slice: prove the position->window lookup drag-trigger
         // detection needs (identify the window under the cursor at
@@ -165,7 +189,7 @@ if args.count > 1 {
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
-              "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest]")
+              "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window]")
         exit(64)
     }
 }
