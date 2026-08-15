@@ -147,8 +147,11 @@ internal static class Program
 
         // The whole file is fed as one access unit (SPS+PPS+IDR, all
         // Annex-B start-code delimited) -- the CI job generates a
-        // single-frame file specifically so this is valid.
+        // single-frame file specifically so this is valid. Flush() forces
+        // out any frame the decoder is holding back for reordering, which
+        // a single feed+drain isn't guaranteed to do on its own.
         decoder.FeedAnnexB(annexB, 0);
+        decoder.Flush();
 
         if (!got) { Log.Line($"decode-file: FAIL -- {reason}"); return 1; }
         Log.Line("decode-file: PASS");
