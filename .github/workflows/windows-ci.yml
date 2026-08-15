@@ -120,13 +120,19 @@ jobs:
           }
 
       - name: Generate a real single-frame H.264 test clip (ffmpeg, independent of WindowsServer)
-        # ffmpeg ships on windows-latest runners. A single-keyframe clip
-        # (-frames:v 1) is exactly one access unit (SPS+PPS+IDR, Annex-B
-        # start-code delimited) so the viewer can feed the whole file as
-        # one sample -- see VideoDecoder.FeedAnnexB / Program.cs decode-file.
+        # ffmpeg isn't preinstalled on windows-latest -- chocolatey is, so
+        # install it from there. A single-keyframe clip (-frames:v 1) is
+        # exactly one access unit (SPS+PPS+IDR, Annex-B start-code
+        # delimited) so the viewer can feed the whole file as one sample --
+        # see VideoDecoder.FeedAnnexB / Program.cs decode-file.
         shell: pwsh
         run: |
-          ffmpeg -y -f lavfi -i "testsrc=size=320x240:rate=1" -frames:v 1 -c:v libx264 -pix_fmt yuv420p -f h264 test-frame.h264
+          choco install ffmpeg -y --no-progress
+          # choco updates the machine PATH, but this script block is still
+          # the same process it started in -- call the shim chocolatey just
+          # installed directly rather than relying on a refreshed PATH.
+          $ffmpeg = "C:\ProgramData\chocolatey\bin\ffmpeg.exe"
+          & $ffmpeg -y -f lavfi -i "testsrc=size=320x240:rate=1" -frames:v 1 -c:v libx264 -pix_fmt yuv420p -f h264 test-frame.h264
           if (-not (Test-Path test-frame.h264) -or (Get-Item test-frame.h264).Length -eq 0) { throw "ffmpeg did not produce test-frame.h264" }
           Write-Output "generated test-frame.h264: $((Get-Item test-frame.h264).Length) bytes"
 
