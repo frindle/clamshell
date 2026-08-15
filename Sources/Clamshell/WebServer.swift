@@ -249,20 +249,10 @@ final class WebServer {
         }
 
         if path == "/" {
-            // Land directly in a connected, sensibly-configured session.
-            //
-            // Behind an HTTPS reverse proxy (Cloudflare Tunnel sends
-            // X-Forwarded-Proto), the page must use same-origin wss:// —
-            // browsers block plain ws:// from an https page, and the :5902
-            // port isn't reachable through the tunnel. noVNC's defaults
-            // (port 443, path "websockify", encrypt on for https) are
-            // exactly right, so omit the port override and let the proxy
-            // route /websockify to the WS bridge.
-            let proxiedHTTPS = requestHead.lowercased().contains("x-forwarded-proto: https")
-            let redirect = proxiedHTTPS
-                ? "/vnc.html?autoconnect=true&resize=remote&reconnect=true"
-                : "/vnc.html?autoconnect=true&resize=remote&port=\(wsPort)&reconnect=true"
-            let head = "HTTP/1.1 302 Found\r\nLocation: \(redirect)\r\nConnection: close\r\n\r\n"
+            // Land directly in Clamshell's own client — noVNC is only the
+            // lock-screen fallback /client falls back to internally (and
+            // reverts from once unlocked), not the default landing page.
+            let head = "HTTP/1.1 302 Found\r\nLocation: /client\r\nConnection: close\r\n\r\n"
             conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in conn.cancel() })
             return
         }
