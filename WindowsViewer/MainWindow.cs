@@ -50,7 +50,13 @@ internal sealed class MainWindow : Window
 
         Title = $"Clamshell -- connecting to {host}:{port}...";
         try { await client.ConnectAsync(host, port, requestedCodec); }
-        catch (Exception e) { Title = $"Clamshell -- connect failed ({e.Message})"; }
+        // Same reason every other cross-thread touch in this class goes
+        // through Dispatcher.Invoke: a failed ConnectAsync's continuation
+        // isn't guaranteed to resume on the UI thread (caught live in CI --
+        // this exact line threw System.InvalidOperationException "The
+        // calling thread cannot access this object because a different
+        // thread owns it" when setting Title directly here).
+        catch (Exception e) { Dispatcher.Invoke(() => Title = $"Clamshell -- connect failed ({e.Message})"); }
     }
 
     private void OnHelloAck(StreamCodec codec, int w, int h)
