@@ -51,3 +51,65 @@ jobs:
           if ($log -notmatch "hardware video encoder|no hardware video encoder") { throw "startup log missing encoder probe line" }
           if ($log -notmatch "listening on ws port|cannot bind") { throw "startup log missing listener bind line" }
           Write-Output "smoke test OK: process stayed up and completed the real startup sequence"
+
+      - name: Build Windows viewer client
+        run: dotnet build WindowsViewer/ClamshellWindowViewer.csproj -c Release
+      - name: Viewer self-test (pure protocol/AVCC-AnnexB framing logic)
+        run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest
+
+      - name: End-to-end viewer verify (real host encode -> real client decode)
+        # The strongest test available without a second physical machine:
+        # both the proven host (above) and the new viewer run in this same
+        # job, so this drives the actual wire protocol round-trip on real
+        # Windows. Notepad is opened first so the captured frame has real
+        # on-screen content, not a blank desktop. ClamshellServer.exe is
+        # launched as a real display-stream source; the viewer's headless
+        # `--verify` mode (no WPF window/Dispatcher, so it runs cleanly
+        # unattended) does a real WebSocket connect, real HELLO/HELLO_ACK,
+        # and decodes real VIDEO_FRAME AVCC frames through a real Media
+        # Foundation H.264 decoder MFT -- the runner has no GPU, so this
+        # exercises the built-in software decode path (see VideoDecoder.cs).
+        # PASS requires an actual decoded frame with non-uniform pixel
+        # content, not just "the socket didn't throw".
+        #
+        # Scope note: this is a *display* stream, not a *window* stream.
+        # WindowsServer has no window-capture/streaming implementation yet
+        # -- WindowEnum.cs is enumeration only (PROTOCOL.md "Window Handoff
+        # v2, PROPOSED"); only the Mac host can actually stream a single
+        # window today. Testing this viewer against a real cropped-window
+        # source needs that Windows-side capture built first (out of scope
+        # for this change -- see the report). The protocol/codec path
+        # exercised here is identical either way (same HELLO/HELLO_ACK/
+        # VIDEO_FRAME framing, same decoder), so it's still a real proof of
+        # the viewer's decode pipeline, just not of window-cropping.
+        shell: pwsh
+        run: |
+          $notepad = Start-Process notepad.exe -PassThru
+          Start-Sleep -Seconds 2
+
+          $server = Start-Process -FilePath dotnet `
+            -ArgumentList "run","--project","WindowsServer/ClamshellServer.csproj","-c","Release","--","5951" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput server-out.log -RedirectStandardError server-err.log
+          Start-Sleep -Seconds 8
+
+          if ($server.HasExited) {
+            Write-Output "--- server stderr ---"; Get-Content server-err.log -ErrorAction SilentlyContinue
+            throw "ClamshellServer exited early instead of staying up for the viewer test"
+          }
+
+          $viewer = Start-Process -FilePath dotnet `
+            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","--verify","127.0.0.1","5951","h264","25" `
+            -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput viewer-out.log -RedirectStandardError viewer-err.log
+
+          Write-Output "--- server stderr ---"; Get-Content server-err.log -ErrorAction SilentlyContinue
+          Write-Output "--- viewer stderr ---"; Get-Content viewer-err.log -ErrorAction SilentlyContinue
+
+          Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          Stop-Process -Id $notepad.Id -Force -ErrorAction SilentlyContinue
+
+          if ($viewer.ExitCode -ne 0) { throw "viewer --verify FAILED (exit $($viewer.ExitCode)) -- see viewer stderr above" }
+          $vlog = Get-Content viewer-err.log -Raw -ErrorAction SilentlyContinue
+          if ($vlog -notmatch "verify: PASS") { throw "viewer stderr missing 'verify: PASS' line" }
+          Write-Output "end-to-end viewer verify OK: real HELLO_ACK + real decoded VIDEO_FRAME over a real WebSocket"
