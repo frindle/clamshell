@@ -220,9 +220,24 @@ final class CollapseCoordinator {
         return ids.prefix(Int(count)).filter { !virtuals.contains($0) }
     }
 
-    private func mirrorPhysicalDisplays(onto virtualID: CGDirectDisplayID) {
+    private func mirrorPhysicalDisplays(onto virtualID: CGDirectDisplayID, attempt: Int = 1) {
         let physical = activePhysicalDisplays()
-        guard !physical.isEmpty else { return }
+        guard !physical.isEmpty else {
+            // CGGetActiveDisplayList can transiently under-report right after
+            // the virtual display is created, while WindowServer is still
+            // settling (same window the HiDPI-mode warnings show up in) --
+            // silently skipping here left the virtual display permanently
+            // unmirrored, showing as an extra independent screen.
+            clog("mirrorPhysicalDisplays: no physical displays found (attempt \(attempt)/8)")
+            guard state == .collapsing || state == .collapsed, attempt < 8 else {
+                clog("mirrorPhysicalDisplays: giving up after \(attempt) attempts")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                self?.mirrorPhysicalDisplays(onto: virtualID, attempt: attempt + 1)
+            }
+            return
+        }
 
         var config: CGDisplayConfigRef?
         guard CGBeginDisplayConfiguration(&config) == .success, let cfg = config else {
