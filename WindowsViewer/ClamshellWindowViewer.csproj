@@ -5,7 +5,7 @@
          "Window Handoff v1"). Connects to a host's window-stream WebSocket,
          decodes AVCC H.264/HEVC, renders in a native window sized to the
          source. WinExe so double-click launches with no console; the
-         --verify mode (see Program.cs) still writes to stderr/a log file
+         verify mode (see Program.cs) still writes to stderr/a log file
          via Log.cs, same pattern as WindowsServer. -->
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
@@ -21,7 +21,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Same package the host uses for encode (Vortice.MediaFoundation) --
+    <!-- Same package the host uses for encode (Vortice.MediaFoundation),
          reused here for decode via the built-in Windows H.264/HEVC decoder
          MFTs (no codec install required, no FFmpeg dependency). -->
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
