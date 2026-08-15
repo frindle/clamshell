@@ -35,6 +35,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// none auto-disables it). Off = the manual Dual Display Mode toggle
     /// alone decides, exactly as before.
     private var autoDualDetect = UserDefaults.standard.object(forKey: "autoDualDetect") as? Bool ?? true
+    private var invertScroll = UserDefaults.standard.bool(forKey: "invertScroll")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Must run before anything else touches display config — a prior
@@ -353,6 +354,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         mute.target = self
         systemMenu.addItem(mute)
 
+        // Injected scroll events go straight to .cghidEventTap and aren't
+        // reliably caught by third-party direction-inverting tools like
+        // Scroll Reverser (confirmed live) -- Clamshell owns inversion
+        // itself instead of depending on that interop.
+        let invertScrollItem = NSMenuItem(title: "Invert Scroll Direction", action: #selector(toggleInvertScroll), keyEquivalent: "")
+        invertScrollItem.state = invertScroll ? .on : .off
+        invertScrollItem.target = self
+        systemMenu.addItem(invertScrollItem)
+
         // SMAppService only works from a real .app bundle; hide the toggle
         // when running the bare SwiftPM binary during development.
         if Bundle.main.bundleIdentifier != nil {
@@ -546,6 +556,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleMute() {
         coordinator.comfort.muteWhileCollapsed.toggle()
         UserDefaults.standard.set(coordinator.comfort.muteWhileCollapsed, forKey: "muteWhileCollapsed")
+        rebuildMenu()
+    }
+
+    @objc private func toggleInvertScroll() {
+        invertScroll.toggle()
+        UserDefaults.standard.set(invertScroll, forKey: "invertScroll")
         rebuildMenu()
     }
 

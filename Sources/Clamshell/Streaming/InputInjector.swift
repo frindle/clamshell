@@ -87,9 +87,18 @@ final class InputInjector {
         // wheel1 is vertical, wheel2 horizontal. Deltas come from the network
         // trust boundary: Int32(NaN/±inf/huge) traps, so clamp non-finite to 0
         // and cap magnitude before the conversion.
+        //
+        // Injected directly at .cghidEventTap (as low-level as a synthetic
+        // event can go), which system scroll-direction utilities like Scroll
+        // Reverser don't reliably intercept/invert the same way they do real
+        // hardware scroll input -- confirmed live, not guessed. Rather than
+        // depend on third-party tap interop that may silently vary by
+        // version/tool, Clamshell owns inversion itself.
         func sane(_ v: Float32) -> Int32 { v.isFinite ? Int32(min(max(v, -10000), 10000)) : 0 }
+        let invert = UserDefaults.standard.bool(forKey: "invertScroll")
+        let sign: Float32 = invert ? -1 : 1
         CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
-                wheel1: sane(dy), wheel2: sane(dx), wheel3: 0)?.post(tap: .cghidEventTap)
+                wheel1: sane(dy * sign), wheel2: sane(dx * sign), wheel3: 0)?.post(tap: .cghidEventTap)
     }
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
