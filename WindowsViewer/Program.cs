@@ -13,6 +13,9 @@ namespace Clamshell;
 //                                                     -- see the report for
 //                                                     what this proves and
 //                                                     .github/workflows/windows-ci.yml
+//   ClamshellWindowViewer decode-file <path> [codec]  decode a real Annex-B
+//                                                     elementary stream file
+//                                                     directly (no network)
 //   ClamshellWindowViewer selftest                    pure protocol-logic checks
 internal static class Program
 {
@@ -21,6 +24,7 @@ internal static class Program
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
         if (args.Length > 0 && args[0] == "--verify") return VerifyMain(args[1..]);
+        if (args.Length > 0 && args[0] == "decode-file") return DecodeFileMain(args[1..]);
 
         if (args.Length < 2)
         {
@@ -101,6 +105,53 @@ internal static class Program
             return 1;
         }
         Log.Line("verify: PASS");
+        return 0;
+    }
+
+    /// <summary>Decodes a real Annex-B H.264/HEVC elementary stream file
+    /// (e.g. one produced by `ffmpeg -f h264 out.h264`, a single-keyframe
+    /// clip) directly through VideoDecoder -- no network, no host. This
+    /// exists because the *live* --verify path above depends on
+    /// WindowsServer's video encoder actually starting, which (see the
+    /// report) does not currently succeed on the GitHub Actions
+    /// windows-latest runner; this path proves the viewer's own decode
+    /// pipeline against a real H.264 stream from an independent, known-good
+    /// encoder, independent of that host-side issue. See
+    /// .github/workflows/windows-ci.yml for how the test file is
+    /// generated.</summary>
+    private static int DecodeFileMain(string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer decode-file <path.h264> [h264|hevc]");
+            return 1;
+        }
+        string path = args[0];
+        StreamCodec codec = args.Length > 1 && args[1].Equals("hevc", StringComparison.OrdinalIgnoreCase)
+            ? StreamCodec.Hevc : StreamCodec.H264;
+
+        byte[] annexB;
+        try { annexB = File.ReadAllBytes(path); }
+        catch (Exception e) { Log.Line($"decode-file: could not read {path}: {e.Message}"); return 1; }
+
+        bool got = false;
+        string reason = "no frame decoded";
+        using var decoder = new VideoDecoder(codec);
+        decoder.OnFrame = (w, h, bgra) =>
+        {
+            if (w <= 0 || h <= 0 || bgra.Length < w * h * 4) { reason = "decoded frame has bad dimensions"; return; }
+            if (IsDegenerate(bgra)) { reason = "decoded frame is uniform (likely garbage/empty)"; return; }
+            Log.Line($"decode-file: decoded real frame {w}x{h}, non-uniform pixel content");
+            got = true;
+        };
+
+        // The whole file is fed as one access unit (SPS+PPS+IDR, all
+        // Annex-B start-code delimited) -- the CI job generates a
+        // single-frame file specifically so this is valid.
+        decoder.FeedAnnexB(annexB, 0);
+
+        if (!got) { Log.Line($"decode-file: FAIL -- {reason}"); return 1; }
+        Log.Line("decode-file: PASS");
         return 0;
     }
 

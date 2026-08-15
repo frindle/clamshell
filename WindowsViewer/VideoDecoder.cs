@@ -121,19 +121,26 @@ internal sealed class VideoDecoder : IDisposable
     /// <summary>Feed one VIDEO_FRAME's AVCC NAL payload (already includes
     /// in-band SPS/PPS on keyframes, per PROTOCOL.md). Converted to Annex-B,
     /// the byte stream the built-in decoder MFT expects.</summary>
-    public void Feed(ReadOnlySpan<byte> avccNal, ulong ptsMicros)
+    public void Feed(ReadOnlySpan<byte> avccNal, ulong ptsMicros) => FeedAnnexB(Avcc.ToAnnexB(avccNal), ptsMicros);
+
+    /// <summary>Feed one already-Annex-B access unit directly -- used by the
+    /// `decode-file` CI verification path (see Program.cs), which decodes a
+    /// real file produced by an independent, known-good encoder (ffmpeg)
+    /// rather than one that came off the wire. Same underlying decode path
+    /// as <see cref="Feed"/>, just skipping the AVCC-&gt;Annex-B step because
+    /// the input is already Annex-B.</summary>
+    public void FeedAnnexB(ReadOnlySpan<byte> annexB, ulong ptsMicros)
     {
         lock (_lock)
         {
             try
             {
-                byte[] annexB = Avcc.ToAnnexB(avccNal);
                 if (annexB.Length == 0) return;
 
                 using var sample = MediaFactory.MFCreateSample();
                 using var buffer = MediaFactory.MFCreateMemoryBuffer(annexB.Length);
                 buffer.Lock(out IntPtr p, out _, out _);
-                Marshal.Copy(annexB, 0, p, annexB.Length);
+                Marshal.Copy(annexB.ToArray(), 0, p, annexB.Length);
                 buffer.Unlock();
                 buffer.CurrentLength = annexB.Length;
                 sample.AddBuffer(buffer);
