@@ -421,6 +421,12 @@ your Windows PC"). Full design and status in
 .build/debug/Clamshell stream-window <windowId> [port] # serve it, default :5920
 ```
 
+Or from the menu bar: **Streaming > Stream a Window…** lists the same
+capturable windows and starts/stops the same server — no terminal needed. The
+submenu shows a checkmark next to whatever's currently streaming and a "Stop
+Streaming" item; the port persists across relaunches via `UserDefaults`
+(`windowStreamPort`), same as the other Streaming toggles.
+
 It reuses the exact same wire protocol as `stream` above (HELLO/HELLO_ACK,
 VIDEO_FRAME, INPUT_*) — just with a single window as the capture source and
 its own fixed port instead of `basePort + index`. Needs Screen Recording
@@ -453,10 +459,9 @@ host and Windows viewer running against each other on real hardware (no
 physical Windows machine available in this environment); and Windows
 acting as a window-handoff *source* at all — `WindowEnum.cs` only
 enumerates windows, it doesn't capture/stream them (that's the still-
-`PROPOSED` v2 design). Full detail in PROTOCOL.md. Also not yet built:
-window selection from the menu bar (today it's CLI-only) and the AX-based
-auto-hide / drag-to-hand-off UX described in PROTOCOL.md's v2 section —
-blocked on a real system-wide Accessibility reporting failure on
+`PROPOSED` v2 design). Full detail in PROTOCOL.md. Also not yet built: the
+AX-based auto-hide / drag-to-hand-off UX described in PROTOCOL.md's v2
+section — blocked on a real system-wide Accessibility reporting failure on
 the dev Mac (System Settings > Accessibility, or a reboot, needs to resolve
 that independently of this codebase).
 
@@ -503,6 +508,20 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Window Handoff, menu-bar window picker**: `StatusBarApp.swift`'s
+  Streaming submenu gets a "Stream a Window…" entry listing every capturable
+  window (`WindowList.listCapturable()`, refreshed on each menu open) —
+  picking one starts a `StreamServer(source: .window(id))` on the same port
+  `clamshell stream-window` defaults to, no separate logic from the CLI path.
+  Shows a checkmark on the active window and a "Stop Streaming" item while
+  one is running; the port persists across relaunches via `UserDefaults`
+  (`windowStreamPort`) — the window ID itself isn't persisted since SCWindow
+  IDs aren't stable across sessions, so nothing auto-resumes on relaunch (by
+  design, matching v1's explicit-selection scope). Still no AX auto-hide or
+  drag-trigger — out of scope, see PROTOCOL.md. Verified: `swift build`
+  clean; `window-list` and `stream-window` still work live against a real
+  window (Calendar.app) after the change; the built app launches and stays up
+  with the new menu code in the launch path.
 - **Window Handoff, Windows viewer client (`WindowsViewer/`,
   `ClamshellWindowViewer.exe`, WPF)**: connects to a host's window-stream (or
   display-stream) WebSocket endpoint, does the HELLO/HELLO_ACK handshake,
@@ -533,8 +552,7 @@ form.
   environment). Also, WindowsServer has no window-capture implementation
   yet, so none of this exercises an actual *window*-cropped stream (see
   PROTOCOL.md for exactly what is and isn't covered).
-- **Window Handoff, Mac host side (experimental, CLI-only, no menu-bar picker
-  yet)**:
+- **Window Handoff, Mac host side (experimental)**:
   stream a single macOS window instead of a whole display —
   `clamshell stream-window <windowId>` — reusing v1's exact wire protocol
   (HELLO/HELLO_ACK/VIDEO_FRAME/INPUT_*) with `SCContentFilter(
@@ -547,8 +565,8 @@ form.
   `WindowHideSelfTest.swift`) by skipping AX entirely. See PROTOCOL.md
   "Window Handoff v1". Verified: live HELLO → HELLO_ACK → keyframe/delta
   VIDEO_FRAME flow over a real WebSocket against a real window (hardware
-  HEVC, correct window dimensions). **Not built yet**: a menu-bar window
-  picker (still CLI-only selection) — a Windows viewer now exists, see above.
+  HEVC, correct window dimensions). A menu-bar window picker and a Windows
+  viewer now exist too, see above/below.
 - **One universal iOS app instead of two targets**: `ClamshellViewer` and
   `ClamshellControl` are merged into a single target/scheme/app bundle
   (`ClamshellViewer`, `com.frindle.clamshell.viewer`) that branches on

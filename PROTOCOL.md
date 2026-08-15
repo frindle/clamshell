@@ -287,10 +287,12 @@ real system-wide Accessibility reporting failure (see
 confirmed via three independent techniques, not fixable from inside this
 codebase). So v1 skips AX entirely: no "hide the source window" and no
 cursor-drag handoff trigger. Selection is explicit — `clamshell stream-window
-<windowId>` (from `clamshell window-list`) is the whole picker for v1; a menu
-bar UI wrapping the same `WindowList` output is the natural next step. The
-window is captured wherever it currently sits and stays visible on the Mac
-while also streamed out — not moved off-screen.
+<windowId>` (from `clamshell window-list`), or the menu bar's Streaming >
+"Stream a Window…" submenu (added 2026-08-14, `StatusBarApp.swift`), which
+lists the same `WindowList.listCapturable()` output and wraps the identical
+`StreamServer(source: .window(id))` path the CLI command uses — no separate
+logic. The window is captured wherever it currently sits and stays visible on
+the Mac while also streamed out — not moved off-screen.
 
 **Input mapping differs from a display:** a window can move mid-session (no
 AX to pin it), so `InputInjector`'s target bounds are looked up live per
