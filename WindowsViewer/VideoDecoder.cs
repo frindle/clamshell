@@ -153,6 +153,28 @@ internal sealed class VideoDecoder : IDisposable
         }
     }
 
+    /// <summary>Forces the decoder to flush any frame it's holding back for
+    /// reordering. Needed by the one-shot `decode-file` path (Program.cs):
+    /// a decoder can buffer at least one frame before its first
+    /// ProcessOutput actually produces anything, so feeding a single access
+    /// unit and draining once isn't guaranteed to yield a frame without
+    /// this. NOT called from the live per-VIDEO_FRAME <see cref="Feed"/>
+    /// path -- MFT_MESSAGE_COMMAND_DRAIN ends the stream (a
+    /// NotifyBeginStreaming/NotifyStartOfStream would be needed to resume
+    /// it), so calling it on every frame would break continuous decode.</summary>
+    public void Flush()
+    {
+        lock (_lock)
+        {
+            try
+            {
+                _mft.ProcessMessage((TMessageType)Mf.CommandDrain, UIntPtr.Zero);
+                DrainLocked();
+            }
+            catch (Exception e) { Log.Line($"decode flush error: {e.Message}"); }
+        }
+    }
+
     private void DrainLocked()
     {
         var info = _mft.GetOutputStreamInfo(0);
@@ -267,6 +289,7 @@ internal static class Mf
     public const int NotifyBeginStreaming = 0x10000000;
     public const int NotifyEndOfStream = 0x10000002;
     public const int NotifyStartOfStream = 0x10000003;
+    public const int CommandDrain = 0x00000001;
     public const uint NeedMoreInput = 0xC00D6D72;
     public const uint StreamChange = 0xC00D6D61;
     // MFT_OUTPUT_STREAM_INFO flags
