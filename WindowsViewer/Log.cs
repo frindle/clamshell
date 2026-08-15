@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace Clamshell;
 
 // Mirrors WindowsServer/Log.cs -- timestamped lines to stderr (visible under

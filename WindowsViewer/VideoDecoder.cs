@@ -1,3 +1,4 @@
+using System.IO;
 using System.Runtime.InteropServices;
 using SharpGen.Runtime;
 using Vortice.MediaFoundation;
@@ -63,7 +64,7 @@ internal sealed class VideoDecoder : IDisposable
     /// picks up the real frame size once the bitstream's SPS has been seen).</summary>
     private void NegotiateOutputTypeLocked()
     {
-        for (uint i = 0; ; i++)
+        for (int i = 0; ; i++)
         {
             IMFMediaType candidate;
             try { candidate = _mft.GetOutputAvailableType(0, i); }
