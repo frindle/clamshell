@@ -37,6 +37,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var autoDualDetect = UserDefaults.standard.object(forKey: "autoDualDetect") as? Bool ?? true
     private var invertScroll = UserDefaults.standard.bool(forKey: "invertScroll")
 
+    /// Window Handoff v1 menu-bar picker (PROTOCOL.md "Window Handoff v1") --
+    /// wraps the same StreamServer(.window(id)) path `clamshell stream-window`
+    /// already uses, so starting/stopping here is identical to the CLI. Only
+    /// the port persists (windowId isn't stable across sessions, see
+    /// WindowList.swift, so there's nothing to auto-resume on relaunch).
+    private var windowStreamPort: UInt16 = {
+        let saved = UserDefaults.standard.integer(forKey: "windowStreamPort")
+        return saved > 0 && saved <= Int(UInt16.max) ? UInt16(saved) : windowStreamDefaultPort
+    }()
+    private var windowStreamServer: StreamServer?
+    private var activeWindowStream: (id: UInt32, title: String)?
+    private var capturableWindows: [WindowList.Entry] = []
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Must run before anything else touches display config — a prior
         // instance that crashed/was force-quit mid-collapse can leave real
@@ -166,6 +179,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         checkForUpdate()
         Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
             self?.checkForUpdate()
+        }
+
+        refreshCapturableWindows()
+    }
+
+    /// Repopulates the window picker (Streaming > Stream a Window…). Called at
+    /// launch and on every menu open (menuNeedsUpdate) since windows open and
+    /// close between opens and there's no live-updating SCShareableContent
+    /// subscription here (v1 -- ponytail: poll-on-open instead of a change
+    /// observer, revisit if the list feels stale while the menu is open).
+    private func refreshCapturableWindows() {
+        Task {
+            guard let entries = try? await WindowList.listCapturable() else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.capturableWindows = entries
+                self.rebuildMenu()
+            }
         }
     }
 
@@ -344,6 +375,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             streamingMenu.addItem(bindItem)
             streamingMenu.setSubmenu(bindMenu, for: bindItem)
         }
+        // Window Handoff v1 (PROTOCOL.md) -- explicit menu-driven pick of one
+        // window to stream, wrapping the same StreamServer(.window(id)) path
+        // `clamshell stream-window` uses. No AX auto-hide/drag-trigger here,
+        // same as the CLI -- out of scope for v1 (blocked, see
+        // WindowHideSelfTest.swift).
+        streamingMenu.addItem(.separator())
+        let windowStreamMenu = NSMenu()
+        if let active = activeWindowStream {
+            let stop = NSMenuItem(
+                title: "Stop Streaming \"\(active.title)\" (port \(windowStreamPort))",
+                action: #selector(stopWindowStream), keyEquivalent: ""
+            )
+            stop.target = self
+            windowStreamMenu.addItem(stop)
+            windowStreamMenu.addItem(.separator())
+        }
+        if capturableWindows.isEmpty {
+            let empty = NSMenuItem(title: "No capturable windows found", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            windowStreamMenu.addItem(empty)
+        } else {
+            for w in capturableWindows {
+                let item = NSMenuItem(
+                    title: "\(w.appName) — \(w.title)", action: #selector(selectWindowStream(_:)), keyEquivalent: ""
+                )
+                item.representedObject = NSNumber(value: w.windowId)
+                item.state = activeWindowStream?.id == w.windowId ? .on : .off
+                item.target = self
+                windowStreamMenu.addItem(item)
+            }
+        }
+        let windowStreamItem = NSMenuItem(
+            title: activeWindowStream != nil
+                ? "Window Streaming On — \"\(activeWindowStream!.title)\""
+                : "Stream a Window…",
+            action: nil, keyEquivalent: ""
+        )
+        streamingMenu.addItem(windowStreamItem)
+        streamingMenu.setSubmenu(windowStreamMenu, for: windowStreamItem)
+
         let streamingItem = NSMenuItem(title: "Streaming", action: nil, keyEquivalent: "")
         menu.addItem(streamingItem)
         menu.setSubmenu(streamingMenu, for: streamingItem)
@@ -410,6 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Repopulate on every open so the Accessibility warning clears
         // without waiting for a state change.
         rebuildMenu()
+        refreshCapturableWindows() // async -- rebuilds again once the list lands
     }
 
     private var installingUpdate = false
@@ -511,6 +583,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleNativeStreaming() {
         if streamFleet != nil { stopNativeStreaming() } else { startNativeStreaming() }
         UserDefaults.standard.set(streamFleet != nil, forKey: "nativeStreaming")
+        rebuildMenu()
+    }
+
+    @objc private func selectWindowStream(_ sender: NSMenuItem) {
+        guard let id = (sender.representedObject as? NSNumber)?.uint32Value,
+              let entry = capturableWindows.first(where: { $0.windowId == id }) else { return }
+        windowStreamServer?.stop()
+        let server = StreamServer(source: .window(entry.windowId), port: windowStreamPort, isPrimary: false)
+        do {
+            try server.start()
+            windowStreamServer = server
+            activeWindowStream = (entry.windowId, "\(entry.appName) — \(entry.title)")
+            UserDefaults.standard.set(Int(windowStreamPort), forKey: "windowStreamPort")
+            clog("window streaming started from menu bar: \(entry.appName) — \(entry.title) (id \(entry.windowId), port \(windowStreamPort))")
+        } catch {
+            windowStreamServer = nil
+            activeWindowStream = nil
+            clog("window streaming failed to start on port \(windowStreamPort): \(error)")
+        }
+        rebuildMenu()
+    }
+
+    @objc private func stopWindowStream() {
+        windowStreamServer?.stop()
+        windowStreamServer = nil
+        activeWindowStream = nil
+        clog("window streaming stopped from menu bar")
         rebuildMenu()
     }
 
