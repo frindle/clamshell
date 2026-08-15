@@ -4,14 +4,26 @@ import Network
 import CoreMedia
 import VideoToolbox
 
-// Host side of the stream: ScreenCaptureKit capture of one display ->
-// hardware VideoToolbox encode -> framed messages over one TCP connection.
-// Receives input messages on the same connection and injects them.
-// One client at a time; a new connection replaces the current one.
+// Host side of the stream: ScreenCaptureKit capture of one display (or, for
+// Window Handoff, one window) -> hardware VideoToolbox encode -> framed
+// messages over one TCP connection. Receives input messages on the same
+// connection and injects them. One client at a time; a new connection
+// replaces the current one.
+
+/// What this server captures. A window capture is video+input only — no
+/// audio/clipboard/cursor-follow/lock-state/client-display-reporting, all of
+/// which are display concepts (see the `isPrimary`-gated features below and
+/// PROTOCOL.md's v1 sections they implement). ponytail: window audio capture
+/// (SCContentFilter supports it) is skipped for v1 — add if silent remoted
+/// apps turn out to matter.
+enum StreamSource {
+    case display(CGDirectDisplayID)
+    case window(UInt32)
+}
 
 // @unchecked Sendable: all mutable state is confined to the serial `queue`.
 final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
-    private let displayID: CGDirectDisplayID
+    private let source: StreamSource
     private let port: UInt16
     /// The primary server (main display, base port) also carries system audio
     /// and clipboard sync; secondary displays are video+input only.
@@ -65,10 +77,14 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var cursorTimer: DispatchSourceTimer?
     private var lastSentCursor: CGPoint?
 
-    init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
-        self.displayID = displayID
+    init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
+        self.source = source
         self.port = port
         self.isPrimary = isPrimary
+    }
+
+    convenience init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
+        self.init(source: .display(displayID), port: port, isPrimary: isPrimary)
     }
 
     func start() throws {
@@ -88,7 +104,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
         listener.start(queue: queue)
         self.listener = listener
-        clog("STREAM: listening on port \(port) for display \(displayID)")
+        clog("STREAM: listening on port \(port) for \(source)")
     }
 
     /// `completion` fires only once the listener has actually released its
@@ -299,7 +315,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     // MARK: - Capture session
 
     private func startSession(requestedCodec: StreamCodec) {
-        let displayID = self.displayID
+        let source = self.source
         // Pin this session to the connection that sent HELLO. A second client
         // can connect (tearing down `connection` and installing a new one)
         // during the awaits below; without this check the new connection would
@@ -312,19 +328,44 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 if !CGPreflightScreenCaptureAccess() {
                     clog("STREAM: WARNING — Screen Recording permission NOT granted; capture will fail. Grant it in System Settings > Privacy & Security > Screen Recording.")
                 }
-                let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else {
-                    clog("STREAM: display \(displayID) not found in shareable content")
-                    self.queue.async { self.teardownSession() }
-                    return
-                }
 
-                // Native pixel resolution and refresh rate — no scaling in the
-                // capture path; the encoder sees exactly what the display shows.
-                let mode = CGDisplayCopyDisplayMode(displayID)
-                let pxWidth = mode?.pixelWidth ?? scDisplay.width
-                let pxHeight = mode?.pixelHeight ?? scDisplay.height
-                let refresh = (mode?.refreshRate ?? 0) > 0 ? mode!.refreshRate : 60
+                let (filter, pxWidth, pxHeight, refresh): (SCContentFilter, Int, Int, Double)
+                switch source {
+                case .display(let displayID):
+                    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                    guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else {
+                        clog("STREAM: display \(displayID) not found in shareable content")
+                        self.queue.async { self.teardownSession() }
+                        return
+                    }
+                    // Native pixel resolution and refresh rate — no scaling in
+                    // the capture path; the encoder sees exactly what the
+                    // display shows.
+                    let mode = CGDisplayCopyDisplayMode(displayID)
+                    pxWidth = mode?.pixelWidth ?? scDisplay.width
+                    pxHeight = mode?.pixelHeight ?? scDisplay.height
+                    refresh = (mode?.refreshRate ?? 0) > 0 ? mode!.refreshRate : 60
+                    filter = SCContentFilter(display: scDisplay, excludingWindows: [])
+                case .window(let windowID):
+                    // Window Handoff (PROTOCOL.md): explicit-selection v1, no
+                    // AX-based hide/drag-trigger (blocked on this dev Mac —
+                    // see WindowHandoff/WindowHideSelfTest.swift), so the
+                    // window is captured wherever it currently sits.
+                    let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+                    guard let scWindow = content.windows.first(where: { $0.windowID == windowID }) else {
+                        clog("STREAM: window \(windowID) not found (closed, minimized, or off-screen?)")
+                        self.queue.async { self.teardownSession() }
+                        return
+                    }
+                    // ponytail: points-resolution capture, not the window's
+                    // real backing-store pixel size (no cheap way to read a
+                    // window's owning screen's backingScaleFactor from
+                    // SCWindow alone) — upgrade if Retina windows look soft.
+                    pxWidth = max(Int(scWindow.frame.width), 1)
+                    pxHeight = max(Int(scWindow.frame.height), 1)
+                    refresh = 60
+                    filter = SCContentFilter(desktopIndependentWindow: scWindow)
+                }
 
                 let encoder = try VideoEncoder.makeEncoder(
                     width: Int32(pxWidth), height: Int32(pxHeight), preferred: requestedCodec)
@@ -337,10 +378,16 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 // no format conversion between capture and encode.
                 config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
                 config.queueDepth = 5
-                config.showsCursor = true
+                // A remoted window shouldn't carry the source Mac's own
+                // cursor into the frame; a whole display should.
+                if case .window = source {
+                    config.showsCursor = false
+                } else {
+                    config.showsCursor = true
+                }
 
                 // Only the primary display carries system audio — one capture,
-                // no separate Core Audio tap.
+                // no separate Core Audio tap. Windows never do (see StreamSource).
                 let audioEncoder = self.isPrimary ? AudioEncoder() : nil
                 if audioEncoder != nil {
                     config.capturesAudio = true
@@ -348,7 +395,6 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     config.channelCount = 2
                 }
 
-                let filter = SCContentFilter(display: scDisplay, excludingWindows: [])
                 let stream = SCStream(filter: filter, configuration: config, delegate: self)
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.videoQueue)
                 if audioEncoder != nil {
@@ -391,13 +437,21 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                         clipboard.start()
                         self.clipboard = clipboard
                     }
-                    self.injector = InputInjector(displayID: displayID)
+                    switch source {
+                    case .display(let displayID): self.injector = InputInjector(displayID: displayID)
+                    case .window(let windowID): self.injector = InputInjector(windowID: windowID)
+                    }
                     self.send(StreamMessage.helloAck(codec: encoder.codec,
                                                      width: UInt32(pxWidth), height: UInt32(pxHeight),
                                                      hardwareEncoder: encoder.isHardware))
                     self.sendStreamStatus() // initial bitrate for the quality indicator
                     self.send(StreamMessage.hostLockState(self.hostLocked)) // so a client joining a locked Mac knows now
-                    self.startCursorReporting(displayID: displayID)
+                    // Cursor-follow auto-pan is a display concept (see
+                    // PROTOCOL.md) — a remoted window has no "different
+                    // display" to report positions relative to.
+                    if case .display(let displayID) = source {
+                        self.startCursorReporting(displayID: displayID)
+                    }
                     clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))\(encoder.isHardware ? "" : " [SOFTWARE ENCODE]")")
                 }
             } catch {
