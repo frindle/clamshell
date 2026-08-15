@@ -57,6 +57,32 @@ jobs:
       - name: Viewer self-test (pure protocol/AVCC-AnnexB framing logic)
         run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest
 
+      - name: Viewer GUI smoke test (real WPF Application/Window on a real virtual display)
+        # The `--verify`/`decode-file` steps below never construct MainWindow
+        # -- they're deliberately headless (no Dispatcher) so they run
+        # unattended. That leaves the actual GUI path (System.Windows.
+        # Application, code-only Window/Image/WriteableBitmap init, no
+        # App.xaml) completely unexercised. windows-latest presents a real
+        # virtual display (same fact the host's smoke test above relies on),
+        # so launch the real GUI mode (no server needed -- Start() catches a
+        # failed connect and just updates the title, the window still comes
+        # up) and confirm the process stays alive for a few seconds instead
+        # of crashing on startup.
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath dotnet `
+            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","127.0.0.1","1" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput viewer-gui-out.log -RedirectStandardError viewer-gui-err.log
+          Start-Sleep -Seconds 5
+
+          Write-Output "--- viewer GUI stdout ---"; Get-Content viewer-gui-out.log -ErrorAction SilentlyContinue
+          Write-Output "--- viewer GUI stderr ---"; Get-Content viewer-gui-err.log -ErrorAction SilentlyContinue
+
+          if ($proc.HasExited) { throw "viewer GUI process exited early (code $($proc.ExitCode)) instead of staying up" }
+          Stop-Process -Id $proc.Id -Force
+          Write-Output "viewer GUI smoke test OK: WPF Application/Window constructed and stayed up on a real virtual display"
+
       - name: End-to-end viewer connect (real host HELLO/HELLO_ACK -> real client)
         # Both the proven host (above) and the new viewer run in this same
         # job, so this drives the real wire handshake on real Windows.

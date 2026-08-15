@@ -123,13 +123,7 @@ internal sealed class VideoDecoder : IDisposable
     /// the byte stream the built-in decoder MFT expects.</summary>
     public void Feed(ReadOnlySpan<byte> avccNal, ulong ptsMicros) => FeedAnnexB(Avcc.ToAnnexB(avccNal), ptsMicros);
 
-    /// <summary>Feed one already-Annex-B access unit directly -- used by the
-    /// `decode-file` CI verification path (see Program.cs), which decodes a
-    /// real file produced by an independent, known-good encoder (ffmpeg)
-    /// rather than one that came off the wire. Same underlying decode path
-    /// as <see cref="Feed"/>, just skipping the AVCC-&gt;Annex-B step because
-    /// the input is already Annex-B.</summary>
-    public void FeedAnnexB(ReadOnlySpan<byte> annexB, ulong ptsMicros)
+    private void FeedAnnexB(ReadOnlySpan<byte> annexB, ulong ptsMicros)
     {
         lock (_lock)
         {

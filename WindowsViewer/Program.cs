@@ -145,17 +145,63 @@ internal static class Program
             got = true;
         };
 
-        // The whole file is fed as one access unit (SPS+PPS+IDR, all
-        // Annex-B start-code delimited) -- the CI job generates a
-        // single-frame file specifically so this is valid. Flush() forces
-        // out any frame the decoder is holding back for reordering, which
-        // a single feed+drain isn't guaranteed to do on its own.
-        decoder.FeedAnnexB(annexB, 0);
+        // Re-encode the file's Annex-B to AVCC and feed it through the exact
+        // same Feed() entry point a live VIDEO_FRAME takes (Dispatch -> Feed
+        // -> Avcc.ToAnnexB -> decode), not the lower-level FeedAnnexB --
+        // this proves the actual wire-payload code path, not just the MFT
+        // underneath it. The whole file is fed as one access unit (SPS+PPS+
+        // IDR); the CI job generates a single-frame file specifically so
+        // that's valid. Flush() forces out any frame the decoder is holding
+        // back for reordering, which a single feed+drain isn't guaranteed to
+        // do on its own.
+        decoder.Feed(AnnexBToAvcc(annexB), 0);
         decoder.Flush();
 
         if (!got) { Log.Line($"decode-file: FAIL -- {reason}"); return 1; }
         Log.Line("decode-file: PASS");
         return 0;
+    }
+
+    // Inverse of VideoDecoder.cs's Avcc.ToAnnexB -- Annex-B (start-code
+    // delimited NALs, what ffmpeg's raw h264 muxer produces) -> AVCC
+    // (length-prefixed), the wire's actual VIDEO_FRAME payload shape. Exists
+    // only so decode-file can exercise the real Feed() entry point instead
+    // of a separate Annex-B-only code path. Mirrors WindowsServer/
+    // VideoEncoder.cs's AnnexB.ToAvcc (host-side, different project -- see
+    // Protocol.cs's header for why these projects don't share code).
+    private static byte[] AnnexBToAvcc(ReadOnlySpan<byte> annexB)
+    {
+        using var outMs = new MemoryStream(annexB.Length + 8);
+        int i = 0, n = annexB.Length, nalStart = -1;
+        while (i < n)
+        {
+            int sc = StartCodeLen(annexB, i);
+            if (sc > 0)
+            {
+                if (nalStart >= 0) WriteNal(outMs, annexB.Slice(nalStart, i - nalStart));
+                i += sc;
+                nalStart = i;
+            }
+            else i++;
+        }
+        if (nalStart >= 0 && nalStart < n) WriteNal(outMs, annexB.Slice(nalStart, n - nalStart));
+        return outMs.ToArray();
+    }
+
+    private static int StartCodeLen(ReadOnlySpan<byte> b, int i)
+    {
+        if (i + 3 <= b.Length && b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1) return 3;
+        if (i + 4 <= b.Length && b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 0 && b[i + 3] == 1) return 4;
+        return 0;
+    }
+
+    private static void WriteNal(Stream s, ReadOnlySpan<byte> nal)
+    {
+        if (nal.Length == 0) return;
+        Span<byte> len = stackalloc byte[4];
+        BinaryPrimitives.WriteUInt32BigEndian(len, (uint)nal.Length);
+        s.Write(len);
+        s.Write(nal);
     }
 
     // Cheap heuristic: sample a spread of pixels and check they aren't all

@@ -336,34 +336,62 @@ window shows up as its own native-sized window on Windows, not a fullscreen
 view. `dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -- <host> <port> [h264|hevc]`.
 
 **Proven live in CI** (`.github/workflows/windows-ci.yml`, real `windows-latest`
-VM, no physical Windows machine involved): the existing Windows *host*
-(`ClamshellServer.exe`) is launched as a real display-stream source with
-Notepad open for real on-screen content, and the new viewer's headless
-`--verify` mode does a real WebSocket connect, real HELLO/HELLO_ACK, and
-decodes real VIDEO_FRAME AVCC frames through the real (software, no GPU on
-the runner) Media Foundation H.264 decoder MFT — asserting the decoded pixel
-buffer is non-degenerate (not blank/garbage), not just "the socket didn't
-throw". This is the strongest test available without a second physical
-machine, and it round-trips the exact same wire protocol/codec path a real
-window stream would use.
+VM, no physical Windows machine involved), three separate pieces of real
+evidence, none of them a unit test:
 
-**What that CI test does NOT cover:** an actual *window-cropped* source.
-`WindowsServer` has no window-capture/streaming implementation — `WindowEnum.cs`
-is enumeration only, a stub for the still-`PROPOSED` v2 design below; only the
-Mac host can stream a single window today. So the CI proof above is a real,
-live protocol/codec round trip (same HELLO/HELLO_ACK/VIDEO_FRAME framing,
-same decoder the viewer would use against a real window stream), but it was
-exercised against a Mac-side-equivalent *display* stream, not a real
-`stream-window` source, because Windows can't produce one yet. Testing the
-viewer against a live Mac `clamshell stream-window` source (the actual v1
-use case) still needs a physical Mac + Windows pair and has not been done.
+1. **Real protocol handshake against the real host.** `ClamshellServer.exe`
+   is launched as a real display-stream source (Notepad open for real
+   on-screen content); the viewer's headless `--verify` mode does a real
+   WebSocket connect and gets back a real HELLO_ACK (`codec=H264 1024x768`).
+2. **Real H.264 decode through the viewer's actual wire-payload code path.**
+   A single-keyframe clip from an independent, known-good encoder
+   (`ffmpeg`/libx264, not WindowsServer's) is converted to AVCC and fed
+   through the exact same `Dispatch → Feed → Avcc.ToAnnexB → decode` route a
+   live VIDEO_FRAME takes, decoding via the real (software — no GPU on the
+   runner) Media Foundation H.264 decoder MFT. The CI log shows a real
+   320×240 non-uniform decoded frame, not blank/garbage output.
+3. **Real WPF construction on a real virtual display.** The GUI binary
+   (`Application`/`Window`/`Image`/`WriteableBitmap`, no XAML) is launched
+   for real and stays up for several seconds without crashing.
 
-**Not implemented / not proven:** the control-connection / HANDOFF_*
-multiplexed protocol below, drag-trigger detection, and AX-based window
-hiding on the Mac side (blocked, see above). Windows-side window capture
-(the `Windows.Graphics.Capture` path described in v2 below) — needed before
-this viewer can be tested against a real Windows-hosted window stream, or
-before Windows can be a window-handoff *source* at all.
+**What's NOT proven, and why:**
+- **A real VIDEO_FRAME actually arriving over the wire and being decoded/
+  rendered end-to-end.** Step 1 above never gets this far: WindowsServer's
+  software H.264 *encoder* fails to initialize on this runner once a client
+  connects and starts a session (`VideoEncoder.Create → Build →
+  SetInputType/SetOutputType` throws `E_FAIL`) — a pre-existing
+  WindowsServer bug this test discovered (the previous "Live smoke test"
+  step never had a client connect, so it never exercised this path; only the
+  encoder *probe*, which never builds a session, ran before). That's
+  WindowsServer-side and out of scope for this change, so it wasn't fixed
+  here. The CI step is written to auto-upgrade to a full live round-trip
+  proof (`verify: PASS`) the moment that bug is fixed elsewhere — no viewer
+  change would be needed.
+- **Rendering a real decoded frame into the WPF window.** Step 3 constructs
+  the window; step 2 proves the decoder in isolation from the network path.
+  Nothing in CI currently feeds a network-decoded frame into `MainWindow`'s
+  `WriteableBitmap`.
+- **Input forwarding.** `MainWindow`'s mouse/keyboard handlers and
+  `MacKeyMap` were checked against `WindowsServer/StreamServer.cs`'s
+  `Dispatch` by reading both, matching wire offsets exactly, but never
+  executed against a live host (no click/keystroke was ever sent and
+  observed being received).
+- **A real *window-cropped* source.** `WindowsServer` has no window-capture/
+  streaming implementation — `WindowEnum.cs` is enumeration only, a stub for
+  the still-`PROPOSED` v2 design below; only the Mac host can stream a
+  single window today. So even once the encoder bug above is fixed, CI can
+  only prove this viewer against a *display* stream, not a real
+  `stream-window` source.
+- **The Mac host and this viewer running against each other on real
+  hardware.** No physical Windows machine was available in this
+  environment.
+
+**Not implemented:** the control-connection / HANDOFF_* multiplexed protocol
+below, drag-trigger detection, and AX-based window hiding on the Mac side
+(blocked, see above). Windows-side window capture (the
+`Windows.Graphics.Capture` path described in v2 below) — needed before this
+viewer can be tested against a real Windows-hosted window stream, or before
+Windows can be a window-handoff *source* at all.
 
 ## Window Handoff v2 (PROPOSED — not implemented, not a contract yet)
 
