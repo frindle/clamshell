@@ -51,3 +51,133 @@ jobs:
           if ($log -notmatch "hardware video encoder|no hardware video encoder") { throw "startup log missing encoder probe line" }
           if ($log -notmatch "listening on ws port|cannot bind") { throw "startup log missing listener bind line" }
           Write-Output "smoke test OK: process stayed up and completed the real startup sequence"
+
+      - name: Build Windows viewer client
+        run: dotnet build WindowsViewer/ClamshellWindowViewer.csproj -c Release
+      - name: Viewer self-test (pure protocol/AVCC-AnnexB framing logic)
+        run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest
+
+      - name: Viewer GUI smoke test (real WPF Application/Window on a real virtual display)
+        # The `--verify`/`decode-file` steps below never construct MainWindow
+        # -- they're deliberately headless (no Dispatcher) so they run
+        # unattended. That leaves the actual GUI path (System.Windows.
+        # Application, code-only Window/Image/WriteableBitmap init, no
+        # App.xaml) completely unexercised. windows-latest presents a real
+        # virtual display (same fact the host's smoke test above relies on),
+        # so launch the real GUI mode (no server needed -- Start() catches a
+        # failed connect and just updates the title, the window still comes
+        # up) and confirm the process stays alive for a few seconds instead
+        # of crashing on startup.
+        shell: pwsh
+        run: |
+          $proc = Start-Process -FilePath dotnet `
+            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","127.0.0.1","1" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput viewer-gui-out.log -RedirectStandardError viewer-gui-err.log
+          Start-Sleep -Seconds 5
+
+          Write-Output "--- viewer GUI stdout ---"; Get-Content viewer-gui-out.log -ErrorAction SilentlyContinue
+          Write-Output "--- viewer GUI stderr ---"; Get-Content viewer-gui-err.log -ErrorAction SilentlyContinue
+
+          if ($proc.HasExited) { throw "viewer GUI process exited early (code $($proc.ExitCode)) instead of staying up" }
+          Stop-Process -Id $proc.Id -Force
+          Write-Output "viewer GUI smoke test OK: WPF Application/Window constructed and stayed up on a real virtual display"
+
+      - name: End-to-end viewer connect (real host HELLO/HELLO_ACK -> real client)
+        # Both the proven host (above) and the new viewer run in this same
+        # job, so this drives the real wire handshake on real Windows.
+        # ClamshellServer.exe is launched as a real display-stream source
+        # (Notepad opened first for real on-screen content); the viewer's
+        # headless `--verify` mode (no WPF window/Dispatcher, so it runs
+        # cleanly unattended) does a real WebSocket connect and a real
+        # HELLO/HELLO_ACK round trip.
+        #
+        # KNOWN GAP, discovered by writing this test (not present before --
+        # the old "Live smoke test" step above never had a client connect,
+        # so it never exercised this path): WindowsServer's *software*
+        # H.264 encoder fails to initialize on this runner
+        # (VideoEncoder.Create -> Build -> SetInputType/SetOutputType
+        # throws E_FAIL) once a client actually connects and starts a
+        # session, even though the earlier smoke test's encoder *probe*
+        # (EncoderProbe.Run, which never builds a session) passes. That is
+        # a WindowsServer-side issue, out of scope for this change (this PR
+        # only touches WindowsViewer), so no VIDEO_FRAME ever arrives here
+        # and this step can only prove the handshake, not real decode --
+        # see the "Viewer decode-file" step below for that, using an
+        # independent encoder instead of the host's.
+        #
+        # Scope note: even once that's fixed, this would still be a
+        # *display* stream, not a *window* stream -- WindowsServer has no
+        # window-capture/streaming implementation yet (WindowEnum.cs is
+        # enumeration only, PROTOCOL.md "Window Handoff v2, PROPOSED").
+        shell: pwsh
+        run: |
+          $notepad = Start-Process notepad.exe -PassThru
+          Start-Sleep -Seconds 2
+
+          $server = Start-Process -FilePath dotnet `
+            -ArgumentList "run","--project","WindowsServer/ClamshellServer.csproj","-c","Release","--","5951" `
+            -NoNewWindow -PassThru `
+            -RedirectStandardOutput server-out.log -RedirectStandardError server-err.log
+          Start-Sleep -Seconds 8
+
+          if ($server.HasExited) {
+            Write-Output "--- server stderr ---"; Get-Content server-err.log -ErrorAction SilentlyContinue
+            throw "ClamshellServer exited early instead of staying up for the viewer test"
+          }
+
+          $viewer = Start-Process -FilePath dotnet `
+            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","--verify","127.0.0.1","5951","h264","25" `
+            -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput viewer-out.log -RedirectStandardError viewer-err.log
+
+          Write-Output "--- server stderr ---"; Get-Content server-err.log -ErrorAction SilentlyContinue
+          Write-Output "--- viewer stderr ---"; Get-Content viewer-err.log -ErrorAction SilentlyContinue
+
+          Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+          Stop-Process -Id $notepad.Id -Force -ErrorAction SilentlyContinue
+
+          $vlog = Get-Content viewer-err.log -Raw -ErrorAction SilentlyContinue
+          if ($vlog -notmatch "verify: HELLO_ACK") { throw "viewer never received HELLO_ACK -- real connectivity failure, not the known encoder gap" }
+          if ($vlog -match "verify: PASS") {
+            Write-Output "end-to-end viewer connect+decode OK: real HELLO_ACK + real decoded VIDEO_FRAME over a real WebSocket"
+          } else {
+            Write-Warning "handshake OK (real HELLO_ACK) but no VIDEO_FRAME arrived -- known WindowsServer software-encoder gap on this runner, see step comment. Not failing this step for it; see the 'Viewer decode-file' step for a decode proof independent of the host's encoder."
+          }
+
+      - name: Generate a real single-frame H.264 test clip (ffmpeg, independent of WindowsServer)
+        # ffmpeg isn't preinstalled on windows-latest -- chocolatey is, so
+        # install it from there. A single-keyframe clip (-frames:v 1) is
+        # exactly one access unit (SPS+PPS+IDR, Annex-B start-code
+        # delimited) so the viewer can feed the whole file as one sample --
+        # see VideoDecoder.FeedAnnexB / Program.cs decode-file.
+        shell: pwsh
+        run: |
+          choco install ffmpeg -y --no-progress
+          # choco updates the machine PATH, but this script block is still
+          # the same process it started in -- call the shim chocolatey just
+          # installed directly rather than relying on a refreshed PATH.
+          $ffmpeg = "C:\ProgramData\chocolatey\bin\ffmpeg.exe"
+          & $ffmpeg -y -f lavfi -i "testsrc=size=320x240:rate=1" -frames:v 1 -c:v libx264 -pix_fmt yuv420p -f h264 test-frame.h264
+          if (-not (Test-Path test-frame.h264) -or (Get-Item test-frame.h264).Length -eq 0) { throw "ffmpeg did not produce test-frame.h264" }
+          Write-Output "generated test-frame.h264: $((Get-Item test-frame.h264).Length) bytes"
+
+      - name: Viewer decode-file (real H.264 -> real Media Foundation decode)
+        # Proves the viewer's own decode pipeline (VideoDecoder.cs, a real
+        # Media Foundation H.264 decoder MFT -- software path, since this
+        # runner has no GPU) against a real H.264 stream from an
+        # independent, known-good encoder (ffmpeg/libx264), sidestepping
+        # the WindowsServer encoder gap noted above entirely. PASS requires
+        # an actual decoded frame with non-uniform pixel content (the
+        # ffmpeg testsrc pattern is not a flat color), not just "it didn't
+        # throw".
+        shell: pwsh
+        run: |
+          dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- decode-file test-frame.h264 h264 `
+            2> decode-file-err.log
+          $code = $LASTEXITCODE
+          Write-Output "--- decode-file stderr ---"; Get-Content decode-file-err.log -ErrorAction SilentlyContinue
+          if ($code -ne 0) { throw "decode-file FAILED (exit $code) -- see stderr above" }
+          $dlog = Get-Content decode-file-err.log -Raw -ErrorAction SilentlyContinue
+          if ($dlog -notmatch "decode-file: PASS") { throw "decode-file stderr missing 'decode-file: PASS' line" }
+          Write-Output "decode-file OK: real ffmpeg-produced H.264 decoded through a real Media Foundation decoder MFT"

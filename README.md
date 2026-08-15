@@ -426,16 +426,39 @@ VIDEO_FRAME, INPUT_*) — just with a single window as the capture source and
 its own fixed port instead of `basePort + index`. Needs Screen Recording
 permission, same as `stream`.
 
-**What's real right now:** the Mac host side only, proven with a raw
-WebSocket test client (real HELLO → HELLO_ACK → keyframe/delta VIDEO_FRAME
-flow, hardware HEVC, matching the source window's actual size). **What
-doesn't exist yet:** a Windows viewer to actually receive/decode/render the
-stream — until one exists this is only provable from a terminal, not usable
-end-to-end. Also not yet built: window selection from the menu bar (today
-it's CLI-only) and the AX-based auto-hide / drag-to-hand-off UX described in
-PROTOCOL.md's v2 section — blocked on a real system-wide Accessibility
-reporting failure on the dev Mac (System Settings > Accessibility, or a
-reboot, needs to resolve that independently of this codebase).
+A Windows viewer now exists (`WindowsViewer/`, `ClamshellWindowViewer.exe`):
+```
+dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -- <mac-hostname-or-ip> 5920
+```
+connects, decodes AVCC H.264/HEVC via a Media Foundation decoder MFT, and
+renders in a native window sized to the source, forwarding mouse/keyboard
+back over INPUT_*. Full detail (what's proven in CI vs. not) in
+[PROTOCOL.md](PROTOCOL.md#window-handoff-v1-implemented-mac-host-side--explicit-selection).
+
+**What's real right now:** the Mac host side, proven with a raw WebSocket
+test client (real HELLO → HELLO_ACK → keyframe/delta VIDEO_FRAME flow,
+hardware HEVC, matching the source window's actual size); and, on the
+Windows viewer, three separate real CI proofs on a real `windows-latest`
+VM — a real WebSocket connect + HELLO_ACK against the real Windows host, a
+real H.264 clip (from an independent encoder, ffmpeg) decoded through the
+viewer's actual wire-payload decode path, and a real WPF window
+constructed and staying up. **What's not proven:** a real VIDEO_FRAME
+actually arriving over the wire and being decoded — the Windows host's
+software encoder currently fails to initialize on that CI runner (a
+pre-existing WindowsServer issue this work discovered, out of scope to fix
+here — see PROTOCOL.md for the exact error and why); rendering a
+network-decoded frame into the window; input forwarding beyond a
+by-inspection check against the host's `Dispatch` wire offsets; the Mac
+host and Windows viewer running against each other on real hardware (no
+physical Windows machine available in this environment); and Windows
+acting as a window-handoff *source* at all — `WindowEnum.cs` only
+enumerates windows, it doesn't capture/stream them (that's the still-
+`PROPOSED` v2 design). Full detail in PROTOCOL.md. Also not yet built:
+window selection from the menu bar (today it's CLI-only) and the AX-based
+auto-hide / drag-to-hand-off UX described in PROTOCOL.md's v2 section —
+blocked on a real system-wide Accessibility reporting failure on
+the dev Mac (System Settings > Accessibility, or a reboot, needs to resolve
+that independently of this codebase).
 
 ## Remote client notes
 
@@ -480,7 +503,38 @@ form.
 ## Changelog
 
 ### Unreleased
-- **Window Handoff, Mac host side (experimental, CLI-only, no viewer yet)**:
+- **Window Handoff, Windows viewer client (`WindowsViewer/`,
+  `ClamshellWindowViewer.exe`, WPF)**: connects to a host's window-stream (or
+  display-stream) WebSocket endpoint, does the HELLO/HELLO_ACK handshake,
+  decodes AVCC H.264/HEVC via a Media Foundation decoder MFT
+  (`VideoDecoder.cs` — the client-side mirror of the host's `VideoEncoder.cs`:
+  same sync-MFT architecture, literal GUIDs, no FFmpeg dependency), and
+  renders into a `WriteableBitmap` in a native window sized to the source
+  (HELLO_ACK's widthPx/heightPx, clamped to the local screen). Forwards
+  INPUT_MOUSE_MOVE/INPUT_MOUSE_BUTTON/INPUT_KEY/INPUT_SCROLL back over the
+  exact existing wire messages, translating Windows VK codes to macOS virtual
+  key codes via a new `MacKeyMap.cs` (the inverse of the host's map of the
+  same name). Verified in CI (`.github/workflows/windows-ci.yml`, a real
+  `windows-latest` VM), three separate real proofs: (1) a real WebSocket
+  connect + HELLO/HELLO_ACK against the real Windows host; (2) a real H.264
+  clip from an independent encoder (ffmpeg) decoded through the viewer's
+  actual wire-payload path (`Feed` → `Avcc.ToAnnexB` → the Media Foundation
+  decoder MFT), asserting non-degenerate pixel output; (3) the real WPF
+  `Application`/`Window` constructed and staying up on a real virtual
+  display. **Not verified**: a real VIDEO_FRAME actually arriving over the
+  wire — `WindowsServer`'s software H.264 encoder currently fails to
+  initialize on this CI runner once a client connects (`E_FAIL`, a
+  pre-existing bug this work discovered while writing the test, out of
+  scope for this change — see PROTOCOL.md), so proof (1) only reaches
+  HELLO_ACK, not a decoded frame off the wire; rendering a network-decoded
+  frame into the window; input forwarding beyond matching the host's wire
+  offsets by inspection; and the Mac host and this viewer running against
+  each other on real hardware (no physical Windows machine in this
+  environment). Also, WindowsServer has no window-capture implementation
+  yet, so none of this exercises an actual *window*-cropped stream (see
+  PROTOCOL.md for exactly what is and isn't covered).
+- **Window Handoff, Mac host side (experimental, CLI-only, no menu-bar picker
+  yet)**:
   stream a single macOS window instead of a whole display —
   `clamshell stream-window <windowId>` — reusing v1's exact wire protocol
   (HELLO/HELLO_ACK/VIDEO_FRAME/INPUT_*) with `SCContentFilter(
@@ -493,8 +547,8 @@ form.
   `WindowHideSelfTest.swift`) by skipping AX entirely. See PROTOCOL.md
   "Window Handoff v1". Verified: live HELLO → HELLO_ACK → keyframe/delta
   VIDEO_FRAME flow over a real WebSocket against a real window (hardware
-  HEVC, correct window dimensions). **Not built yet**: the Windows viewer
-  client to actually render the stream, and a menu-bar window picker.
+  HEVC, correct window dimensions). **Not built yet**: a menu-bar window
+  picker (still CLI-only selection) — a Windows viewer now exists, see above.
 - **One universal iOS app instead of two targets**: `ClamshellViewer` and
   `ClamshellControl` are merged into a single target/scheme/app bundle
   (`ClamshellViewer`, `com.frindle.clamshell.viewer`) that branches on
