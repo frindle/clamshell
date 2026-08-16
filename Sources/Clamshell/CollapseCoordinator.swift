@@ -29,6 +29,14 @@ final class CollapseCoordinator {
     var restoreDelay: TimeInterval = 10
     private var pendingRestore: DispatchWorkItem?
 
+    /// Cooldown after a failed collapse so a client stuck in a fast
+    /// reconnect loop (e.g. connection dying immediately after collapse
+    /// fails) doesn't re-hammer the private virtual-display API on every
+    /// retry — each collapse attempt already burns ~2s across 8 internal
+    /// tries, and reconnects can arrive faster than that.
+    private var lastCollapseFailureAt: Date?
+    private let collapseFailureCooldown: TimeInterval = 5
+
     /// The deferred window-layout restore is still running; completions
     /// queued via restore() wait for it (e.g. quit must not terminate the
     /// process before windows are back on their monitors).
@@ -80,6 +88,14 @@ final class CollapseCoordinator {
             pendingRestore = nil
             return
         }
+        if let lastFailure = lastCollapseFailureAt {
+            let remaining = collapseFailureCooldown - Date().timeIntervalSince(lastFailure)
+            guard remaining <= 0 else {
+                clog("collapse skipped: cooling down after recent failure (\(String(format: "%.1f", remaining))s left)")
+                return
+            }
+        }
+
         pendingRestore?.cancel()
         pendingRestore = nil
         state = .collapsing // set before any async work so a disconnect in the gap still schedules a restore
@@ -96,10 +112,12 @@ final class CollapseCoordinator {
             }
             guard let virtualID else {
                 clog("collapse aborted: virtual display creation failed")
+                self.lastCollapseFailureAt = Date()
                 self.state = .idle
                 self.onStateChange?(.idle)
                 return
             }
+            self.lastCollapseFailureAt = nil
             if self.dualMode {
                 self.virtualDisplay.create(preset: self.presetB, slot: .b) { secondID in
                     if secondID == nil {
@@ -223,17 +241,18 @@ final class CollapseCoordinator {
     private func mirrorPhysicalDisplays(onto virtualID: CGDirectDisplayID, attempt: Int = 1) {
         let physical = activePhysicalDisplays()
         guard !physical.isEmpty else {
-            // CGGetActiveDisplayList can transiently under-report right after
-            // the virtual display is created, while WindowServer is still
-            // settling (same window the HiDPI-mode warnings show up in) --
-            // silently skipping here left the virtual display permanently
-            // unmirrored, showing as an extra independent screen.
-            clog("mirrorPhysicalDisplays: no physical displays found (attempt \(attempt)/8)")
-            guard state == .collapsing || state == .collapsed, attempt < 8 else {
+            // CGGetActiveDisplayList under-reports for the full WindowServer
+            // settle window after the virtual display is created -- observed
+            // live at ~17s (same window the repeated "no HiDPI mode" retries
+            // span) -- not a quick transient blip. A short retry budget gave
+            // up before the list ever populated, leaving the virtual display
+            // permanently unmirrored, showing as an extra independent screen.
+            clog("mirrorPhysicalDisplays: no physical displays found (attempt \(attempt)/20)")
+            guard state == .collapsing || state == .collapsed, attempt < 20 else {
                 clog("mirrorPhysicalDisplays: giving up after \(attempt) attempts")
                 return
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.mirrorPhysicalDisplays(onto: virtualID, attempt: attempt + 1)
             }
             return
