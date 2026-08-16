@@ -1286,6 +1286,16 @@ const UI = {
         // Clear the input after reading the password
         inputElemPassword.value = "";
 
+        // The connection can drop (disconnectFinished sets UI.rfb = undefined)
+        // while this dialog is still open and waiting on user input -- submit
+        // then hits a stale reference instead of a live connection.
+        if (!UI.rfb) {
+            document.getElementById('noVNC_credentials_dlg')
+                .classList.remove('noVNC_open');
+            UI.showStatus(_("Connection lost before credentials were sent"), "error");
+            return;
+        }
+
         UI.rfb.sendCredentials({ username: username, password: password });
         UI.reconnectPassword = password;
         document.getElementById('noVNC_credentials_dlg')
