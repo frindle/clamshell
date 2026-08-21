@@ -12,3 +12,5 @@ publish/
 .claude/
 notes.md
 .auto-update-ipad-last-sha
+
+graphify-out/
