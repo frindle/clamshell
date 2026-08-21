@@ -185,6 +185,8 @@ if args.count > 1 {
         // failed CGWindowID<->AXUIElement matching. Passive: reads the real
         // cursor position, no synthetic input. `clamshell window-at-cursor-selftest`.
         exit(WindowAtCursorSelfTest.run())
+    case "confirmation-bridge-selftest":
+        exit(ConfirmationBridgeSelfTest.run())
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
