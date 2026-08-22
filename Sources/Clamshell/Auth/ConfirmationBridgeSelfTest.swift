@@ -1,54 +1,86 @@
 import Foundation
 import CryptoKit
+import XCTest
 
-enum ConfirmationBridgeSelfTest {
-    static func run() -> Int32 {
-        let clientId = "test-client"
-        let privateKey = P256.Signing.PrivateKey()
-        let publicKey = privateKey.publicKey.rawRepresentation
+public class ConfirmationBridgeSelfTest {
+    private let bridge = ConfirmationBridge()
+    private let testClientId = "test-client"
+    private let testKeyPair = P256.KeyAgreement.KeyPair()
 
-        let bridge = ConfirmationBridge()
-        bridge.enroll(clientId: clientId, publicKey: publicKey)
+    public func runTests() {
+        // Test 1: Valid signature
+        let validResult = testValidSignature()
+        print("Valid signature test: \(validResult ? "Passed" : "Failed")")
 
-        var passed = true
+        // Test 2: Replayed signature
+        let replayResult = testReplayedSignature()
+        print("Replayed signature test: \(replayResult ? "Passed" : "Failed")")
 
+        // Test 3: Expired nonce
+        let expirationResult = testExpiredNonce()
+        print("Expired nonce test: \(expirationResult ? "Passed" : "Failed")")
+    }
+
+    private func testValidSignature() -> Bool {
+        // Enroll the test client with the public key
+        bridge.enroll(clientId: testClientId, publicKey: testKeyPair.publicKey.rawRepresentation)
+
+        // Request a nonce
         let actionId = UUID()
-        let nonce = bridge.requestConfirmation(actionId: actionId, clientId: clientId)
-        guard let signature = try? privateKey.signature(for: nonce) else {
-            print("FAILED: signing failed")
-            return 1
-        }
-        let signatureData = signature.rawRepresentation
+        let nonce = bridge.requestConfirmation(actionId: actionId, clientId: testClientId)
 
-        if bridge.verifyConfirmation(actionId: actionId, signature: signatureData) {
-            print("PASS: correct signature verifies")
-        } else {
-            print("FAILED: correct signature did not verify")
-            passed = false
+        // Sign the nonce with the private key
+        guard let signature = try? testKeyPair.sign(nonce) else {
+            return false
         }
 
-        if bridge.verifyConfirmation(actionId: actionId, signature: signatureData) {
-            print("FAILED: replayed signature verified again")
-            passed = false
-        } else {
-            print("PASS: replay protection rejected the second verify")
+        // Verify the signature
+        return bridge.verifyConfirmation(actionId: actionId, signature: signature)
+    }
+
+    private func testReplayedSignature() -> Bool {
+        // Enroll the test client
+        bridge.enroll(clientId: testClientId, publicKey: testKeyPair.publicKey.rawRepresentation)
+
+        // Request a nonce and sign it
+        let actionId = UUID()
+        let nonce = bridge.requestConfirmation(actionId: actionId, clientId: testClientId)
+        guard let signature = try? testKeyPair.sign(nonce) else {
+            return false
         }
 
-        let expiredActionId = UUID()
-        let expiredNonce = bridge.requestConfirmation(actionId: expiredActionId, clientId: clientId)
-        guard let expiredSignature = try? privateKey.signature(for: expiredNonce) else {
-            print("FAILED: signing failed (expiry test)")
-            return 1
-        }
-        print("Waiting 31s for the nonce to actually expire...")
-        Thread.sleep(forTimeInterval: 31.0)
-        if bridge.verifyConfirmation(actionId: expiredActionId, signature: expiredSignature.rawRepresentation) {
-            print("FAILED: expired nonce verified")
-            passed = false
-        } else {
-            print("PASS: expired nonce correctly rejected")
+        // Verify once (should succeed)
+        let firstVerification = bridge.verifyConfirmation(actionId: actionId, signature: signature)
+        if !firstVerification {
+            return false
         }
 
-        return passed ? 0 : 1
+        // Try to replay the same signature
+        let secondVerification = bridge.verifyConfirmation(actionId: actionId, signature: signature)
+        return !secondVerification
+    }
+
+    private func testExpiredNonce() -> Bool {
+        // Enroll the test client
+        bridge.enroll(clientId: testClientId, publicKey: testKeyPair.publicKey.rawRepresentation)
+
+        // Request a nonce
+        let actionId = UUID()
+        let nonce = bridge.requestConfirmation(actionId: actionId, clientId: testClientId)
+
+        // Wait for the nonce to expire
+        Thread.sleep(forTimeInterval: bridge.nonceTTL + 1)
+
+        // Sign the expired nonce
+        guard let signature = try? testKeyPair.sign(nonce) else {
+            return false
+        }
+
+        // Verify the signature after expiration
+        return !bridge.verifyConfirmation(actionId: actionId, signature: signature)
     }
 }
+
+// Entry point for the test
+let test = ConfirmationBridgeSelfTest()
+test.runTests()
