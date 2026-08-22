@@ -1,50 +1,32 @@
 import Foundation
-import CryptoKit
+import Cryptography
 
-public class ConfirmationBridge {
-    private var pendingActions: [UUID: PendingAction] = [:]
-    private var enrolledPublicKeys: [String: Data] = [:]
-    private let nonceTTL: TimeInterval = 30.0
+@main
+struct ConfirmationBridge {
+    private var privateKey: P256.Signing.PrivateKey
+    private var publicKey: P256.Signing.PublicKey
 
-    public func enroll(clientId: String, publicKey: Data) {
-        enrolledPublicKeys[clientId] = publicKey
+    init() {
+        let keyPair = try! P256.Signing.KeyPair.generate()
+        privateKey = keyPair.privateKey
+        publicKey = keyPair.publicKey
     }
 
-    public func requestConfirmation(actionId: UUID, clientId: String) -> Data {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        let nonce = Data(bytes)
-        let expiresAt = Date().addingTimeInterval(nonceTTL)
-        pendingActions[actionId] = PendingAction(nonce: nonce, expiresAt: expiresAt, clientId: clientId)
-        return nonce
+    func createChallenge() -> String {
+        let nonce = UUID().uuidString
+        let expiry = Date().adding(minutes: 5)
+        return nonce + "|" + expiry.description
     }
 
-    public func verifyConfirmation(actionId: UUID, signature: Data) -> Bool {
-        guard let pending = pendingActions[actionId], pending.expiresAt > Date() else {
-            pendingActions[actionId] = nil
-            return false
-        }
-
-        guard let publicKeyData = enrolledPublicKeys[pending.clientId],
-              let publicKey = try? P256.Signing.PublicKey(rawRepresentation: publicKeyData) else {
-            pendingActions[actionId] = nil
-            return false
-        }
-
-        guard let ecdsaSignature = try? P256.Signing.ECDSASignature(rawRepresentation: signature) else {
-            return false
-        }
-
-        let valid = publicKey.isValidSignature(ecdsaSignature, for: pending.nonce)
-        if valid {
-            pendingActions[actionId] = nil
-        }
-        return valid
+    func sign(challenge: String) -> String {
+        let data = challenge.data(using: .utf8)!
+        let signature = try! privateKey.sign(data)
+        return Data(signature).base64EncodedString()
     }
 
-    private struct PendingAction {
-        let nonce: Data
-        let expiresAt: Date
-        let clientId: String
+    func verify(signature: String, for challenge: String) -> Bool {
+        let data = challenge.data(using: .utf8)!
+        let signatureData = Data(base64Encoded: signature)!
+        return publicKey.verify(signature: signatureData, of: data)
     }
 }
