@@ -1,5 +1,6 @@
 import AppKit
 import ServiceManagement
+import UserNotifications
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem!
@@ -57,6 +58,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // record anywhere to undo it (see CollapseCoordinator's doc comment).
         CollapseCoordinator.recoverOrphanedMirrors()
 
+        // Request notification authorization for collapse failure alerts
+        UNUserNotificationCenter.current().requestAuthorization(
+            options: [.alert, .sound]
+        ) { granted, error in
+            if let error = error {
+                clog("notification authorization error: \(error)")
+            }
+            clog("notification authorization granted: \(granted)")
+        }
+
         if !WindowLayoutStore.hasAccessibilityPermission {
             WindowLayoutStore.requestAccessibilityPermission()
         }
@@ -85,6 +96,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
             self.updateIcon()
             self.rebuildMenu()
+        }
+        
+        coordinator.onCollapseFailed = { [weak self] message in
+            guard let self else { return }
+            self.showCollapseFailureNotification(message: message)
         }
         monitor.onChange = { [weak self] connected, _ in
             guard let self else { return }
@@ -745,6 +761,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         externallyCollapsed = true
         if fromStream { streamCollapsed = true }
         coordinator.collapse()
+    }
+
+    /// Shows a native macOS notification when collapse fails.
+    private func showCollapseFailureNotification(message: String) {
+        let content = UNMutableNotificationContent()
+        content.title = "Clamshell: Collapse Failed"
+        content.subtitle = "Virtual display creation failed"
+        content.body = message
+        content.sound = .default
+        
+        let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                clog("notification error: \(error)")
+            }
+        }
     }
 
     /// Re-apply the user's saved preset (and manual dual-mode choice) after

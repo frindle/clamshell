@@ -507,7 +507,22 @@ form.
 
 ## Changelog
 
-### Unreleased
+### 0.9.7
+- **Collapse failure notifications**: `CollapseCoordinator` gains an
+  `onCollapseFailed` callback, fired only when a full collapse attempt fails
+  (not during the cooldown window), and `StatusBarApp` surfaces it as a user
+  notification. When virtual-display creation fails the message names the
+  likely cause instead of failing silently.
+- **`ScreenSharingChecker`**: determines whether Screen Sharing is enabled so
+  the failure message can say so specifically. Uses
+  `launchctl print-disabled system`, **not** `launchctl print
+  system/com.apple.screensharing` — screensharingd is an on-demand
+  (`type = Submitted`) job, so with Screen Sharing switched on and nobody
+  connected it correctly reports `state = not running`. A `state = running`
+  test therefore returns false in the service's normal resting state and would
+  tell the user to enable something already enabled. Falls back to checking for
+  a listener on port 5900, and returns "enabled" on any ambiguity so an
+  uncertain check never produces a confidently wrong instruction.
 - **Window Handoff, menu-bar window picker**: `StatusBarApp.swift`'s
   Streaming submenu gets a "Stream a Window…" entry listing every capturable
   window (`WindowList.listCapturable()`, refreshed on each menu open) —
