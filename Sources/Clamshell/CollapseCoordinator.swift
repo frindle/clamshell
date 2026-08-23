@@ -53,6 +53,10 @@ final class CollapseCoordinator {
     var presetB: DisplayPreset = .hd1080
 
     var onStateChange: ((State) -> Void)?
+    
+    /// Called when collapse() fails after a full attempt (not during cooldown).
+    /// The String is a human-readable failure message.
+    var onCollapseFailed: ((String) -> Void)?
 
     init() {
         // If WindowServer reclaims virtual display A out from under us, the
@@ -112,9 +116,19 @@ final class CollapseCoordinator {
             }
             guard let virtualID else {
                 clog("collapse aborted: virtual display creation failed")
+                
+                // Check if Screen Sharing is disabled and provide a specific message
+                let failureMessage: String
+                if !ScreenSharingChecker.isScreenSharingEnabled() {
+                    failureMessage = "Screen Sharing is disabled. Enable it in System Settings → General → Sharing → Screen Sharing."
+                } else {
+                    failureMessage = "Virtual display creation failed. Try restarting Clamshell."
+                }
+                
                 self.lastCollapseFailureAt = Date()
                 self.state = .idle
                 self.onStateChange?(.idle)
+                self.onCollapseFailed?(failureMessage)
                 return
             }
             self.lastCollapseFailureAt = nil
