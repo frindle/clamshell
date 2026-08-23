@@ -1,0 +1,14 @@
+{
+  "pins" : [
+    {
+      "identity" : "immurok-yk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/frindle/immurok-yk.git",
+      "state" : {
+        "branch" : "master",
+        "revision" : "ac61dc897177b94546d2e69b884af207d1dcddf4"
+      }
+    }
+  ],
+  "version" : 2
+}

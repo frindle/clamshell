@@ -508,6 +508,20 @@ form.
 ## Changelog
 
 ### Unreleased
+- **YubiKey-backed remote confirmation (branch `yubikey-confirmation`)**:
+  `ConfirmationBridge` now accepts DER-encoded ECDSA signatures (what a
+  YubiKey PIV slot emits) alongside the original raw encoding, and a thin
+  adapter (`Auth/YubiKeyConfirmation.swift`, consuming the new standalone
+  [immurok-yk](https://github.com/frindle/immurok-yk) package) enrolls the
+  card's slot-9a public key (attestation-cert preferred) and signs
+  confirmation nonces on the key — touch policy on the slot makes every
+  confirmation proof of physical presence. `confirmation-bridge-selftest`
+  gains DER, cross-action, wrong-key, and malformed-signature negatives
+  (all pass); new `confirmation-yubikey-selftest` runs the loop on real
+  hardware and fails fast/honestly without it (no YubiKey was available
+  when this was built — the hardware leg is still unverified on metal; see
+  PROTOCOL.md "Remote confirmation" for setup). Still not wired into the
+  streaming protocol.
 - **Window Handoff, menu-bar window picker**: `StatusBarApp.swift`'s
   Streaming submenu gets a "Stream a Window…" entry listing every capturable
   window (`WindowList.listCapturable()`, refreshed on each menu open) —
