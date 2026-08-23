@@ -257,6 +257,41 @@ apps send no `CF-Access-*` headers). Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
 VNC/RDP/SSH, so real support means a custom guacd protocol plugin.
 
+## Remote confirmation (ConfirmationBridge — standalone module, not yet on the wire)
+
+The immurok-inspired design for gating privileged actions ("Future" above
+mentions WS auth; this is the finer-grained piece): the host issues a fresh
+32-byte nonce for a specific pending action, the client signs it with ECDSA
+P-256, the host verifies against the enrolled public key, consumes the nonce
+(replay protection), and expires it after 30 s. Each pending action gets its
+own nonce, so a signature for action A can never confirm action B —
+`confirmation-bridge-selftest` proves that negative along with replay,
+expiry (real 31 s wait), wrong-key, and malformed-signature rejection.
+
+**YubiKey-backed signing (2026-08-23):** the signature can now come from a
+YubiKey 5 PIV slot instead of a software key. The core lives in
+[immurok-yk](https://github.com/frindle/immurok-yk) (standalone,
+transport-agnostic, tested without hardware); Clamshell consumes it as a
+thin adapter (`Auth/YubiKeyConfirmation.swift`):
+
+- `ConfirmationBridge` accepts DER-encoded signatures (what PIV GENERAL
+  AUTHENTICATE emits) alongside the original 64-byte raw encoding.
+- Enrollment reads the slot's public key off the card, preferring the F9
+  attestation certificate (proves the key was generated on-device).
+- The slot's touch policy (set at key generation, enforced on-card) makes
+  every confirmation proof of a human hand at the key — that, plus key
+  non-extractability, is exactly what the software path cannot provide.
+- `clamshell confirmation-yubikey-selftest` runs the loop on real hardware
+  (needs a YubiKey with an ECCP256 key in slot 9a and a binary signed with
+  the com.apple.security.smartcard entitlement — see immurok-yk's README
+  for the exact ykman/codesign commands). Unverified on real hardware so
+  far: built and negative-tested on a machine with no YubiKey; the selftest
+  fails fast and honestly when the card or entitlement is missing.
+
+Still not wired into the streaming protocol — no message types are assigned
+yet. When it is, the challenge/response rides the existing WS as two small
+messages and the rest of this design is unchanged.
+
 ## Window Handoff v1 (IMPLEMENTED, Mac host side — explicit selection)
 
 Stream a single macOS **window** (not a whole display) to a viewer, so it

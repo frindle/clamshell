@@ -187,6 +187,18 @@ if args.count > 1 {
         exit(WindowAtCursorSelfTest.run())
     case "confirmation-bridge-selftest":
         exit(ConfirmationBridgeSelfTest.run())
+    case "confirmation-yubikey-selftest":
+        // Hardware variant: real YubiKey PIV signature through the same
+        // bridge. Bridged sync<->async with a semaphore because top-level
+        // code here is synchronous.
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var yubiKeySelfTestExit: Int32 = 1
+        Task {
+            yubiKeySelfTestExit = await YubiKeyConfirmationSelfTest.run()
+            semaphore.signal()
+        }
+        semaphore.wait()
+        exit(yubiKeySelfTestExit)
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +

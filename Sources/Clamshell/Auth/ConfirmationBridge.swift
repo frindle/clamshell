@@ -31,7 +31,16 @@ public class ConfirmationBridge {
             return false
         }
 
-        guard let ecdsaSignature = try? P256.Signing.ECDSASignature(rawRepresentation: signature) else {
+        // Accept both signature encodings that occur in practice: 64-byte
+        // raw r||s (CryptoKit's rawRepresentation, the original software
+        // client) and ASN.1 DER — which is what a YubiKey PIV GENERAL
+        // AUTHENTICATE emits, so hardware-backed confirmation needs it.
+        let ecdsaSignature: P256.Signing.ECDSASignature
+        if signature.count == 64, let raw = try? P256.Signing.ECDSASignature(rawRepresentation: signature) {
+            ecdsaSignature = raw
+        } else if let der = try? P256.Signing.ECDSASignature(derRepresentation: signature) {
+            ecdsaSignature = der
+        } else {
             return false
         }
 
