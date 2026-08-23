@@ -11,9 +11,21 @@ VERSION="${1:-0.9.0}"
 APP="dist/Clamshell.app"
 DMG="dist/Clamshell-${VERSION}.dmg"
 
-echo "=== building release binary (universal) ==="
-swift build -c release --arch arm64 --arch x86_64
-BIN=".build/apple/Products/Release/Clamshell"
+# ARCH=native builds arm64-only via plain SwiftPM. The universal build needs
+# XCBuild, which ships with full Xcode -- on a Command Line Tools-only machine it
+# fails with "xcbuild executable ... does not exist". Releases should still be
+# universal; this exists so a CLT-only Mac can build and install its own copy.
+if [ "${ARCH:-universal}" = "native" ]; then
+  echo "=== building release binary (native arch only -- NOT for release) ==="
+  swift build -c release
+  BIN=".build/release/Clamshell"
+  RES_DIR=".build/release"
+else
+  echo "=== building release binary (universal) ==="
+  swift build -c release --arch arm64 --arch x86_64
+  BIN=".build/apple/Products/Release/Clamshell"
+  RES_DIR=".build/apple/Products/Release"
+fi
 
 echo "=== assembling ${APP} ==="
 rm -rf dist
@@ -21,7 +33,7 @@ mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp "${BIN}" "${APP}/Contents/MacOS/Clamshell"
 # SwiftPM resource bundle (noVNC assets) — Bundle.module finds it in
 # Contents/Resources when running from the .app.
-cp -R ".build/apple/Products/Release/Clamshell_Clamshell.bundle" "${APP}/Contents/Resources/"
+cp -R "${RES_DIR}/Clamshell_Clamshell.bundle" "${APP}/Contents/Resources/"
 cp AppIcon.icns "${APP}/Contents/Resources/"
 
 cat > "${APP}/Contents/Info.plist" <<EOF
