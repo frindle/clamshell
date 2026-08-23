@@ -20,15 +20,25 @@ import ImmurokKit
 ///     encodings as of this change).
 enum YubiKeyConfirmation {
     /// Reads the public key off the plugged-in YubiKey's PIV slot 9a
-    /// (attestation certificate preferred — proves on-device generation)
-    /// and enrolls it into the bridge under `clientId`.
-    static func enroll(into bridge: ConfirmationBridge, clientId: String) async throws {
+    /// (attestation certificate preferred — proves on-device generation) in
+    /// the raw 64-byte x||y form ConfirmationBridge enrolls.
+    ///
+    /// Split out of `enroll` so a caller that must keep card I/O off the
+    /// main thread but mutate the bridge on it (the menu-bar app) can put
+    /// the hop between the two halves. No PIN and no touch — reading a
+    /// certificate is unauthenticated, so this never blocks on the human.
+    static func publicKey() async throws -> Data {
         let card = try await PIVCard.connect()
         defer { card.end() }
         let x963 = try await card.publicKey()
         // Bridge stores raw 64-byte x||y; the card hands back X9.63 (04||x||y).
-        let raw = try P256.Signing.PublicKey(x963Representation: x963).rawRepresentation
-        bridge.enroll(clientId: clientId, publicKey: raw)
+        return try P256.Signing.PublicKey(x963Representation: x963).rawRepresentation
+    }
+
+    /// Reads the slot-9a public key off the card and enrolls it into the
+    /// bridge under `clientId`.
+    static func enroll(into bridge: ConfirmationBridge, clientId: String) async throws {
+        bridge.enroll(clientId: clientId, publicKey: try await publicKey())
     }
 
     /// Signs a ConfirmationBridge nonce on the YubiKey. Blocks until the
