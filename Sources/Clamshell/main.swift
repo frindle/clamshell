@@ -187,6 +187,10 @@ if args.count > 1 {
         exit(WindowAtCursorSelfTest.run())
     case "confirmation-bridge-selftest":
         exit(ConfirmationBridgeSelfTest.run())
+    case "confirmation-coordinator-selftest":
+        // The state machine the confirmation panel and status-item icon read
+        // from — transitions and expiry timing, no hardware involved.
+        exit(ConfirmationCoordinatorSelfTest.run())
     case "confirmation-yubikey-selftest":
         // Hardware variant: real YubiKey PIV signature through the same
         // bridge. Bridged sync<->async with a semaphore because top-level
@@ -203,7 +207,8 @@ if args.count > 1 {
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
-              "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window]")
+              "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
+              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest]")
         exit(64)
     }
 }

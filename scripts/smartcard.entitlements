@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS gates CryptoTokenKit's TKSmartCardSlotManager behind this
+  entitlement: without it .default is nil and no smart card is visible at
+  all, so YubiKey-backed remote confirmation (PROTOCOL.md "Remote
+  confirmation") fails with "TKSmartCardSlotManager unavailable" no matter
+  what is plugged in. Applied by both dev-build.sh and package.sh.
+
+  Mirrors immurok-yk's scripts/smartcard.entitlements — kept here too
+  because Clamshell has to sign its own binary, and the upstream copy only
+  exists inside the transient .build/checkouts tree.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.smartcard</key>
+    <true/>
+</dict>
+</plist>

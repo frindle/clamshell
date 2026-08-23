@@ -2,9 +2,14 @@ import Foundation
 import CryptoKit
 
 public class ConfirmationBridge {
+    /// How long an issued nonce stays valid. Public so a UI can count down
+    /// against the same deadline the bridge enforces instead of duplicating
+    /// the constant and drifting from it.
+    public static let nonceTTL: TimeInterval = 30.0
+
     private var pendingActions: [UUID: PendingAction] = [:]
     private var enrolledPublicKeys: [String: Data] = [:]
-    private let nonceTTL: TimeInterval = 30.0
+    private let nonceTTL = ConfirmationBridge.nonceTTL
 
     public func enroll(clientId: String, publicKey: Data) {
         enrolledPublicKeys[clientId] = publicKey

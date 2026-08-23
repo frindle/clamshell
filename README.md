@@ -522,6 +522,22 @@ form.
   when this was built — the hardware leg is still unverified on metal; see
   PROTOCOL.md "Remote confirmation" for setup). Still not wired into the
   streaming protocol.
+- **Confirmation UI in the menu bar (branch `yubikey-confirmation`)**: a
+  pending confirmation now shows a floating panel (action name, live
+  countdown against the bridge's own 30 s deadline, state through
+  waiting-for-touch → verifying → approved/rejected/expired, auto-dismiss on
+  a result) and flips the status-item icon to `key.fill` so it's visible
+  with the panel behind another window. `ConfirmationCoordinator` holds that
+  state and owns the expiry timer; the panel is raised from its state change
+  rather than from the menu action, so wiring a real remote trigger later
+  needs no UI change — the WS handler calls the same
+  `begin(action:clientId:)` / `submit(signature:)` pair. Until that exists,
+  **System → Test YubiKey Confirmation…** drives the loop end-to-end against
+  a real card (no mock signer on that path). `dev-build.sh` and `package.sh`
+  now sign with `scripts/smartcard.entitlements` — without it CryptoTokenKit
+  hides every card and the feature cannot work at all. New
+  `confirmation-coordinator-selftest` covers the transitions and the real
+  30 s expiry (15/15 pass); the hardware leg is still unverified on metal.
 
 ### 0.9.7
 - **Collapse failure notifications**: `CollapseCoordinator` gains an
