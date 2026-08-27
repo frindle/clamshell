@@ -507,6 +507,23 @@ form.
 
 ## Changelog
 
+### Unreleased
+- **Viewer: handshake timeout.** `StreamClient` could get stuck showing the
+  "reconnecting" spinner forever with no retry and no error: once a WebSocket
+  finished connecting, nothing ever bounded the wait for the host's first
+  message (HELLO_ACK). `URLSessionWebSocketTask.receive()` has no built-in
+  idle timeout, so if the host accepted the connection but then hung before
+  responding (e.g. `StreamServer.startSession()` stuck inside
+  `SCShareableContent.excludingDesktopWindows`, a known ScreenCaptureKit
+  flakiness), `reconnectAttempt` never incremented and no backoff was ever
+  scheduled — the app just sat there. `StreamClient` now arms a 10s
+  handshake-timeout timer (matching the existing 10s reconnect-backoff
+  ceiling and `CollapseCoordinator.restoreDelay`) when a socket opens,
+  cancelled the moment any message arrives; if it fires, the attempt is
+  treated as dropped and reconnect proceeds through the normal backoff.
+  Doesn't change "retry forever until user disconnects" — only bounds how
+  long any single attempt can hang silently.
+
 ### 0.9.7
 - **Collapse failure notifications**: `CollapseCoordinator` gains an
   `onCollapseFailed` callback, fired only when a full collapse attempt fails
