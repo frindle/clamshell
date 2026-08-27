@@ -32,6 +32,15 @@ enum VirtualSlot: String {
 /// Owns the lifecycle of the private-API virtual displays (up to two). Each
 /// display exists exactly as long as its CGVirtualDisplay instance is retained.
 final class VirtualDisplayController {
+    // Fixed identity every virtual display we create advertises to
+    // WindowServer. Shared between createOnce() (which sets them on the
+    // descriptor) and the self-heal phantom check (which looks for a
+    // pre-existing display advertising the same identity) so the two can
+    // never drift apart.
+    static let vendorID: UInt32 = 0x5AE1
+    static let productID: UInt32 = 0xC1A5
+    static func serialNum(for slot: VirtualSlot) -> UInt32 { slot == .a ? 1 : 2 }
+
     private var displays: [VirtualSlot: CGVirtualDisplay] = [:]
 
     /// Per-slot timers that re-assert the HiDPI mode for a few seconds after
@@ -66,11 +75,44 @@ final class VirtualDisplayController {
         clog("applySettings failed for virtual display \(slot.rawValue) (attempt \(attempt)/8)")
         guard attempt < 8 else {
             clog("virtual display \(slot.rawValue) creation gave up after 8 attempts")
+            handleCreationExhausted(slot: slot)
             completion(nil)
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             self?.attemptCreate(preset: preset, slot: slot, attempt: attempt + 1, completion: completion)
+        }
+    }
+
+    /// Last-resort self-heal path, engaged only from the async production
+    /// path above (never from the synchronous CLI smoke-test variant below —
+    /// a `test-virtual-display` run should never relaunch the whole app).
+    ///
+    /// Scoped to slot A only: A dying/failing is fatal to the whole collapse
+    /// (CollapseCoordinator restores on A's unexpected termination); slot B
+    /// failing already degrades gracefully to single-display mode and isn't
+    /// worth an app relaunch over.
+    ///
+    /// Confirms the failure is actually the known orphaned-virtual-display
+    /// signature (a phantom from a prior instance still registered at
+    /// WindowServer under this slot's fixed vendor/product/serial) before
+    /// ever relaunching — see PhantomDisplayDetector's header comment for
+    /// why this is evidence-based rather than a blind "8 attempts failed"
+    /// trigger.
+    private func handleCreationExhausted(slot: VirtualSlot) {
+        guard slot == .a else { return }
+        let phantomFound = PhantomDisplayDetector.matchingDisplayPresent(
+            vendorID: Self.vendorID, productID: Self.productID,
+            serialNum: Self.serialNum(for: slot), slot: slot)
+        guard phantomFound else {
+            clog("self-heal: no confirmed phantom for slot \(slot.rawValue) — creation failure has some other cause, not self-relaunching")
+            return
+        }
+        clog("self-heal: confirmed phantom display for slot \(slot.rawValue) still registered at WindowServer — this matches the known orphaned-virtual-display failure signature")
+        let relaunching = SelfRelaunchGuard.attemptSelfRelaunch(
+            reason: "confirmed orphaned virtual display on slot \(slot.rawValue) after 8 failed creation attempts")
+        if !relaunching {
+            clog("self-heal: not relaunching (blocked by crash-loop guard) — this collapse attempt fails normally, same as before this feature existed")
         }
     }
 
@@ -100,9 +142,9 @@ final class VirtualDisplayController {
             width: Double(preset.pixelsWide) * 25.4 / 200.0,
             height: Double(preset.pixelsHigh) * 25.4 / 200.0
         )
-        descriptor.productID = 0xC1A5
-        descriptor.vendorID = 0x5AE1
-        descriptor.serialNum = slot == .a ? 1 : 2 // must differ or WindowServer treats them as one device
+        descriptor.productID = Self.productID
+        descriptor.vendorID = Self.vendorID
+        descriptor.serialNum = Self.serialNum(for: slot) // must differ or WindowServer treats them as one device
 
         // Observe unexpected system-side termination (WindowServer reclaiming
         // the display) so `displays`/`isActive` never report a dead ID. Our
