@@ -70,6 +70,28 @@ final class StreamClient: ObservableObject {
     /// Last clipboard text seen in either direction — breaks the echo loop.
     private var lastClipboard: String?
 
+    /// Guards the window between a WebSocket opening and the first message
+    /// actually arriving from the host (normally HELLO_ACK within ~1-2s).
+    /// `URLSessionWebSocketTask.receive()` has no built-in idle timeout, so if
+    /// the host accepts the TCP/WS handshake but then never sends anything --
+    /// e.g. StreamServer's `startSession()` hangs inside
+    /// `SCShareableContent.excludingDesktopWindows` (a known ScreenCaptureKit
+    /// flakiness, not something this client controls) -- `receiveLoop`'s
+    /// `.success` and `.failure` cases both simply never fire. Without this,
+    /// that leaves `status` at `.connecting` forever: `reconnectAttempt` never
+    /// increments, no backoff timer is ever scheduled, and the viewer is
+    /// stuck on the reconnecting page with no path back to a retry. This
+    /// timer forces a bounded per-attempt ceiling on that silent window,
+    /// without changing "retry forever until user disconnects" -- it just
+    /// makes sure every individual attempt can eventually give up and try
+    /// again instead of hanging indefinitely.
+    private var handshakeTimeout: DispatchWorkItem?
+    /// Generous relative to a healthy host's real HELLO_ACK latency (normally
+    /// under 1-2s) -- matches this file's own reconnect backoff ceiling and
+    /// CollapseCoordinator's restoreDelay, both 10s, so a slow-but-alive host
+    /// isn't penalized while a truly silent one doesn't hang forever.
+    private let handshakeTimeoutInterval: TimeInterval = 10
+
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
     func connect(host: String) {
@@ -133,6 +155,20 @@ final class StreamClient: ObservableObject {
         task.send(.data(StreamMessage.hello(requestedCodec: .hevc, displayInfo: displayInfoPayload,
                                             secondSize: secondSizePayload))) { _ in }
         receiveLoop(task)
+        armHandshakeTimeout(for: task)
+    }
+
+    /// See `handshakeTimeout`'s doc comment. Cancelled the moment any message
+    /// arrives (`receiveLoop`'s `.success` case) or the socket is torn down.
+    private func armHandshakeTimeout(for task: URLSessionWebSocketTask) {
+        handshakeTimeout?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.task === task else { return }
+            clogViewer("no response from host within \(Int(self.handshakeTimeoutInterval))s of connecting — treating as a dropped connection")
+            self.scheduleReconnect()
+        }
+        handshakeTimeout = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + handshakeTimeoutInterval, execute: work)
     }
 
     /// The wire form of the reported display situation. Mac virtual displays
@@ -200,6 +236,8 @@ final class StreamClient: ObservableObject {
     }
 
     private func teardownSocket() {
+        handshakeTimeout?.cancel()
+        handshakeTimeout = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         parser = nil
@@ -228,6 +266,8 @@ final class StreamClient: ObservableObject {
             switch result {
             case .success(let message):
                 self.reconnectAttempt = 0
+                self.handshakeTimeout?.cancel()
+                self.handshakeTimeout = nil
                 if case .data(let data) = message { self.parser?.feed(data) }
                 self.receiveLoop(task)
             case .failure(let error):
