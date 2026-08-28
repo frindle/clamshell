@@ -19,7 +19,7 @@ import ImmurokKit
 ///   - the signature arrives DER-encoded (ConfirmationBridge accepts both
 ///     encodings as of this change).
 enum YubiKeyConfirmation {
-    /// Reads the public key off the plugged-in YubiKey's PIV slot 9a
+    /// Reads the public key off the plugged-in YubiKey's PIV slot 9c
     /// (attestation certificate preferred — proves on-device generation) in
     /// the raw 64-byte x||y form ConfirmationBridge enrolls.
     ///
@@ -30,12 +30,12 @@ enum YubiKeyConfirmation {
     static func publicKey() async throws -> Data {
         let card = try await PIVCard.connect()
         defer { card.end() }
-        let x963 = try await card.publicKey()
+        let x963 = try await card.publicKey(slot: PIVProtocol.slotSignature)
         // Bridge stores raw 64-byte x||y; the card hands back X9.63 (04||x||y).
         return try P256.Signing.PublicKey(x963Representation: x963).rawRepresentation
     }
 
-    /// Reads the slot-9a public key off the card and enrolls it into the
+    /// Reads the slot-9c public key off the card and enrolls it into the
     /// bridge under `clientId`.
     static func enroll(into bridge: ConfirmationBridge, clientId: String) async throws {
         bridge.enroll(clientId: clientId, publicKey: try await publicKey())
@@ -45,6 +45,6 @@ enum YubiKeyConfirmation {
     /// key is touched when the slot's touch policy demands it. Returns a
     /// DER-encoded ECDSA signature.
     static func signNonce(_ nonce: Data, pin: @escaping () throws -> String) async throws -> Data {
-        try await PIVSigner(keyId: "clamshell-yubikey", pinProvider: pin).sign(message: nonce)
+        try await PIVSigner(keyId: "clamshell-yubikey", slot: PIVProtocol.slotSignature, pinProvider: pin).sign(message: nonce)
     }
 }
