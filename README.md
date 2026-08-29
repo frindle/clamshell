@@ -508,6 +508,37 @@ form.
 ## Changelog
 
 ### Unreleased
+
+### 0.9.8
+- **Fall back to noVNC on connect failure, not only when told the host is
+  locked.** The lock-screen fallback only triggered on a `HOST_LOCK_STATE`
+  message, which rides on an already-open native stream — so it worked when
+  the Mac locked mid-session, but not when connecting to a Mac that was
+  *already* locked or logged out: the native stream never established, no
+  `HOST_LOCK_STATE` ever arrived, and the client retried forever with no
+  fallback. Now also falls back after 3 consecutive failed connection
+  attempts (reusing the existing `reconnectAttempt` counter), tracked
+  separately from the host-locked case (`fallbackDueToFailure` vs.
+  `lockedByHost`) so a genuinely locked host keeps noVNC up once the socket
+  opens, while a failure-based fallback clears itself on reconnect. The
+  banner says the desktop is unreachable rather than claiming it's locked,
+  since that isn't known in this case.
+- **Keep streaming when the monitor sleeps.** `StreamServer` bound a fixed
+  `CGDirectDisplayID` at construction; a sleeping display disappears from
+  `SCShareableContent`, so capture couldn't start and every client was
+  dropped immediately — seen client-side as an endless "reconnecting". The
+  capture target is now re-resolved at each capture start (original display
+  if present, otherwise a virtual display identified by its stamped
+  vendor/product IDs, otherwise the main display), so a collapsed session
+  keeps streaming with the physical monitor off.
+- **Self-relaunch as a last resort for orphaned virtual displays.**
+  `WindowServer` sometimes doesn't deregister a virtual display on
+  `destroy()`, so a later collapse attempt fails all 8 retries forever
+  (confirmed live: 200+ failures over 93+ minutes, cleared only by quitting
+  and relaunching). Adds a self-heal path that positively confirms the
+  phantom display is still registered, then relaunches the app bundle to
+  clear it — gated by a 10-minute crash-loop guard, scoped to slot A only
+  (slot B already degrades gracefully to single-display mode).
 - **Viewer: handshake timeout.** `StreamClient` could get stuck showing the
   "reconnecting" spinner forever with no retry and no error: once a WebSocket
   finished connecting, nothing ever bounded the wait for the host's first
