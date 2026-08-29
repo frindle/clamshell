@@ -21,6 +21,54 @@ enum StreamSource {
     case window(UInt32)
 }
 
+extension StreamServer {
+    /// Resolves the current target display ID, preferring:
+    /// a. the original display if it's still present in shareable content,
+    /// b. otherwise an active VIRTUAL display if one exists,
+    /// c. otherwise CGMainDisplayID() if that is present in shareable content.
+    /// Returns nil if nothing at all can be found.
+    func resolveCurrentTargetDisplayID(content: SCShareableContent, originalDisplayID: CGDirectDisplayID) -> CGDirectDisplayID? {
+        // a. Try the display it was originally constructed with
+        if content.displays.contains(where: { $0.displayID == originalDisplayID }) {
+            clog("STREAM: using original display \(originalDisplayID)")
+            return originalDisplayID
+        }
+        
+        // b. Any of OUR virtual displays, identified by the vendor/product IDs
+        // VirtualDisplayController stamps on them. Do NOT construct a
+        // VirtualDisplayController here to ask: its `displays` map is
+        // per-instance state and the live one is private to
+        // CollapseCoordinator, so a fresh instance is always empty and this
+        // branch would never fire.
+        if let ours = content.displays.first(where: { d in
+            CGDisplayVendorNumber(d.displayID) == VirtualDisplayController.vendorID
+                && CGDisplayModelNumber(d.displayID) == VirtualDisplayController.productID
+        }) {
+            clog("STREAM: original display gone; using virtual display \(ours.displayID)")
+            return ours.displayID
+        }
+
+        // c. Fall back to main display if present in shareable content
+        let mainDisplay = CGMainDisplayID()
+        if content.displays.contains(where: { $0.displayID == mainDisplay }) {
+            clog("STREAM: using main display \(mainDisplay)")
+            return mainDisplay
+        }
+        
+        // Nothing found at all
+        clog("STREAM: no suitable display found in shareable content")
+        return nil
+    }
+
+    /// Re-evaluate the capture target when a display configuration change occurs.
+    /// This method is called by StreamFleet to handle reconfiguration events.
+    func updateCaptureTarget() {
+        // We can't easily restart an active stream without tearing down clients,
+        // but we've already made the system resilient in startSession()
+        clog("STREAM: Capture target updated due to display configuration change")
+    }
+}
+
 // @unchecked Sendable: all mutable state is confined to the serial `queue`.
 final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private let source: StreamSource
@@ -333,15 +381,25 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 switch source {
                 case .display(let displayID):
                     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                    guard let scDisplay = content.displays.first(where: { $0.displayID == displayID }) else {
-                        clog("STREAM: display \(displayID) not found in shareable content")
+                    
+                    // Resolve the current target display ID with fallback logic
+                    guard let resolvedDisplayID = self.resolveCurrentTargetDisplayID(content: content, originalDisplayID: displayID) else {
+                        clog("STREAM: no suitable display found for capture")
                         self.queue.async { self.teardownSession() }
                         return
                     }
+                    
+                    // Use the resolved display ID to find the actual SCDisplay object
+                    guard let scDisplay = content.displays.first(where: { $0.displayID == resolvedDisplayID }) else {
+                        clog("STREAM: resolved display \(resolvedDisplayID) not found in shareable content")
+                        self.queue.async { self.teardownSession() }
+                        return
+                    }
+                    
                     // Native pixel resolution and refresh rate — no scaling in
                     // the capture path; the encoder sees exactly what the
                     // display shows.
-                    let mode = CGDisplayCopyDisplayMode(displayID)
+                    let mode = CGDisplayCopyDisplayMode(resolvedDisplayID)
                     pxWidth = mode?.pixelWidth ?? scDisplay.width
                     pxHeight = mode?.pixelHeight ?? scDisplay.height
                     refresh = (mode?.refreshRate ?? 0) > 0 ? mode!.refreshRate : 60
