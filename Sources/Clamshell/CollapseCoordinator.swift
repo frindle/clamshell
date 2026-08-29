@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import IOKit.pwr_mgt
 
 /// Orchestrates the collapse/restore sequence:
 ///
@@ -23,6 +24,9 @@ final class CollapseCoordinator {
 
     /// Physical display IDs that were mirrored, for exact un-mirroring.
     private var mirroredDisplays: [CGDirectDisplayID] = []
+    
+    /// Power assertion to wake the display if it's asleep before mirroring
+    private var displayWakeAssertion: IOPMAssertionID = 0
 
     /// Grace period before restoring after a disconnect, so a dropped
     /// connection that reconnects doesn't thrash displays.
@@ -112,6 +116,11 @@ final class CollapseCoordinator {
             guard self.state == .collapsing else {
                 // restore() ran while creation was retrying — clean up.
                 self.virtualDisplay.destroy()
+                // Release the display wake assertion if it was created
+                if self.displayWakeAssertion != 0 {
+                    IOPMAssertionRelease(self.displayWakeAssertion)
+                    self.displayWakeAssertion = 0
+                }
                 return
             }
             guard let virtualID else {
@@ -123,6 +132,12 @@ final class CollapseCoordinator {
                     failureMessage = "Screen Sharing is disabled. Enable it in System Settings → General → Sharing → Screen Sharing."
                 } else {
                     failureMessage = "Virtual display creation failed. Try restarting Clamshell."
+                }
+                
+                // Release the display wake assertion if it was created
+                if self.displayWakeAssertion != 0 {
+                    IOPMAssertionRelease(self.displayWakeAssertion)
+                    self.displayWakeAssertion = 0
                 }
                 
                 self.lastCollapseFailureAt = Date()
@@ -153,6 +168,11 @@ final class CollapseCoordinator {
             if let b = secondID {
                 self.positionSideBySide(a: virtualID, b: b)
             }
+            // Release the display wake assertion if it was created
+            if self.displayWakeAssertion != 0 {
+                IOPMAssertionRelease(self.displayWakeAssertion)
+                self.displayWakeAssertion = 0
+            }
             self.mirrorPhysicalDisplays(onto: virtualID)
             self.comfort.sessionDidStart()
             self.state = .collapsed
@@ -170,6 +190,14 @@ final class CollapseCoordinator {
             if !layoutRestoreInFlight { flushRestoreCompletions() }
             return
         }
+        
+        // Release the display wake assertion if it was created (this can happen 
+        // when restore is called due to a failed collapse)
+        if displayWakeAssertion != 0 {
+            IOPMAssertionRelease(displayWakeAssertion)
+            displayWakeAssertion = 0
+        }
+        
         clog("restoring physical displays")
 
         comfort.sessionDidEnd()
@@ -226,9 +254,17 @@ final class CollapseCoordinator {
     private func startDisplayReconfigWatch() {
         let info = Unmanaged.passUnretained(self).toOpaque()
         CGDisplayRegisterReconfigurationCallback({ displayID, flags, userInfo in
-            guard let userInfo, flags.contains(.removeFlag) else { return }
-            let coordinator = Unmanaged<CollapseCoordinator>.fromOpaque(userInfo).takeUnretainedValue()
-            DispatchQueue.main.async { coordinator.displayRemoved(displayID) }
+            guard let userInfo else { return }
+            
+            // If a display was removed (sleeping), we should notify any active StreamServers
+            if flags.contains(.removeFlag) {
+                let coordinator = Unmanaged<CollapseCoordinator>.fromOpaque(userInfo).takeUnretainedValue()
+                DispatchQueue.main.async { 
+                    coordinator.displayRemoved(displayID)
+                }
+            } else if flags.contains(.addFlag) {
+                // Handle display added event if needed - no action required for our purposes
+            }
         }, info)
     }
 
@@ -266,6 +302,17 @@ final class CollapseCoordinator {
                 clog("mirrorPhysicalDisplays: giving up after \(attempt) attempts")
                 return
             }
+            
+            // Wake the display if it's asleep before retrying - this fixes Bug 1
+            if attempt == 1 {
+                let result = IOPMAssertionDeclareUserActivity(
+                    "Clamshell collapse" as CFString,
+                    kIOPMUserActiveLocal,
+                    &displayWakeAssertion
+                )
+                clog("Display wake assertion declared: \(result == kIOReturnSuccess ? "ok" : "FAILED")")
+            }
+            
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.mirrorPhysicalDisplays(onto: virtualID, attempt: attempt + 1)
             }
