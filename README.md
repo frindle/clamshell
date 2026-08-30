@@ -509,6 +509,16 @@ form.
 
 ### Unreleased
 
+### 0.9.11 — 2026-08-30
+- **Unlock no longer bounces straight back to the login screen.** During
+  screensharingd's login-window→user-session handoff, macOS briefly flaps the
+  `screenIsLocked`/`screenIsUnlocked` notifications (an unlock immediately
+  followed by a spurious lock). The lock observer applied each one directly, so
+  the transient lock re-forwarded the client to the noVNC login the instant
+  after the user unlocked. The observer now debounces: it coalesces a burst,
+  waits ~600ms, then reads the authoritative session lock state and propagates
+  only that settled value — so a flap collapses to its real end state.
+
 ### 0.9.10 — 2026-08-30
 - **Lock-screen fallback now actually loads noVNC.** 0.9.9 shipped the trigger
   (fall back after repeated native-stream connect failures) but the fallback URL
