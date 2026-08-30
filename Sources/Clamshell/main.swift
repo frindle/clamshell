@@ -203,12 +203,18 @@ if args.count > 1 {
         }
         semaphore.wait()
         exit(yubiKeySelfTestExit)
+    case "self-heal-guard-selftest":
+        // Covers only SelfRelaunchGuard's crash-loop cooldown logic (pure,
+        // injectable). Does NOT and cannot cover PhantomDisplayDetector
+        // against a real WindowServer phantom, or performRelaunch actually
+        // spawning/terminating a process — those need real hardware.
+        exit(SelfHealGuardSelfTest.run())
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest]")
+              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest]")
         exit(64)
     }
 }
