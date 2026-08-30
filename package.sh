@@ -76,7 +76,10 @@ echo "=== codesign (identity: ${SIGN_ID}) ==="
 xattr -cr "${APP}"
 # No --deep: it's deprecated for signing, and the bundle has no nested code
 # (the resource bundle is data-only).
-codesign --force --sign "${SIGN_ID}" "${APP}"
+# The smartcard entitlement is required for CryptoTokenKit to expose any
+# smart card at all — without it the YubiKey confirmation path is dead in
+# the packaged app (see scripts/smartcard.entitlements).
+codesign --force --sign "${SIGN_ID}" --entitlements scripts/smartcard.entitlements "${APP}"
 
 echo "=== creating ${DMG} (drag-to-Applications layout) ==="
 VOL="Clamshell"
@@ -116,7 +119,9 @@ EOF
 # the copy that actually ships in the DMG. Icon positions live in the
 # container's .DS_Store, so this doesn't disturb the layout.
 xattr -cr "/Volumes/${VOL}/Clamshell.app"
-codesign --force --sign "${SIGN_ID}" "/Volumes/${VOL}/Clamshell.app"
+# Same entitlement as the first signing pass — re-signing without it would
+# strip smart-card access back out of the copy that actually ships.
+codesign --force --sign "${SIGN_ID}" --entitlements scripts/smartcard.entitlements "/Volumes/${VOL}/Clamshell.app"
 sync
 hdiutil detach "/Volumes/${VOL}" -quiet
 hdiutil convert "${RW}" -format UDZO -o "${DMG}" -ov -quiet
