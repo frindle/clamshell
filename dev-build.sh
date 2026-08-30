@@ -18,11 +18,22 @@ cd "$(dirname "$0")"
 swift build "$@"
 BIN=".build/debug/Clamshell"
 
+# Always carry the smartcard entitlement: CryptoTokenKit hides every smart
+# card from an unentitled process, so without it "Test YubiKey Confirmation…"
+# can only ever report "TKSmartCardSlotManager unavailable". The entitlement
+# is independent of the identity, so this costs the ad-hoc case nothing.
+ENTITLEMENTS="scripts/smartcard.entitlements"
+
+xattr -cr "$BIN"
 if security find-identity -v -p codesigning 2>/dev/null | grep -q "Clamshell Dev"; then
-    xattr -cr "$BIN"
-    codesign --force --sign "Clamshell Dev" "$BIN"
-    echo "signed $BIN with 'Clamshell Dev' — TCC grants persist across rebuilds"
+    codesign --force --sign "Clamshell Dev" --entitlements "$ENTITLEMENTS" "$BIN"
+    echo "signed $BIN with 'Clamshell Dev' + smartcard entitlement — TCC grants persist across rebuilds"
 else
-    echo "no 'Clamshell Dev' identity found — $BIN left ad-hoc"
+    # Ad-hoc, but still entitled — the YubiKey path works, TCC just re-prompts.
+    codesign --force --sign - --entitlements "$ENTITLEMENTS" "$BIN"
+    echo "no 'Clamshell Dev' identity found — $BIN ad-hoc signed with the smartcard entitlement"
     echo "(TCC will re-prompt each rebuild; see README build-from-source to set one up)"
 fi
+
+# `swift run` re-links and drops the signature — invoke the signed binary
+# directly (./.build/debug/Clamshell) for anything touching a YubiKey.

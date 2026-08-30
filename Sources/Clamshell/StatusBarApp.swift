@@ -12,6 +12,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// `stream` command uses — nil when the "Native Streaming" toggle is off.
     private(set) var streamFleet: StreamFleet?
     private var diagnosticsWC: NSWindowController?
+    /// Live remote-confirmation state (PROTOCOL.md "Remote confirmation").
+    /// Driven today only by the Test YubiKey Confirmation… menu item; the
+    /// WebSocket path will drive the same object once message types exist,
+    /// and the panel/icon below need no change when it does.
+    private let confirmations = ConfirmationCoordinator()
+    private var confirmationWC: ConfirmationWindowController?
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
     // Remote-session state is the OR of the two signals: polled VNC/Jump
@@ -101,6 +107,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         coordinator.onCollapseFailed = { [weak self] message in
             guard let self else { return }
             self.showCollapseFailureNotification(message: message)
+        }
+        // Raising the panel from the state change (rather than from the menu
+        // action) is what keeps the remote path a UI no-op later: whoever
+        // starts a confirmation gets the panel, menu item or WS handler.
+        confirmations.onChange = { [weak self] _ in
+            guard let self else { return }
+            if self.confirmations.isPending { self.showConfirmationPanel() }
+            self.updateIcon()
+            self.rebuildMenu()
         }
         monitor.onChange = { [weak self] connected, _ in
             guard let self else { return }
@@ -258,12 +273,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateIcon() {
-        let symbol = coordinator.state == .collapsed
-            ? "rectangle.compress.vertical"
-            : "rectangle.expand.vertical"
+        // A pending confirmation outranks collapse state in the icon: it's
+        // time-boxed to 30 s and needs a human at the key, so it has to be
+        // visible even when the panel is behind another window. Reverts to
+        // the collapse/desk icon the moment it settles.
+        let symbol: String
+        let description: String
+        if confirmations.isPending {
+            symbol = "key.fill"
+            description = "Clamshell — confirmation pending"
+        } else if coordinator.state == .collapsed {
+            symbol = "rectangle.compress.vertical"
+            description = "Clamshell Server"
+        } else {
+            symbol = "rectangle.expand.vertical"
+            description = "Clamshell Server"
+        }
         statusItem.button?.image = NSImage(
             systemSymbolName: symbol,
-            accessibilityDescription: "Clamshell Server"
+            accessibilityDescription: description
         )
     }
 
@@ -461,6 +489,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             systemMenu.addItem(withTitle: "Check Reboot Readiness…", action: #selector(checkRebootReadiness), keyEquivalent: "")
                 .target = self
         }
+
+        // Remote confirmation (PROTOCOL.md). Deliberately outside the
+        // bundle-only block above: this needs the smartcard entitlement,
+        // which is applied to the built binary, so it has to be reachable
+        // from the bare dev build too. Until the WS carries confirmations
+        // this is the only way to exercise the loop end to end.
+        systemMenu.addItem(.separator())
+        let confirm = NSMenuItem(
+            title: confirmations.isPending
+                ? "Confirmation Pending — Show Panel"
+                : "Test YubiKey Confirmation…",
+            action: #selector(testYubiKeyConfirmation), keyEquivalent: ""
+        )
+        confirm.target = self
+        systemMenu.addItem(confirm)
+
         let systemItem = NSMenuItem(title: "System", action: nil, keyEquivalent: "")
         menu.addItem(systemItem)
         menu.setSubmenu(systemMenu, for: systemItem)
@@ -636,6 +680,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         diagnosticsWC?.showWindow(nil)
         diagnosticsWC?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Manual end-to-end run of the confirmation loop against a real
+    /// YubiKey — the stand-in for a remote trigger while the wire path is
+    /// still unassigned (PROTOCOL.md). Real card, real PIN, real touch, real
+    /// P-256 verification: there is no mock signer on this path, so a green
+    /// "Approved" here means the hardware leg genuinely works.
+    @objc private func testYubiKeyConfirmation() {
+        // Already running: the menu item just re-raises the panel rather
+        // than stacking a second challenge on top of the live one.
+        guard !confirmations.isPending else {
+            showConfirmationPanel()
+            return
+        }
+        guard let pin = promptForPIVPIN() else { return }
+        confirmations.runYubiKeyTest(action: "test-confirmation", pin: { pin })
+    }
+
+    /// PIV PIN for the confirmation test. $CLAMSHELL_PIV_PIN skips the
+    /// prompt (same env var confirmation-yubikey-selftest honours) so repeat
+    /// runs don't mean retyping it. Returns nil if the user cancels.
+    ///
+    /// Collected up front, before the challenge is issued, for two reasons:
+    /// a modal alert can't be run from the signing task's thread, and
+    /// anything typed here would otherwise burn the 30 s the nonce is alive.
+    private func promptForPIVPIN() -> String? {
+        if let env = ProcessInfo.processInfo.environment["CLAMSHELL_PIV_PIN"], !env.isEmpty {
+            return env
+        }
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        let alert = NSAlert()
+        alert.messageText = "PIV PIN"
+        alert.informativeText = "Unlocks PIV slot 9a to sign the confirmation challenge. "
+            + "The key will blink for a touch once the PIN is accepted."
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Sign")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        alert.window.initialFirstResponder = field
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return field.stringValue.isEmpty ? nil : field.stringValue
+    }
+
+    /// Same lazy window-controller pattern as Diagnostics. Idempotent: the
+    /// coordinator fires a state change several times per run and only the
+    /// first should steal focus.
+    private func showConfirmationPanel() {
+        if confirmationWC == nil {
+            confirmationWC = ConfirmationWindowController(coordinator: confirmations)
+        }
+        guard confirmationWC?.window?.isVisible != true else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        confirmationWC?.showWindow(nil)
+        confirmationWC?.window?.makeKeyAndOrderFront(nil)
     }
 
     /// Disconnect All / Restart Streaming, driven from the Diagnostics window.

@@ -257,6 +257,79 @@ apps send no `CF-Access-*` headers). Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
 VNC/RDP/SSH, so real support means a custom guacd protocol plugin.
 
+## Remote confirmation (ConfirmationBridge — standalone module, not yet on the wire)
+
+The immurok-inspired design for gating privileged actions ("Future" above
+mentions WS auth; this is the finer-grained piece): the host issues a fresh
+32-byte nonce for a specific pending action, the client signs it with ECDSA
+P-256, the host verifies against the enrolled public key, consumes the nonce
+(replay protection), and expires it after 30 s. Each pending action gets its
+own nonce, so a signature for action A can never confirm action B —
+`confirmation-bridge-selftest` proves that negative along with replay,
+expiry (real 31 s wait), wrong-key, and malformed-signature rejection.
+
+**YubiKey-backed signing (2026-08-23):** the signature can now come from a
+YubiKey 5 PIV slot instead of a software key. The core lives in
+[immurok-yk](https://github.com/frindle/immurok-yk) (standalone,
+transport-agnostic, tested without hardware); Clamshell consumes it as a
+thin adapter (`Auth/YubiKeyConfirmation.swift`):
+
+- `ConfirmationBridge` accepts DER-encoded signatures (what PIV GENERAL
+  AUTHENTICATE emits) alongside the original 64-byte raw encoding.
+- Enrollment reads the slot's public key off the card, preferring the F9
+  attestation certificate (proves the key was generated on-device).
+- The slot's touch policy (set at key generation, enforced on-card) makes
+  every confirmation proof of a human hand at the key — that, plus key
+  non-extractability, is exactly what the software path cannot provide.
+- `clamshell confirmation-yubikey-selftest` runs the loop on real hardware
+  (needs a YubiKey with an ECCP256 key in slot 9c). Unverified on real
+  hardware so far: built and negative-tested on a machine with no YubiKey;
+  the selftest fails fast and honestly when the card or entitlement is
+  missing.
+- **The smartcard entitlement is now applied by the build, not by hand.**
+  `TKSmartCardSlotManager.default` is nil without
+  `com.apple.security.smartcard`, so an unentitled Clamshell cannot see any
+  card whatever is plugged in. `dev-build.sh` and `package.sh` both sign
+  with `scripts/smartcard.entitlements` (the DMG re-sign included, or the
+  shipped copy would lose it). Note `swift run` re-links and drops the
+  signature — run `.build/debug/Clamshell` directly for anything touching a
+  card.
+
+**Menu-bar UI (2026-08-23):** the host side is now visible, which it had to
+be before a remote trigger could mean anything — a confirmation the user
+can't see is a confirmation they can't refuse.
+
+- `ConfirmationCoordinator` (Auth/ConfirmationCoordinator.swift) holds the
+  live state for one pending confirmation: `connecting → awaitingTouch →
+  verifying → approved | rejected | expired`. It owns the expiry timer, so
+  an unanswered challenge settles itself with no panel open and nothing
+  driving it.
+- `ConfirmationWindowController` (ConfirmationUI.swift) is a floating
+  NSPanel — action name, live countdown against the *same* deadline the
+  bridge enforces, state line, auto-dismiss on a terminal state. Same
+  hand-laid NSStackView shape as the Diagnostics window; no SwiftUI. It is
+  explicitly not `hidesOnDeactivate`, since focus moving away is exactly
+  when the countdown matters.
+- The status-item icon switches to `key.fill` while anything is pending, so
+  a confirmation is visible with the panel behind another window.
+- The panel is raised from the coordinator's state change rather than from
+  the menu action. **That is the seam**: the WS handler, when it exists,
+  calls `begin(action:clientId:)` for a nonce to send and `submit(signature:)`
+  when the client answers — the same two calls the test path makes — and the
+  panel and icon react with no UI change at all.
+- Until then, "Test YubiKey Confirmation…" (System submenu) drives the whole
+  loop locally against a real card: read slot 9c, enroll, issue a challenge,
+  sign on the key, verify. No mock signer on that path — a green "Approved"
+  means the hardware genuinely worked. The PIN is collected up front, before
+  the challenge is issued, so typing it doesn't eat the 30 s.
+- `clamshell confirmation-coordinator-selftest` covers the transitions and
+  the real 30 s expiry (state machine only — it uses a software key for the
+  one case needing a valid signature, and says so).
+
+Still not wired into the streaming protocol — no message types are assigned
+yet. When it is, the challenge/response rides the existing WS as two small
+messages and the rest of this design is unchanged.
+
 ## Window Handoff v1 (IMPLEMENTED, Mac host side — explicit selection)
 
 Stream a single macOS **window** (not a whole display) to a viewer, so it
