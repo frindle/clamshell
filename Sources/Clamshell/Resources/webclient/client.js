@@ -45,15 +45,16 @@ const qualityDot = document.getElementById('qualityDot');
 // Store original lock banner text for restoration
 const originalLockBannerText = lockBanner.textContent;
 
-// noVNC bridge on port 5901 direct-LAN, or same-origin over a tunnel: the
-// Cloudflare Tunnel config (README "Browser access") routes this same
-// hostname's "/" to :5901 and "/websockify" to :5902, and WebServer's own
-// "/" handler already detects X-Forwarded-Proto and points noVNC at
-// same-origin wss:// with no port override -- so the tunnel case just needs
-// the plain origin, no special-casing.
+// noVNC lock-screen fallback page. It MUST point at "/vnc.html", not "/":
+// WebServer's "/" handler 302-redirects to "/client" (this same native
+// client that is looping), so a bare-slash fallback just reloads the broken
+// page. "/vnc.html" is served directly (with the clipboard bridge injected)
+// on both transports -- port 5901 direct-LAN, or same-origin over the
+// Cloudflare Tunnel (README "Browser access"), which routes this hostname to
+// the same WebServer.
 const vncFallbackURL = location.protocol === 'https:'
-  ? `${location.origin}/`
-  : `http://${location.hostname}:5901/`;
+  ? `${location.origin}/vnc.html`
+  : `http://${location.hostname}:5901/vnc.html`;
 
 // Populate the hover menu with the other two displays.
 {
