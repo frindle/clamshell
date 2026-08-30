@@ -648,6 +648,7 @@ final class StreamFleet {
     /// servers inherit it on rebuild; live changes are pushed to every server.
     private var screenLocked = false
     private var lockObservers: [NSObjectProtocol] = []
+    private var pendingLockSettle: DispatchWorkItem?
 
     var isServing: Bool { !servers.isEmpty }
 
@@ -688,12 +689,24 @@ final class StreamFleet {
     /// confined, matching the rest of this class.
     private func observeLockState() {
         let dnc = DistributedNotificationCenter.default()
-        for (name, locked) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false)] {
+        for (name, _) in [("com.apple.screenIsLocked", true), ("com.apple.screenIsUnlocked", false)] {
             let obs = dnc.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
-                self.screenLocked = locked
-                clog("STREAM: screen \(locked ? "LOCKED" : "UNLOCKED") — notifying \(self.servers.count) server(s)")
-                for s in self.servers { s.setLockState(locked) }
+                // Debounce lock state changes to handle the transient unlock->lock flap during login-window -> user-session handoff
+                // The ~600ms delay allows for the screensharingd handoff flap to settle before propagating the final state
+                self.pendingLockSettle?.cancel()
+                let work = DispatchWorkItem { [weak self] in
+                    guard let self else { return }
+                    // Read the authoritative current lock state rather than trusting the notification that triggered this
+                    let settled = Self.currentlyLocked()
+                    if settled != self.screenLocked {
+                        self.screenLocked = settled
+                        clog("STREAM: screen \(settled ? "LOCKED" : "UNLOCKED") — notifying \(self.servers.count) server(s)")
+                        for s in self.servers { s.setLockState(settled) }
+                    }
+                }
+                self.pendingLockSettle = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: work)
             }
             lockObservers.append(obs)
         }
@@ -713,6 +726,9 @@ final class StreamFleet {
         }
         for obs in lockObservers { DistributedNotificationCenter.default().removeObserver(obs) }
         lockObservers = []
+        // Cancel any pending lock settle work item to prevent dangling scheduled work
+        pendingLockSettle?.cancel()
+        pendingLockSettle = nil
         clog("STREAM: fleet stopped")
     }
 
