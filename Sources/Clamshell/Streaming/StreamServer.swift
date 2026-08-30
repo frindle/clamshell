@@ -637,6 +637,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 /// mirrored. Clients ride through the rebuild via their auto-reconnect.
 /// Main-queue confined.
 final class StreamFleet {
+    /// Shared instance for access from CollapseCoordinator
+    static var shared: StreamFleet?
+    
     private let basePort: UInt16
     private var servers: [StreamServer] = []
     private var currentIDs: [CGDirectDisplayID] = []
@@ -649,6 +652,9 @@ final class StreamFleet {
     private var screenLocked = false
     private var lockObservers: [NSObjectProtocol] = []
     private var pendingLockSettle: DispatchWorkItem?
+
+    /// Track virtual displays created by collapse operations to avoid tearing down active connections during collapse
+    private var collapseCreatedDisplays: Set<CGDirectDisplayID> = []
 
     var isServing: Bool { !servers.isEmpty }
 
@@ -755,6 +761,19 @@ final class StreamFleet {
     func rebuild() {
         let ids = Self.activeIDs()
         guard ids != currentIDs else { return }
+        
+        // Check if this is a reconfiguration that's part of an ongoing collapse operation.
+        // If so, we should avoid tearing down active connections to prevent the loop.
+        let isCollapseRebuild = !collapseCreatedDisplays.isEmpty && 
+                               Set(ids).isSubset(of: collapseCreatedDisplays)
+        
+        // If this rebuild is due to a collapse and there are no other displays
+        // (i.e., only virtual displays), we should not tear down existing connections
+        if isCollapseRebuild {
+            clog("STREAM: skipping rebuild for collapse-created displays")
+            return
+        }
+        
         let group = DispatchGroup()
         for s in servers { group.enter(); s.stop { group.leave() } }
         servers = []
@@ -786,5 +805,19 @@ final class StreamFleet {
         }
         pendingRebuild = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: work)
+    }
+
+    /// Mark a display as created during collapse operation to prevent it from 
+    /// triggering rebuilds that would tear down active connections.
+    func markCollapseCreatedDisplay(_ displayID: CGDirectDisplayID) {
+        collapseCreatedDisplays.insert(displayID)
+    }
+    
+    /// Clear the set of collapse-created displays after a period, allowing
+    /// normal rebuild behavior for external changes.
+    func clearCollapseCreatedDisplays() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            self?.collapseCreatedDisplays.removeAll()
+        }
     }
 }
