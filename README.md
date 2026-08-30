@@ -508,6 +508,13 @@ form.
 ## Changelog
 
 ### Unreleased
+
+### 0.9.9 — 2026-08-30
+- **Remote-recovery reliability**: the web client now falls back to noVNC after
+  repeated native-stream connect failures (not only on an explicit host-lock
+  message), so connecting to an already-locked or headless Mac no longer loops
+  forever on "reconnecting"; and native streaming survives the monitor sleeping
+  by re-resolving the capture target. Headline fix over 0.9.8.
 - **YubiKey-backed remote confirmation (branch `yubikey-confirmation`)**:
   `ConfirmationBridge` now accepts DER-encoded ECDSA signatures (what a
   YubiKey PIV slot emits) alongside the original raw encoding, and a thin
