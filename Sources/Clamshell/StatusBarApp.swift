@@ -631,12 +631,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let fleet = StreamFleet(basePort: streamDefaultPort)
         fleet.rebuild()
         streamFleet = fleet
+        StreamFleet.shared = fleet
         clog("native streaming enabled from menu bar")
     }
 
     private func stopNativeStreaming() {
         streamFleet?.stop()
         streamFleet = nil
+        StreamFleet.shared = nil
         clog("native streaming disabled from menu bar")
     }
 

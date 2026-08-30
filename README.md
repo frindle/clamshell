@@ -509,6 +509,16 @@ form.
 
 ### Unreleased
 
+### 0.9.12 — 2026-08-30
+- **Connecting no longer loops.** Collapsing to a virtual display fired a
+  `CGDisplayReconfiguration` callback that rebuilt the stream fleet ~2s after
+  connect, tearing down the just-established stream connection (the browser
+  reconnected, and the churn repeated). The fleet now tracks the virtual
+  displays it creates during a collapse and skips the rebuild when the only
+  change is those self-created displays, so a fresh connection survives the
+  collapse. Legitimate rebuilds for external display changes (a real monitor
+  plugged/unplugged) are unaffected.
+
 ### 0.9.11 — 2026-08-30
 - **Unlock no longer bounces straight back to the login screen.** During
   screensharingd's login-window→user-session handoff, macOS briefly flaps the

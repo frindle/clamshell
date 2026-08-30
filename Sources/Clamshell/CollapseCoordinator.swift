@@ -146,11 +146,19 @@ final class CollapseCoordinator {
                 self.onCollapseFailed?(failureMessage)
                 return
             }
-            self.lastCollapseFailureAt = nil
+            
+            // Mark the display as created during collapse to prevent rebuilds from tearing down connections
+            if let streamFleet = StreamFleet.shared {
+                streamFleet.markCollapseCreatedDisplay(virtualID)
+            }
+            
             if self.dualMode {
                 self.virtualDisplay.create(preset: self.presetB, slot: .b) { secondID in
                     if secondID == nil {
                         clog("dual mode: display B creation failed — continuing single-display")
+                    } else if let streamFleet = StreamFleet.shared {
+                        // Mark the second display as created during collapse too
+                        streamFleet.markCollapseCreatedDisplay(secondID!)
                     }
                     self.finishCollapse(virtualID: virtualID, secondID: secondID)
                 }
@@ -173,6 +181,12 @@ final class CollapseCoordinator {
                 IOPMAssertionRelease(self.displayWakeAssertion)
                 self.displayWakeAssertion = 0
             }
+            
+            // Clear collapse-created displays after a delay to allow normal rebuilds for external changes
+            if let streamFleet = StreamFleet.shared {
+                streamFleet.clearCollapseCreatedDisplays()
+            }
+            
             self.mirrorPhysicalDisplays(onto: virtualID)
             self.comfort.sessionDidStart()
             self.state = .collapsed
