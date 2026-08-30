@@ -509,6 +509,13 @@ form.
 
 ### Unreleased
 
+### 0.9.10 — 2026-08-30
+- **Lock-screen fallback now actually loads noVNC.** 0.9.9 shipped the trigger
+  (fall back after repeated native-stream connect failures) but the fallback URL
+  still pointed at `/`, which 302-redirects to `/client` (the looping native
+  client) — so the fallback showed a black "Reconnecting…" screen. It now points
+  at `/vnc.html`, so a locked/headless Mac shows the browser VNC login as intended.
+
 ### 0.9.9 — 2026-08-30
 - **Remote-recovery reliability**: the web client now falls back to noVNC after
   repeated native-stream connect failures (not only on an explicit host-lock
