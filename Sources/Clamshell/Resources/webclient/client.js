@@ -42,6 +42,9 @@ const lockBanner = document.getElementById('lockBanner');
 const errBanner = document.getElementById('errBanner');
 const qualityDot = document.getElementById('qualityDot');
 
+// Store original lock banner text for restoration
+const originalLockBannerText = lockBanner.textContent;
+
 // noVNC bridge on port 5901 direct-LAN, or same-origin over a tunnel: the
 // Cloudflare Tunnel config (README "Browser access") routes this same
 // hostname's "/" to :5901 and "/websockify" to :5902, and WebServer's own
@@ -101,6 +104,9 @@ function beF32(buf, off) { return new DataView(buf.buffer, buf.byteOffset + off,
 let ws = null;
 let reconnectAttempt = 0;
 let wantConnection = true;
+// Track fallback reasons to avoid conflicts between failure-based and host-locked states
+let lockedByHost = false;
+let fallbackDueToFailure = false;
 
 function connect() {
   const wsUrl = location.protocol === 'https:'
@@ -116,6 +122,17 @@ function connect() {
   ws.binaryType = 'arraybuffer';
   ws.onopen = () => {
     reconnectAttempt = 0;
+    // The native stream is back. If noVNC was showing only because we could
+    // not connect -- as opposed to the host reporting itself locked -- drop
+    // back to the canvas. A genuinely locked host keeps noVNC up even with
+    // the socket open, so lockedByHost wins.
+    if (fallbackDueToFailure && !lockedByHost) {
+      fallbackDueToFailure = false;
+      vncFallback.classList.remove('show');
+      vncFallback.src = 'about:blank';
+      lockBanner.textContent = originalLockBannerText;
+      lockBanner.classList.remove('show');
+    }
     sendHello();
   };
   ws.onmessage = (ev) => {
@@ -137,6 +154,17 @@ function scheduleReconnect() {
   decoder = null;
   reconnectAttempt++;
   const delay = Math.min(2 ** (reconnectAttempt - 1), 10) * 1000; // 1,2,4,8,10,10s…
+  
+  // Check if we should fall back to noVNC after repeated failures
+  if (reconnectAttempt >= 3 && !fallbackDueToFailure && !lockedByHost) {
+    fallbackDueToFailure = true;
+    vncFallback.src = vncFallbackURL;
+    vncFallback.classList.add('show');
+    // Show appropriate banner text for failure-based fallback
+    lockBanner.textContent = "Can't reach the desktop — showing the login screen instead.";
+    lockBanner.classList.add('show');
+  }
+  
   setTimeout(() => { if (wantConnection) connect(); }, delay);
 }
 
@@ -180,6 +208,9 @@ async function handle(type, payload) {
     }
     case T.HOST_LOCK_STATE: {
       const locked = payload[0] === 1;
+      // Track whether we're locked by host to avoid conflicts with failure-based fallbacks
+      lockedByHost = locked;
+      
       // Auto-forward into the noVNC bridge while locked, same as
       // ViewerApp.swift's LockedHostView — screensharingd can reach a
       // locked Mac where native Screen Recording capture can't. Reverts to
@@ -189,8 +220,11 @@ async function handle(type, payload) {
         vncFallback.src = vncFallbackURL;
         vncFallback.classList.add('show');
       } else {
-        vncFallback.classList.remove('show');
-        vncFallback.src = 'about:blank';
+        // Only hide noVNC fallback if we're not in a host-locked state
+        if (!lockedByHost) {
+          vncFallback.classList.remove('show');
+          vncFallback.src = 'about:blank';
+        }
       }
       lockBanner.classList.toggle('show', locked);
       break;

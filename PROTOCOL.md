@@ -282,7 +282,7 @@ thin adapter (`Auth/YubiKeyConfirmation.swift`):
   every confirmation proof of a human hand at the key — that, plus key
   non-extractability, is exactly what the software path cannot provide.
 - `clamshell confirmation-yubikey-selftest` runs the loop on real hardware
-  (needs a YubiKey with an ECCP256 key in slot 9a). Unverified on real
+  (needs a YubiKey with an ECCP256 key in slot 9c). Unverified on real
   hardware so far: built and negative-tested on a machine with no YubiKey;
   the selftest fails fast and honestly when the card or entitlement is
   missing.
@@ -318,7 +318,7 @@ can't see is a confirmation they can't refuse.
   when the client answers — the same two calls the test path makes — and the
   panel and icon react with no UI change at all.
 - Until then, "Test YubiKey Confirmation…" (System submenu) drives the whole
-  loop locally against a real card: read slot 9a, enroll, issue a challenge,
+  loop locally against a real card: read slot 9c, enroll, issue a challenge,
   sign on the key, verify. No mock signer on that path — a green "Approved"
   means the hardware genuinely worked. The PIN is collected up front, before
   the challenge is issued, so typing it doesn't eat the 30 s.

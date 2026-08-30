@@ -513,7 +513,7 @@ form.
   YubiKey PIV slot emits) alongside the original raw encoding, and a thin
   adapter (`Auth/YubiKeyConfirmation.swift`, consuming the new standalone
   [immurok-yk](https://github.com/frindle/immurok-yk) package) enrolls the
-  card's slot-9a public key (attestation-cert preferred) and signs
+  card's slot-9c public key (attestation-cert preferred) and signs
   confirmation nonces on the key — touch policy on the slot makes every
   confirmation proof of physical presence. `confirmation-bridge-selftest`
   gains DER, cross-action, wrong-key, and malformed-signature negatives
@@ -538,6 +538,52 @@ form.
   hides every card and the feature cannot work at all. New
   `confirmation-coordinator-selftest` covers the transitions and the real
   30 s expiry (15/15 pass); the hardware leg is still unverified on metal.
+
+### 0.9.8
+- **Fall back to noVNC on connect failure, not only when told the host is
+  locked.** The lock-screen fallback only triggered on a `HOST_LOCK_STATE`
+  message, which rides on an already-open native stream — so it worked when
+  the Mac locked mid-session, but not when connecting to a Mac that was
+  *already* locked or logged out: the native stream never established, no
+  `HOST_LOCK_STATE` ever arrived, and the client retried forever with no
+  fallback. Now also falls back after 3 consecutive failed connection
+  attempts (reusing the existing `reconnectAttempt` counter), tracked
+  separately from the host-locked case (`fallbackDueToFailure` vs.
+  `lockedByHost`) so a genuinely locked host keeps noVNC up once the socket
+  opens, while a failure-based fallback clears itself on reconnect. The
+  banner says the desktop is unreachable rather than claiming it's locked,
+  since that isn't known in this case.
+- **Keep streaming when the monitor sleeps.** `StreamServer` bound a fixed
+  `CGDirectDisplayID` at construction; a sleeping display disappears from
+  `SCShareableContent`, so capture couldn't start and every client was
+  dropped immediately — seen client-side as an endless "reconnecting". The
+  capture target is now re-resolved at each capture start (original display
+  if present, otherwise a virtual display identified by its stamped
+  vendor/product IDs, otherwise the main display), so a collapsed session
+  keeps streaming with the physical monitor off.
+- **Self-relaunch as a last resort for orphaned virtual displays.**
+  `WindowServer` sometimes doesn't deregister a virtual display on
+  `destroy()`, so a later collapse attempt fails all 8 retries forever
+  (confirmed live: 200+ failures over 93+ minutes, cleared only by quitting
+  and relaunching). Adds a self-heal path that positively confirms the
+  phantom display is still registered, then relaunches the app bundle to
+  clear it — gated by a 10-minute crash-loop guard, scoped to slot A only
+  (slot B already degrades gracefully to single-display mode).
+- **Viewer: handshake timeout.** `StreamClient` could get stuck showing the
+  "reconnecting" spinner forever with no retry and no error: once a WebSocket
+  finished connecting, nothing ever bounded the wait for the host's first
+  message (HELLO_ACK). `URLSessionWebSocketTask.receive()` has no built-in
+  idle timeout, so if the host accepted the connection but then hung before
+  responding (e.g. `StreamServer.startSession()` stuck inside
+  `SCShareableContent.excludingDesktopWindows`, a known ScreenCaptureKit
+  flakiness), `reconnectAttempt` never incremented and no backoff was ever
+  scheduled — the app just sat there. `StreamClient` now arms a 10s
+  handshake-timeout timer (matching the existing 10s reconnect-backoff
+  ceiling and `CollapseCoordinator.restoreDelay`) when a socket opens,
+  cancelled the moment any message arrives; if it fires, the attempt is
+  treated as dropped and reconnect proceeds through the normal backoff.
+  Doesn't change "retry forever until user disconnects" — only bounds how
+  long any single attempt can hang silently.
 
 ### 0.9.7
 - **Collapse failure notifications**: `CollapseCoordinator` gains an
