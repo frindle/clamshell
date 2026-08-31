@@ -509,6 +509,15 @@ form.
 
 ### Unreleased
 
+### 0.9.13 — 2026-08-30
+- **No more login loop on a headless Mac.** Collapsing onto a lone virtual
+  display while the screen was locked made macOS re-lock ~1s after the user
+  authenticated (endless loop). The collapse is now deferred while the screen
+  is locked: the unlock lands on the real/screensharingd framebuffer first
+  (which stays unlocked), and Clamshell collapses for streaming only after
+  the screen is unlocked. The deferred collapse is cancelled if the session
+  disconnects before unlock.
+
 ### 0.9.12 — 2026-08-30
 - **Connecting no longer loops.** Collapsing to a virtual display fired a
   `CGDisplayReconfiguration` callback that rebuilt the stream fleet ~2s after
