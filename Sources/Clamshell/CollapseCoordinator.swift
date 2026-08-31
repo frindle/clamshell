@@ -62,6 +62,10 @@ final class CollapseCoordinator {
     /// The String is a human-readable failure message.
     var onCollapseFailed: ((String) -> Void)?
 
+    /// Observer for screen unlock notification, to defer collapse until after
+    /// the user unlocks the screen in headless mode.
+    private var unlockObserver: NSObjectProtocol?
+
     init() {
         // If WindowServer reclaims virtual display A out from under us, the
         // collapse is dead — restore so mirroring/state don't point at a
@@ -81,9 +85,53 @@ final class CollapseCoordinator {
         if connected {
             pendingRestore?.cancel()
             pendingRestore = nil
-            collapse()
+            
+            // If screen is locked, defer collapse until after unlock
+            if Self.screenIsLocked() {
+                deferCollapse()
+            } else {
+                collapse()
+            }
         } else {
+            // Cancel any pending deferred collapse — the session went away
+            // before the screen was ever unlocked, so a later unrelated
+            // unlock must not collapse a disconnected session.
+            clearUnlockObserver()
             scheduleRestore()
+        }
+    }
+
+    /// Helper to check if the screen is currently locked.
+    private static func screenIsLocked() -> Bool {
+        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Int == 1
+    }
+
+    /// Defer the collapse until the screen unlocks. On a headless Mac,
+    /// collapsing onto a lone virtual display while the screen is locked makes
+    /// macOS re-lock ~1s after the user authenticates (an endless login loop);
+    /// letting the unlock land on the real/screensharingd framebuffer first
+    /// and collapsing afterward avoids it. One-shot, idempotent, and cancelled
+    /// by clearUnlockObserver() if the session disconnects before unlock.
+    private func deferCollapse() {
+        guard unlockObserver == nil else { return } // don't stack observers
+        clog("collapse deferred: screen locked, waiting for unlock")
+        unlockObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            // Consume the observer first: if the session already disconnected,
+            // it was cleared in remoteSessionChanged(connected:false) and this
+            // block never runs, so reaching here means a session is still live.
+            self.clearUnlockObserver()
+            clog("screen unlocked — performing deferred collapse")
+            self.collapse()
+        }
+    }
+
+    private func clearUnlockObserver() {
+        if let obs = unlockObserver {
+            DistributedNotificationCenter.default().removeObserver(obs)
+            unlockObserver = nil
         }
     }
 
