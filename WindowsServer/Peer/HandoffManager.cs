@@ -107,6 +107,7 @@ internal sealed class HandoffManager : IDisposable
     {
         if (!_outgoing.Remove(id, out var o)) return;
         _ids.Remove(id);
+        Log.Line($"HANDOFF: ending window {id}'s stream");
         o.Server.Dispose();
         if (WinNative.IsWindow(o.Parker.Handle))
         {
@@ -163,6 +164,7 @@ internal sealed class HandoffManager : IDisposable
     public void ReturnReceiver(uint sourceWindowId, PeerEdge? edge, double position)
     {
         if (!_receivers.Remove(sourceWindowId, out var f)) return;
+        Log.Line($"HANDOFF: sending window {sourceWindowId} back to the peer");
         f.CloseQuietly();
         Send(PeerMsg.HandoffReturn(sourceWindowId, edge, (float)position));
         OnChange();

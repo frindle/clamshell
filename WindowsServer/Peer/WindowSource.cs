@@ -522,7 +522,7 @@ internal sealed class WindowStreamServer : IDisposable
             _client = null;
             enc = _encoder; _encoder = null;
         }
-        enc?.Dispose();
+        if (enc is not null) lock (enc) enc.Dispose(); // not mid-Feed
         _ui?.Post(_ => _input.ReleaseAll(), null);
     }
 
@@ -535,7 +535,7 @@ internal sealed class WindowStreamServer : IDisposable
         lock (_gate) { c = _client; _client = null; enc = _encoder; _encoder = null; }
         c?.Close();
         _capture.Dispose();
-        enc?.Dispose();
+        if (enc is not null) lock (enc) enc.Dispose();
         _input.ReleaseAll();
     }
 
@@ -596,10 +596,15 @@ internal sealed class WindowStreamServer : IDisposable
             if (Interlocked.Exchange(ref _closed, 1) == 1) return;
             _owner.Dropped(this);
             _out.Writer.TryComplete();
-            _cts.Cancel();
-            try { _ws.Abort(); } catch { }
-            try { _ws.Dispose(); } catch { }
-            try { _tcp.Dispose(); } catch { }
+            // Cancel() runs the pending receive's callbacks inline: keep it
+            // (and the socket teardown) off the caller, usually the UI thread.
+            _ = Task.Run(() =>
+            {
+                try { _cts.Cancel(); } catch { }
+                try { _ws.Abort(); } catch { }
+                try { _ws.Dispose(); } catch { }
+                try { _tcp.Dispose(); } catch { }
+            });
         }
     }
 }
