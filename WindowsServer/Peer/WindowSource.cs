@@ -232,6 +232,8 @@ internal sealed class WindowParker
 /// Replays v1 INPUT_* (normalized to the captured frame) into one window.
 internal sealed class WindowInput
 {
+    /// deskselftest: log which path each key takes.
+    public static bool Trace;
     private readonly IntPtr _root;
     private IntPtr _captureTarget;
     private bool _left, _right;
@@ -340,7 +342,13 @@ internal sealed class WindowInput
         // Bring the window forward first: switching between SendInput and
         // posted messages mid-sequence can reorder keystrokes ("hi" → "ih").
         if (down && !OwnsForeground()) Focus();
-        if (OwnsForeground())
+        bool injected = OwnsForeground();
+        if (Trace)
+        {
+            IntPtr fg = GetForegroundWindow();
+            Log.Line($"HANDOFF: key {mac} {(down ? "down" : "up")} via {(injected ? "SendInput" : "post")} (foreground 0x{fg:X} {WinNative.ClassName(fg)} pid {WinNative.Pid(fg)}, window pid {_pid}, focus 0x{WinNative.FocusOf(_root):X})");
+        }
+        if (injected)
         {
             // Real keyboard input: shortcuts and key-state checks work.
             _keys.Key(mac, down, flags);

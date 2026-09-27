@@ -45,6 +45,37 @@ internal static class DeskSelfTest
     private static long _stepAt = Environment.TickCount64;
     private static void Step(string what) { Volatile.Write(ref _step, what); Interlocked.Exchange(ref _stepAt, Environment.TickCount64); }
 
+    /// On a hang: which windows exist, who is foreground, who is hung.
+    private static void DumpWindows()
+    {
+        try
+        {
+            IntPtr fg = GetForegroundWindow();
+            Console.WriteLine($"  foreground: {Describe(fg)}");
+            EnumWindows((h, _) =>
+            {
+                if (WinNative.IsWindowVisible(h)) Console.WriteLine($"  {Describe(h)}");
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch (Exception e) { Console.WriteLine($"  (window dump failed: {e.Message})"); }
+    }
+
+    private static string Describe(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return "(none)";
+        uint tid = WinNative.GetWindowThreadProcessId(h, out uint pid);
+        string proc = "?";
+        try { proc = Process.GetProcessById((int)pid).ProcessName; } catch { }
+        return $"0x{h:X} {WinNative.ClassName(h)} \"{WinNative.Title(h)}\" {proc} pid {pid} tid {tid}" +
+               $"{(pid == (uint)Environment.ProcessId ? " (us)" : "")}{(IsHungAppWindow(h) ? " HUNG" : "")}";
+    }
+
+    private delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumProc cb, IntPtr l);
+    [DllImport("user32.dll")] private static extern bool IsHungAppWindow(IntPtr h);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+
     private static void StartWatchdog()
     {
         new Thread(() =>
@@ -55,6 +86,7 @@ internal static class DeskSelfTest
                 if (Environment.TickCount64 - Interlocked.Read(ref _stepAt) > 45000)
                 {
                     Console.WriteLine($"FAIL HANG: no progress for 45 s after \"{Volatile.Read(ref _step)}\"");
+                    DumpWindows();
                     Console.Out.Flush();
                     Environment.Exit(3);
                 }
@@ -84,6 +116,7 @@ internal static class DeskSelfTest
         Application.EnableVisualStyles();
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
         StartWatchdog();
+        WindowInput.Trace = true;
         try { Edge(); } catch (Exception e) { Check(false, $"edge: threw {e}"); }
         try { CarryChecks(); } catch (Exception e) { Check(false, $"carry: threw {e}"); }
         try { Stream(); } catch (Exception e) { Check(false, $"stream: threw {e}"); }
@@ -381,6 +414,7 @@ internal static class DeskSelfTest
         {
             try
             {
+                Console.WriteLine($"info notepad: {Describe(np.MainWindowHandle)}, edit 0x{FindWindowEx(np.MainWindowHandle, IntPtr.Zero, "Edit", null):X}");
                 using var ns = new WindowStreamServer(np.MainWindowHandle, (ushort)(port + 2), "127.0.0.1");
                 var nd = Dial((ushort)(port + 2));
                 Pump(() => nd.IsCompleted, 5000);
