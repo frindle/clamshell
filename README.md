@@ -465,6 +465,109 @@ section — blocked on a real system-wide Accessibility reporting failure on
 the dev Mac (System Settings > Accessibility, or a reboot, needs to resolve
 that independently of this codebase).
 
+## Shared Desk (UNTESTED on real hardware)
+
+A Synergy-style shared desk between two paired machines, Mac↔Mac or
+Mac↔Windows, in both directions:
+
+- **Mouse and keyboard.** Push the pointer off the configured edge and it
+  drives the other machine. Come back through the same edge.
+  - Ctrl on Windows maps to ⌘ on the Mac.
+  - Panic key: Ctrl+Opt+⌘+L (Mac) or Ctrl+Alt+Shift+L (Windows).
+- **Clipboard.** Text and images.
+- **Files.** Drag files across the edge; they land in the receiver's
+  Downloads folder. You can also use "Send Files to …" or "Send a Folder…".
+- **Window handoff.** Drag a window across the edge. It is parked off-screen
+  here and shown on the peer as a live stream that takes clicks and typing.
+  To return it, drag it back across the edge, click "↩ Send back", or close
+  it (Ctrl+W or Alt+F4 on Windows; ⌘W on the Mac
+  menu-bar app). "Bring Back Handed-off Windows" recalls
+  everything.
+
+Wire format and design are in
+[PROTOCOL.md](PROTOCOL.md#peer-link-v2--shared-desk-between-two-paired-machines).
+
+Known gaps:
+- On the controlled machine, the pointer only moves on its primary display.
+- A handed-off Windows window gets its mouse input as posted messages. Apps
+  that read raw input or hover state (some games, Chromium/Electron
+  drag-and-drop) may not react.
+- A handed-off window can't be resized from the receiver.
+- Windows 11 draws a yellow capture border around a window being handed off.
+- Any machine on the LAN can knock down a live link by connecting. It can't
+  join the link without the PIN or a paired key.
+
+### Two-machine test script
+
+**Setup**
+
+1. **Mac (A).** Leave `/Applications/Clamshell.app` alone. In a checkout of
+   the `window-handoff-v2` branch, run:
+   ```
+   ./dev-build.sh
+   CLAMSHELL_PEER_DIR=/tmp/clamshell-peer .build/debug/Clamshell peer --edge right
+   ```
+   - Grant Accessibility and Screen Recording to `.build/debug/Clamshell`
+     when asked, then re-run.
+   - Note the pairing PIN it prints.
+   - `--edge` is the side of this Mac the other machine sits on.
+2. **Windows PC (B).**
+   - Install the .NET 8 SDK.
+   - In the same branch, run `dotnet run --project WindowsServer/ClamshellServer.csproj -c Release`.
+     Quit any installed ClamshellServer first, because only one instance can
+     run.
+   - Tray → Shared Desk → Enable. Set "Peer Is Beyond This PC's…" to Left.
+   - Allow the firewall prompt (TCP 5910 and 5921-5940, private networks).
+   - The log is at `%LOCALAPPDATA%\Clamshell\clamshell.log`.
+3. **Pair.**
+   - On B: Shared Desk → "Pair with <Mac>…", then type A's PIN.
+   - If B doesn't list A: "Connect by Address…", enter A's IP, then the PIN.
+   - Expect "Linked with …" on both sides.
+   - Quit both and relaunch. They should re-link by themselves within about
+     5 s, with no PIN.
+
+**Checks.** Run each one in both directions.
+
+4. **Pointer and keyboard.**
+   - Push the pointer off A's right edge. It should appear on B's left edge
+     at the same relative height, and A's pointer should be hidden.
+   - Type in Notepad: letters, Shift, arrows, Backspace, Enter, and Ctrl/⌘+C
+     and V.
+   - Scroll vertically and horizontally. **Check the horizontal direction;
+     it is unverified.**
+   - Move back out through B's left edge and control should return to A.
+   - Press the panic key while on B. Control should return at once.
+   - Repeat from B to A. On the Mac, check ⌘-shortcuts (typed with Ctrl on
+     B), Caps Lock, and the keypad.
+5. **Clipboard.**
+   - Copy text on A and paste on B, then the reverse.
+   - Repeat with a screenshot image.
+6. **Files.**
+   - Drag a file from the Finder off the edge, release it over B's desktop,
+     and it should appear in B's Downloads, selected in Explorer.
+   - Drag from Explorer to A. **This uses the DropStrip; it is the least
+     certain part.**
+   - Send a folder with "Send a Folder…". It should arrive as a .zip.
+7. **Window handoff.**
+   - Drag a TextEdit window by its title bar across the edge. It should
+     vanish from A and a live copy should follow the pointer on B.
+   - Release it. Click into it, type, and scroll.
+   - Drag it back across the edge; the original should reappear on A under
+     the pointer.
+   - Hand it off again and click "↩ Send back". It should reappear where it
+     was.
+   - Hand it off again, then quit TextEdit on A. The copy on B should close.
+   - Repeat from B with Notepad and Calculator: click buttons, type.
+     **Watch for clicks landing in the wrong place on high-DPI or scaled
+     displays.**
+8. **Link loss.**
+   - With a window handed off, pull B's network cable. The window should come
+     back to A within a few seconds, and the link should come back when the
+     network does.
+
+For any failure, send Penn's notes plus `clamshell.log` (B) and the terminal
+output from A.
+
 ## Remote client notes
 
 - **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
@@ -508,6 +611,21 @@ form.
 ## Changelog
 
 ### Unreleased
+- **Shared Desk (UNTESTED on real hardware).** Two paired machines, Mac↔Mac
+  or Mac↔Windows, share one mouse and keyboard across a screen edge, sync the
+  clipboard (text and images), move files by dragging them across the edge
+  (or with "Send Files to …"), and hand off windows. Drag a window across the
+  edge: it is hidden here and appears on the other machine as a live,
+  clickable, typeable stream. Drag it back, click "↩ Send back", or close it
+  to return it. Pairing uses a 6-digit PIN and pinned P-256 keys. The link is
+  a WebSocket on TCP 5910, found over Bonjour/mDNS. Mac: menu bar
+  "Shared Desk", or `clamshell peer`. Windows: tray "Shared Desk". Wire
+  format: [PROTOCOL.md](PROTOCOL.md#peer-link-v2--shared-desk-between-two-paired-machines).
+  Proven by selftests and CI: edge crossing, key/modifier mapping, the panic
+  key, carry detection, the pairing/crypto golden vectors shared by Swift and
+  C#, Swift↔C# link interop, file transfer and handoff loopback. Windows runs
+  on real LL hooks, SendInput and Windows.Graphics.Capture. Not yet proven:
+  anything between two physical machines (test script below).
 
 ### 0.9.13 — 2026-08-30
 - **No more login loop on a headless Mac.** Collapsing onto a lone virtual
