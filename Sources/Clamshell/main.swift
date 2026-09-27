@@ -207,6 +207,10 @@ if args.count > 1 {
         // Peer link (PROTOCOL.md "Peer link"): builders/parsers, handshake
         // crypto and file-name sanitization — pure logic, no network.
         exit(PeerProtocolSelfTest.run())
+    case "peer-link-selftest":
+        // Two peer links over real loopback WebSockets: PIN pairing, trust
+        // persistence, reconnect, and message flow — no Bonjour, no hardware.
+        exit(PeerLinkSelfTest.run())
     case "self-heal-guard-selftest":
         // Covers only SelfRelaunchGuard's crash-loop cooldown logic (pure,
         // injectable). Does NOT and cannot cover PhantomDisplayDetector
@@ -218,7 +222,7 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | peer-protocol-selftest]")
+              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | peer-protocol-selftest | peer-link-selftest]")
         exit(64)
     }
 }
