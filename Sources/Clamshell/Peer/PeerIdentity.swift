@@ -97,17 +97,20 @@ final class PeerIdentity {
     }
 }
 
-/// Persisted list of paired peers. Main-queue confined like the rest of the
-/// app state; the file is rewritten whole on every change (tiny).
+/// Persisted list of paired peers. Lock-protected (PeerLink mutates it from
+/// its own queue while the menu reads it on main); the file is rewritten
+/// whole on every change (tiny).
 final class PeerTrustStore {
-    private(set) var peers: [PeerInfo] = []
+    private var _peers: [PeerInfo] = []
+    private let lock = NSLock()
     private let fileURL: URL?
+    var peers: [PeerInfo] { lock.withLock { _peers } }
 
     init(fileURL: URL?) {
         self.fileURL = fileURL
         if let fileURL, let data = try? Data(contentsOf: fileURL),
            let list = try? JSONDecoder().decode([PeerInfo].self, from: data) {
-            peers = list
+            _peers = list
         }
     }
 
@@ -117,22 +120,27 @@ final class PeerTrustStore {
     }
 
     func trust(publicKey: Data, name: String) {
-        let id = PeerIdentity.peerId(for: publicKey)
-        if let i = peers.firstIndex(where: { $0.id == id }) {
-            peers[i].name = name
-        } else {
-            peers.append(PeerInfo(id: id, name: name, publicKey: publicKey, pairedAt: Date()))
+        lock.withLock {
+            let id = PeerIdentity.peerId(for: publicKey)
+            if let i = _peers.firstIndex(where: { $0.id == id }) {
+                _peers[i].name = name
+            } else {
+                _peers.append(PeerInfo(id: id, name: name, publicKey: publicKey, pairedAt: Date()))
+            }
+            saveLocked()
         }
-        save()
     }
 
     func forget(id: String) {
-        peers.removeAll { $0.id == id }
-        save()
+        lock.withLock {
+            _peers.removeAll { $0.id == id }
+            saveLocked()
+        }
     }
 
-    private func save() {
+    private func saveLocked() {
         guard let fileURL else { return }
+        let peers = _peers
         do {
             try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             let enc = JSONEncoder(); enc.outputFormatting = [.prettyPrinted, .sortedKeys]

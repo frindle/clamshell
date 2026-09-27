@@ -140,13 +140,42 @@ final class PeerLink {
 
     // MARK: - Connecting out
 
+    /// Bonjour results are `.service` endpoints, and a WebSocket NWConnection
+    /// needs a URL endpoint to build its HTTP upgrade (a bare host:port
+    /// connect dies with ECONNABORTED — seen live in peer-link-selftest). So
+    /// first open a plain TCP connection to the service to learn the
+    /// resolved address, then dial the WebSocket by URL.
     func connect(to peer: DiscoveredPeer, pin: String?) {
-        connect(endpoint: peer.endpoint, label: peer.name, pin: pin)
+        queue.async { [self] in
+            setState(.connecting(peer.name))
+            let probe = NWConnection(to: peer.endpoint, using: .tcp)
+            probe.stateUpdateHandler = { [weak self] st in
+                guard let self else { return }
+                switch st {
+                case .ready:
+                    defer { probe.cancel() }
+                    guard case .hostPort(let host, let port)? = probe.currentPath?.remoteEndpoint else {
+                        self.queue.async { self.setState(.failed("could not resolve \(peer.name)")) }
+                        return
+                    }
+                    var h = "\(host)"
+                    if let pct = h.firstIndex(of: "%") { h = String(h[..<pct]) } // strip IPv6 scope
+                    self.queue.async { self.connect(host: h, port: port.rawValue, pin: pin, label: peer.name) }
+                case .failed(let e):
+                    self.queue.async { self.setState(.failed("resolve \(peer.name): \(e)")) }
+                case .waiting(let e):
+                    clog("PEER: resolving \(peer.name): \(e)")
+                default: break
+                }
+            }
+            probe.start(queue: queue)
+        }
     }
 
-    func connect(host: String, port: UInt16, pin: String?) {
-        guard let p = NWEndpoint.Port(rawValue: port) else { return }
-        connect(endpoint: .hostPort(host: NWEndpoint.Host(host), port: p), label: "\(host):\(port)", pin: pin)
+    func connect(host: String, port: UInt16, pin: String?, label: String? = nil) {
+        let bracketed = host.contains(":") ? "[\(host)]" : host
+        guard let url = URL(string: "ws://\(bracketed):\(port)/") else { return }
+        connect(endpoint: .url(url), label: label ?? "\(host):\(port)", pin: pin)
     }
 
     private func connect(endpoint: NWEndpoint, label: String, pin: String?) {
@@ -196,6 +225,7 @@ final class PeerLink {
                 guard self.connection === conn else { return }
                 switch st {
                 case .ready:
+                    self.receiveLoop(conn)
                     if let h = self.handshake, h.role == .server {
                         self.rawSend(StreamMessage.peerChallenge(nonce: h.ourNonce))
                     } else if let h = self.handshake {
@@ -207,12 +237,14 @@ final class PeerLink {
                     self.dropConnection(reason: "connection closed")
                 case .waiting(let e):
                     clog("PEER: waiting: \(e)")
-                default: break
+                default: clog("PEER: connection \(st)")
                 }
             }
         }
         conn.start(queue: queue)
-        receiveLoop(conn)
+        // receiveMessage is only issued once .ready: on a WebSocket
+        // NWConnection a receive queued while still preparing aborts the
+        // connection with ECONNABORTED (seen live in peer-link-selftest).
     }
 
     private func receiveLoop(_ conn: NWConnection) {
@@ -220,7 +252,9 @@ final class PeerLink {
             guard let self, self.connection === conn else { return }
             if let data, !data.isEmpty { self.parser?.feed(data) }
             if self.parser?.corrupt == true { self.dropConnection(reason: "corrupt stream"); return }
-            if error != nil || (complete && data == nil) { self.dropConnection(reason: "peer disconnected"); return }
+            if error != nil || (complete && data == nil) {
+                self.dropConnection(reason: "peer disconnected (\(error.map(String.init(describing:)) ?? "eof"), complete=\(complete), bytes=\(data?.count ?? -1))"); return
+            }
             self.receiveLoop(conn)
         }
     }
@@ -272,18 +306,18 @@ final class PeerLink {
         case .peerHello:
             guard let h = handshake, h.role == .server else { dropConnection(reason: "unexpected HELLO"); return }
             guard let hello = PeerParse.hello(payload) else {
-                rawSend(StreamMessage.peerHelloAck(status: .version)); dropConnection(reason: "malformed HELLO"); return
+                refuse(.version, reason: "malformed HELLO"); return
             }
             guard PeerIdentity.verify(signature: hello.signature, nonce: h.ourNonce, publicKey: hello.publicKey) else {
-                rawSend(StreamMessage.peerHelloAck(status: .badSignature)); dropConnection(reason: "HELLO bad signature"); return
+                refuse(.badSignature, reason: "HELLO bad signature"); return
             }
             var usedPin: String?
             if !trust.isTrusted(publicKey: hello.publicKey) {
                 guard let proof = hello.pinProof else {
-                    rawSend(StreamMessage.peerHelloAck(status: .untrusted)); dropConnection(reason: "untrusted peer \(hello.name) (no PIN)"); return
+                    refuse(.untrusted, reason: "untrusted peer \(hello.name) (no PIN)"); return
                 }
                 guard let pin = h.pin, PeerIdentity.verifyPinProof(proof, pin: pin, nonce: h.ourNonce, publicKey: hello.publicKey) else {
-                    rawSend(StreamMessage.peerHelloAck(status: .badPin)); dropConnection(reason: "wrong PIN from \(hello.name)"); return
+                    refuse(.badPin, reason: "wrong PIN from \(hello.name)"); return
                 }
                 usedPin = pin
                 clog("PEER: paired with \(hello.name) via PIN")
@@ -320,13 +354,23 @@ final class PeerLink {
         }
     }
 
+    /// Refusal ACKs must reach the wire before the socket closes, or the
+    /// client only ever sees EOF and can't tell "wrong PIN" from a dead peer.
+    private func refuse(_ status: PeerHelloStatus, reason: String) {
+        let conn = connection
+        rawSend(StreamMessage.peerHelloAck(status: status)) { [weak self] in
+            guard let self, self.connection === conn else { return }
+            self.dropConnection(reason: reason)
+        }
+    }
+
     private func finishHandshake(publicKey: Data, name: String, paired: Bool, screen: (UInt32, UInt32)) {
         handshakeTimeout?.cancel(); handshakeTimeout = nil
         handshake = nil
         if paired {
             pairingPIN = PeerIdentity.randomPIN()
         }
-        DispatchQueue.main.sync { trust.trust(publicKey: publicKey, name: name) }
+        trust.trust(publicKey: publicKey, name: name)
         let info = PeerInfo(id: PeerIdentity.peerId(for: publicKey), name: name, publicKey: publicKey, pairedAt: Date())
         clog("PEER: linked with \(name) (\(info.id.prefix(12))…) screen \(screen.0)x\(screen.1)")
         setState(.linked(info, screenWidth: screen.0, screenHeight: screen.1))
