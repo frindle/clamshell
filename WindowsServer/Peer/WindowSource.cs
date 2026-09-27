@@ -506,7 +506,7 @@ internal sealed class WindowStreamServer : IDisposable
         }
     }
 
-    private readonly SynchronizationContext? _ui = SynchronizationContext.Current;
+    private readonly SynchronizationContext? _ui = WinNative.UiContext();
 
     private void StartEncoder(Client c, StreamCodec requested)
     {

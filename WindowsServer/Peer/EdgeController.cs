@@ -59,7 +59,7 @@ internal sealed class EdgeController : IDisposable
     public bool Start()
     {
         if (_mouseHook != IntPtr.Zero) return true;
-        _ui = SynchronizationContext.Current;
+        _ui = WinNative.UiContext();
         _mouseProc = MouseHook;
         _keyProc = KeyHook;
         IntPtr mod = WinNative.GetModuleHandle(null);

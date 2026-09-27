@@ -94,6 +94,13 @@ internal static class WinNative
     [DllImport("user32.dll")] public static extern bool ScreenToClient(IntPtr h, ref POINT p);
     [DllImport("user32.dll")] public static extern IntPtr ChildWindowFromPointEx(IntPtr parent, POINT p, uint flags);
     [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int index);
+
+    /// A WinForms context for the calling (UI) thread. SynchronizationContext.Current
+    /// can't be trusted for this: in deskselftest it had stopped marshalling to
+    /// the UI thread by the handoff section, so posted work ran on pool threads,
+    /// out of order, and a form was created on a thread with no message loop.
+    /// Call on the UI thread.
+    public static SynchronizationContext UiContext() => new WindowsFormsSynchronizationContext();
     [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int index, int value);
     [DllImport("user32.dll")] public static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
     [DllImport("user32.dll")] public static extern bool GetLayeredWindowAttributes(IntPtr h, out uint key, out byte alpha, out uint flags);

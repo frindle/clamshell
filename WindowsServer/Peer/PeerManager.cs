@@ -34,7 +34,7 @@ internal sealed class PeerManager : IDisposable
 
     public PeerManager(PeerIdentity identity, PeerTrustStore trust, string name, ushort port, PeerEdge edge, string downloads)
     {
-        _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
+        _ui = WinNative.UiContext();
         Identity = identity; Trust = trust; _name = name;
         Link = new PeerLink(identity, trust, name, port, () =>
         {
