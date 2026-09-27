@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // `clamshell peer-protocol-selftest` — hardware-free checks of the peer
 // link's pure logic: every builder round-trips through its parser, every
@@ -19,6 +20,7 @@ enum PeerProtocolSelfTest {
         rejections()
         handshakeMath()
         fileNames()
+        goldenVectors()
         print(failures == 0 ? "PASS: peer protocol selftest" : "FAIL: \(failures) check(s) failed")
         return failures == 0 ? 0 : 1
     }
@@ -99,6 +101,9 @@ enum PeerProtocolSelfTest {
         var r = PeerReader(d)
         let s = r.string()
         check(s != nil && s!.utf8.count <= PeerLimits.maxName && s!.utf8.count % 2 == 0, "name truncation on boundary")
+        var d3 = Data(); d3.appendString(String(repeating: "—", count: 60)) // 3-byte scalars: 180 bytes
+        var r3 = PeerReader(d3)
+        check(r3.string() == String(repeating: "—", count: 42), "3-byte scalars truncate to whole characters, not to empty")
 
         // The framed message survives the incremental parser byte-by-byte.
         let parser = StreamMessageParser()
@@ -106,6 +111,105 @@ enum PeerProtocolSelfTest {
         parser.onMessage = { got = ($0, $1) }
         for b in hello { parser.feed(Data([b])) }
         check(got?.0 == .peerHello && got?.1 == payload(hello), "byte-at-a-time framing")
+    }
+
+    /// Whole-message byte vectors, pinned as literal hex. The identical table
+    /// lives in WindowsServer/Peer/PeerSelfTest.cs; a change on either side
+    /// that isn't mirrored fails that side's selftest.
+    static func goldenMessages() -> [(String, Data)] {
+        let key = Data([0x04]) + Data(repeating: 0xAB, count: 64)
+        let nonce = Data(repeating: 0x11, count: 32)
+        let sig = Data(repeating: 0x22, count: 64)
+        let proof = Data(repeating: 0x33, count: 32)
+        return [
+            ("challenge", StreamMessage.peerChallenge(nonce: nonce)),
+            ("hello", StreamMessage.peerHello(publicKey: key, clientNonce: nonce, signature: sig, pinProof: proof,
+                                              name: "Mac Studio", screenWidth: 5120, screenHeight: 1440)),
+            ("helloNoPin", StreamMessage.peerHello(publicKey: key, clientNonce: nonce, signature: sig, pinProof: nil,
+                                                   name: "x", screenWidth: 1, screenHeight: 1)),
+            ("helloAck", StreamMessage.peerHelloAck(status: .ok, publicKey: key, signature: sig, pinProof: proof,
+                                                    name: "Win PC", screenWidth: 2560, screenHeight: 1440)),
+            ("helloAckRefused", StreamMessage.peerHelloAck(status: .badPin)),
+            ("edgeEnter", StreamMessage.edgeEnter(edge: .left, x: 0, y: 0.25, leftButtonDown: true)),
+            ("edgeLeave", StreamMessage.edgeLeave()),
+            ("clipboardText", StreamMessage.clipboard(text: "héllo ✓")),
+            ("clipboardPng", StreamMessage.clipboardData(kind: 1, bytes: Data([0x89, 0x50, 0x4E, 0x47]))),
+            ("handoffBegin", StreamMessage.handoffBegin(HandoffBeginPayload(
+                windowId: 0x01020304, edge: .right, position: 0.5, grabX: 0.1, grabY: 0.9, width: 1280, height: 720,
+                streamPort: 5921, title: "Doc — Pages", appName: "Pages"))),
+            ("handoffAccept", StreamMessage.handoffAccept(windowId: 7)),
+            ("handoffReject", StreamMessage.handoffReject(windowId: 7, reason: .busy)),
+            ("handoffReturnEdge", StreamMessage.handoffReturn(windowId: 9, edge: .top, position: 0.75)),
+            ("handoffReturnHome", StreamMessage.handoffReturn(windowId: 9, edge: nil, position: 0)),
+            ("windowClosed", StreamMessage.windowClosed(windowId: 42)),
+            ("fileOffer", StreamMessage.fileOffer(transferId: 3, size: 1 << 33, name: "a b.zip")),
+            ("fileAccept", StreamMessage.fileAccept(transferId: 3)),
+            ("fileReject", StreamMessage.fileReject(transferId: 3, reason: .disk)),
+            ("fileChunk", StreamMessage.fileChunk(transferId: 3, offset: 131072, bytes: Data([1, 2, 3]))),
+            ("fileDone", StreamMessage.fileDone(transferId: 3, sha256: Data(repeating: 0x5A, count: 32))),
+            ("fileCancel", StreamMessage.fileCancel(transferId: 3, reason: .tooLarge)),
+            ("mouseMove", StreamMessage.mouseMove(x: 0.5, y: 0.25)),
+            ("mouseButton", StreamMessage.mouseButton(button: 1, down: true, x: 0.1, y: 0.2)),
+            ("key", StreamMessage.key(macKeyCode: 0x25, down: true, flags: 0x140000)),
+            ("scroll", StreamMessage.scroll(dx: 0, dy: -40)),
+        ]
+    }
+
+    static let goldenHex: [String: String] = [
+        "challenge": "40000000201111111111111111111111111111111111111111111111111111111111111111",
+        "hello": "41000000d7020104abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222223333333333333333333333333333333333333333333333333333333333333333000a4d61632053747564696f00001400000005a0",
+        "helloNoPin": "41000000ae020004abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab1111111111111111111111111111111111111111111111111111111111111111222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222220001780000000100000001",
+        "helloAck": "42000000b4020004abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab22222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222222013333333333333333333333333333333333333333333333333333333333333333000657696e20504300000a00000005a0",
+        "helloAckRefused": "42000000020202",
+        "edgeEnter": "440000000a00000000003e80000001",
+        "edgeLeave": "4500000000",
+        "clipboardText": "300000000a68c3a96c6c6f20e29c93",
+        "clipboardPng": "46000000050189504e47",
+        "handoffBegin": "480000003101020304013f0000003dcccccd3f66666600000500000002d01721000d446f6320e2809420506167657300055061676573",
+        "handoffAccept": "490000000400000007",
+        "handoffReject": "4a000000050000000705",
+        "handoffReturnEdge": "4b0000000900000009023f400000",
+        "handoffReturnHome": "4b0000000900000009ff00000000",
+        "windowClosed": "4c000000040000002a",
+        "fileOffer": "500000001500000003000000020000000000076120622e7a6970",
+        "fileAccept": "510000000400000003",
+        "fileReject": "52000000050000000303",
+        "fileChunk": "530000000f000000030000000000020000010203",
+        "fileDone": "5400000024000000035a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "fileCancel": "55000000050000000302",
+        "mouseMove": "20000000083f0000003e800000",
+        "mouseButton": "210000000a01013dcccccd3e4ccccd",
+        "key": "220000000b0025010000000000140000",
+        "scroll": "230000000800000000c2200000",
+    ]
+
+    /// Fixed-key crypto vectors: a P-256 key with raw scalar 0x01…0x20, its
+    /// peer id, and the PIN proof — .NET must derive the same public key and
+    /// id, and verify a signature this side made (ECDSA signatures are
+    /// randomized, so the Swift-made one is pinned for the C# side to verify).
+    static let fixedScalar = Data((1...32).map { UInt8($0) })
+
+    private static func goldenVectors() {
+        func hex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
+        let printAll = ProcessInfo.processInfo.environment["CLAMSHELL_PRINT_GOLDEN"] != nil
+        for (name, bytes) in goldenMessages() {
+            if printAll { print("golden \(name) \(hex(bytes))") }
+            check(goldenHex[name] == hex(bytes), "golden vector \(name)")
+        }
+        if let key = try? P256.Signing.PrivateKey(rawRepresentation: fixedScalar) {
+            let pub = key.publicKey.x963Representation
+            check(hex(pub) == "04515c3d6eb9e396b904d3feca7f54fdcd0cc1e997bf375dca515ad0a6c3b4035f4536be3a50f318fbf9a5475902a221502bef0d57e08c53b2cc0a56f17d9f9354", "fixed public key")
+            check(PeerIdentity.peerId(for: pub) == "4269889431e3131966fcaf6a457141943ed2c35b5b917ae62cb339546f523551", "fixed peer id")
+            let pinned = Data(hexString: "8d7c8838f0c897ef1f01724ab9968ef27416a4e381277aacb5cfdcaf95c732303f58a8d113ae080d694ed0c5674abcb68a8fb40aac77e079c4be9739fb1cf8df")
+            check(pinned.map { PeerIdentity.verify(signature: $0, nonce: Data(repeating: 0x02, count: 32), publicKey: pub) } == true,
+                  "pinned fixed-key signature verifies")
+            if printAll {
+                print("golden fixedPublicKey \(hex(pub))")
+                print("golden fixedPeerId \(PeerIdentity.peerId(for: pub))")
+                let nonce = Data(repeating: 0x02, count: 32)
+                if let sig = try? key.signature(for: nonce + pub).rawRepresentation { print("golden fixedSignature \(hex(sig))") }
+            }
+        } else { check(false, "fixed scalar is a valid P-256 key") }
     }
 
     private static func rejections() {
@@ -176,8 +280,8 @@ enum PeerProtocolSelfTest {
         let fixedKey = Data([0x04]) + Data(repeating: 0x01, count: 64)
         let fixedProof = PeerIdentity.pinProof(pin: "000000", nonce: Data(repeating: 0x02, count: 32), publicKey: fixedKey)
         let hex = fixedProof.map { String(format: "%02x", $0) }.joined()
-        print("pin-proof vector: \(hex)")
-        check(hex.count == 64, "vector printed")
+        // Pinned: WindowsServer/Peer/PeerSelfTest.cs asserts the same value.
+        check(hex == "a6f4272b2275bc4ada594f129c3b2fe53bff85d3e8db0515b14219807066a8d1", "pin-proof vector")
         let pin = PeerIdentity.randomPIN()
         check(pin.count == 6 && pin.allSatisfy(\.isNumber), "pin is 6 digits")
 
@@ -231,5 +335,20 @@ enum PeerProtocolSelfTest {
         check(PeerFileNames.uniqueURL(in: dir, name: "b").lastPathComponent == "b", "unique name untouched when free")
         let escaped = PeerFileNames.uniqueURL(in: dir, name: PeerFileNames.sanitize("../a.txt"))
         check(escaped.deletingLastPathComponent().standardizedFileURL.path == dir.standardizedFileURL.path, "sanitized name stays inside dir")
+    }
+}
+
+extension Data {
+    /// Test helper: "0a0b" → [0x0a, 0x0b]; nil on odd length or non-hex.
+    init?(hexString: String) {
+        guard hexString.count % 2 == 0 else { return nil }
+        var out = Data(capacity: hexString.count / 2)
+        var i = hexString.startIndex
+        while i < hexString.endIndex {
+            let j = hexString.index(i, offsetBy: 2)
+            guard let b = UInt8(hexString[i..<j], radix: 16) else { return nil }
+            out.append(b); i = j
+        }
+        self = out
     }
 }

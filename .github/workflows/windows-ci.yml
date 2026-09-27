@@ -15,6 +15,33 @@ jobs:
         run: dotnet build WindowsServer/ClamshellServer.csproj -c Release
       - name: Self-test (pure protocol/framing logic)
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest
+      - name: Shared-desk peer selftest (golden vectors = Swift's, crypto, loopback link + file transfer)
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- peerselftest
+      - name: Shared-desk two-process link (real ClamshellServer.exe listens, a second one pairs by PIN)
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse -Filter ClamshellServer.exe WindowsServer/bin/Release | Select-Object -First 1
+          $work = Join-Path $env:RUNNER_TEMP "interop"; New-Item -ItemType Directory -Force $work | Out-Null
+          $env:CLAMSHELL_PEER_DIR = Join-Path $work "peerdir"
+          $l = Start-Process -FilePath $exe.FullName -ArgumentList "peerinterop","listen","5998","$work\l" -NoNewWindow -PassThru `
+            -RedirectStandardOutput "$work\l-out.log" -RedirectStandardError "$work\l-err.log"
+          $null = $l.Handle  # keep the handle so ExitCode is readable after exit
+          $pin = $null
+          for ($i = 0; $i -lt 150 -and -not $pin; $i++) {
+            Start-Sleep -Milliseconds 100
+            $m = Select-String -Path "$work\l-out.log" -Pattern '^PIN (\d{6})' -ErrorAction SilentlyContinue
+            if ($m) { $pin = $m.Matches[0].Groups[1].Value }
+          }
+          if (-not $pin) { Get-Content "$work\l-out.log","$work\l-err.log" -ErrorAction SilentlyContinue; throw "listener printed no PIN" }
+          $c = Start-Process -FilePath $exe.FullName -ArgumentList "peerinterop","connect","127.0.0.1","5998",$pin,"$work\c" -NoNewWindow -PassThru -Wait `
+            -RedirectStandardOutput "$work\c-out.log" -RedirectStandardError "$work\c-err.log"
+          $l.WaitForExit(40000) | Out-Null
+          Write-Output "--- listener"; Get-Content "$work\l-out.log"
+          Write-Output "--- connector"; Get-Content "$work\c-out.log"
+          if ($c.ExitCode -ne 0 -or $l.ExitCode -ne 0) {
+            Get-Content "$work\l-err.log","$work\c-err.log" -ErrorAction SilentlyContinue
+            throw "peer interop failed (listener $($l.ExitCode), connector $($c.ExitCode))"
+          }
 
       - name: Live smoke test (real display enum, encoder probe, listener bind)
         # `selftest` above never touches DXGI/Media Foundation/HttpListener —

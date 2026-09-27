@@ -30,6 +30,8 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
+        if (args.Length > 0 && args[0] == "peerselftest") return PeerSelfTest.Run();
+        if (args.Length > 0 && args[0] == "peerinterop") return PeerSelfTest.RunInterop(args[1..]);
         if (args.Length > 0 && args[0] == "windowlist") return WindowEnum.RunCli();
         if (args.Length > 0 && args[0] == "windowcaptureselftest")
         {

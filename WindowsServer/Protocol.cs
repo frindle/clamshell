@@ -23,6 +23,25 @@ internal enum MessageType : byte
     Key = 0x22,
     Scroll = 0x23,
     Clipboard = 0x30,
+
+    // Peer link (PROTOCOL.md "Peer link") — see Peer/PeerProtocol.cs.
+    PeerChallenge = 0x40,
+    PeerHello = 0x41,
+    PeerHelloAck = 0x42,
+    EdgeEnter = 0x44,
+    EdgeLeave = 0x45,
+    ClipboardData = 0x46,
+    HandoffBegin = 0x48,
+    HandoffAccept = 0x49,
+    HandoffReject = 0x4A,
+    HandoffReturn = 0x4B,
+    WindowClosed = 0x4C,
+    FileOffer = 0x50,
+    FileAccept = 0x51,
+    FileReject = 0x52,
+    FileChunk = 0x53,
+    FileDone = 0x54,
+    FileCancel = 0x55,
 }
 
 internal enum StreamCodec : byte
@@ -38,7 +57,7 @@ internal static class Proto
 
     // MARK: - Message construction (big-endian, matches Data.appendBE in Swift)
 
-    private static byte[] Frame(MessageType type, ReadOnlySpan<byte> payload)
+    public static byte[] Frame(MessageType type, ReadOnlySpan<byte> payload)
     {
         var buf = new byte[5 + payload.Length];
         buf[0] = (byte)type;

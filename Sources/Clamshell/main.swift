@@ -211,6 +211,10 @@ if args.count > 1 {
         // Two peer links over real loopback WebSockets: PIN pairing, trust
         // persistence, reconnect, and message flow — no Bonjour, no hardware.
         exit(PeerLinkSelfTest.run())
+    case "peer-interop":
+        // One half of the Mac<->Windows wire cross-check (the other half is
+        // `ClamshellServer peerinterop`): golden messages + a file, both ways.
+        exit(PeerInteropTest.run(Array(args.dropFirst(2))))
     case "edge-selftest":
         // Shared-desk KVM logic: edge geometry, virtual cursor, key rules and
         // the EdgeController state machine on synthetic (never posted) events.

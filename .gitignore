@@ -14,3 +14,7 @@ notes.md
 .auto-update-ipad-last-sha
 
 graphify-out/
+
+# .NET build output
+bin/
+obj/
