@@ -651,7 +651,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func selectWindowStream(_ sender: NSMenuItem) {
         guard let id = (sender.representedObject as? NSNumber)?.uint32Value,
               let entry = capturableWindows.first(where: { $0.windowId == id }) else { return }
-        windowStreamServer?.stop()
+        // Re-picking while a window stream is live: the new listener wants
+        // the same port, so it must wait for the old one's cancel to
+        // actually complete (StreamServer.stop's completion) — starting it
+        // synchronously here raced the bind (EADDRINUSE, see stop()'s doc).
+        if let old = windowStreamServer {
+            windowStreamServer = nil
+            activeWindowStream = nil
+            old.stop { DispatchQueue.main.async { [weak self] in self?.startWindowStream(entry) } }
+        } else {
+            startWindowStream(entry)
+        }
+    }
+
+    private func startWindowStream(_ entry: WindowList.Entry) {
         let server = StreamServer(source: .window(entry.windowId), port: windowStreamPort, isPrimary: false)
         do {
             try server.start()
