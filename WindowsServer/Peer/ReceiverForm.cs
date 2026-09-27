@@ -84,7 +84,10 @@ internal sealed class ReceiverForm : Form
     {
         if (_started) return;
         _started = true;
-        _ = RunAsync();
+        // The network loop never touches the UI thread's context: under
+        // deskselftest's pump an awaited ConnectAsync resumed there never ran
+        // and tearing the socket down on it hung. UI updates go via BeginInvoke.
+        _ = Task.Run(RunAsync);
     }
 
     protected override CreateParams CreateParams
@@ -149,20 +152,35 @@ internal sealed class ReceiverForm : Form
     {
         _closingQuietly = true;
         _follow?.Dispose();
-        _cts.Cancel();
-        try { _ws.Abort(); } catch { }
         if (!IsDisposed) Close();
     }
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) { _cts.Cancel(); _ws.Dispose(); _decoder?.Dispose(); _decoder = null; }
+        if (disposing) ShutDownStream();
         base.Dispose(disposing);
+    }
+
+    /// Socket teardown off the UI thread (it can block on a connect or
+    /// receive in flight). The receive loop disposes the decoder it owns.
+    private void ShutDownStream()
+    {
+        _cts.Cancel();
+        var ws = _ws;
+        _ = Task.Run(() =>
+        {
+            try { ws.Abort(); } catch { }
+            try { ws.Dispose(); } catch { }
+        });
     }
 
     // MARK: - Stream
 
-    private void Status(string s) { if (!IsDisposed) BeginInvoke(() => _status.Text = s); }
+    private void Status(string s)
+    {
+        try { if (!IsDisposed && IsHandleCreated) BeginInvoke(() => _status.Text = s); }
+        catch (InvalidOperationException) { } // closed meanwhile
+    }
 
     private async Task RunAsync()
     {
@@ -170,7 +188,7 @@ internal sealed class ReceiverForm : Form
         try
         {
             Log.Line($"HANDOFF: receiver dialling {h}:{_port}");
-            await _ws.ConnectAsync(new Uri($"ws://{h}:{_port}/"), _cts.Token);
+            await _ws.ConnectAsync(new Uri($"ws://{h}:{_port}/"), _cts.Token).ConfigureAwait(false);
             Log.Line($"HANDOFF: receiver connected to {h}:{_port}");
             Status("live");
             Send(PeerMsg.StreamHello(StreamCodec.H264));
@@ -178,15 +196,16 @@ internal sealed class ReceiverForm : Form
             var buf = new byte[256 * 1024];
             while (!_cts.IsCancellationRequested)
             {
-                var r = await _ws.ReceiveAsync(buf, _cts.Token);
+                var r = await _ws.ReceiveAsync(buf, _cts.Token).ConfigureAwait(false);
                 if (r.MessageType == WebSocketMessageType.Close) break;
                 parser.Feed(buf.AsSpan(0, r.Count));
                 if (parser.Corrupt) break;
             }
             Status("stream ended");
         }
-        catch (OperationCanceledException) { }
+        catch (Exception) when (_cts.IsCancellationRequested) { }
         catch (Exception e) { Status("lost"); Log.Line($"HANDOFF: receiver stream {_host}:{_port} failed: {e.Message}"); }
+        finally { _decoder?.Dispose(); _decoder = null; }
     }
 
     private bool _askedKeyframe;
@@ -327,7 +346,7 @@ internal sealed class VideoPanel : Control
                 Invalidate();
             });
         }
-        catch (InvalidOperationException) { bmp.Dispose(); }
+        catch (Exception e) when (e is InvalidOperationException or ObjectDisposedException) { bmp.Dispose(); }
     }
 
     private Rectangle Picture()

@@ -477,8 +477,8 @@ Mac↔Windows, in both directions:
 - **Clipboard.** Text and images.
 - **Files.** Drag files across the edge; they land in the receiver's
   Downloads folder. You can also use "Send Files to …" or "Send a Folder…".
-- **Window handoff.** Drag a window across the edge. It is parked off-screen
-  here and shown on the peer as a live stream that takes clicks and typing.
+- **Window handoff.** Drag a window across the edge. It is hidden here
+  (on Windows: made invisible and click-through in place) and shown on the peer as a live stream that takes clicks and typing.
   To return it, drag it back across the edge, click "↩ Send back", or close
   it (Ctrl+W or Alt+F4 on Windows; ⌘W on the Mac
   menu-bar app). "Bring Back Handed-off Windows" recalls
@@ -493,7 +493,8 @@ Known gaps:
   that read raw input or hover state (some games, Chromium/Electron
   drag-and-drop) may not react.
 - A handed-off window can't be resized from the receiver.
-- Windows 11 draws a yellow capture border around a window being handed off.
+- Windows 11 may draw a yellow capture border where the hidden window
+  sits. The hidden window also keeps its taskbar button.
 - Any machine on the LAN can knock down a live link by connecting. It can't
   join the link without the PIN or a paired key.
 

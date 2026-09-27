@@ -596,8 +596,13 @@ nearly transparent drop target while the button is held.
 Flow: a window dragged by its title bar across the edge (the window under the
 press has moved), or picked from the menu, is **served on a fresh v1 window
 stream** on a port in **5921–5940** that accepts only the peer's address; the
-real window is **parked** almost entirely off-screen (still composited, so
-capture continues; never minimized) and HANDOFF_BEGIN is sent. The receiver
+real window is **parked** (hidden but still composited, so capture
+continues; never minimized) and HANDOFF_BEGIN is sent. The Mac moves it
+almost entirely off-screen. Windows leaves it in place as a layered,
+alpha-0, click-through window, because a window moved off-screen stops
+repainting and WGC stops delivering frames (measured by deskselftest's
+park probe). An already-layered Windows window falls back to the
+off-screen park, and its stream freezes until it repaints. The receiver
 opens a borderless window (title strip + "↩ Send back"), dials
 `ws://source:streamPort/` and speaks plain v1: HELLO → HELLO_ACK (codec,
 captured size) → VIDEO_FRAME…, INPUT_* back normalized to the video. While
@@ -612,7 +617,8 @@ Capture: Mac ScreenCaptureKit (`desktopIndependentWindow`), Windows
 Windows.Graphics.Capture (`IGraphicsCaptureItemInterop.CreateForWindow`, needs a
 DispatcherQueue on the calling thread; the capture size is fixed at start —
 a resized window is cropped/padded). Park/restore: Mac Accessibility
-position, Windows `SetWindowPos`. Receiver codecs: the Mac asks for HEVC, the
+position; Windows `WS_EX_LAYERED | WS_EX_TRANSPARENT` + alpha 0 (the
+extended style is put back on restore). Receiver codecs: the Mac asks for HEVC, the
 Windows receiver for H.264; the source falls back to H.264 and says so in
 HELLO_ACK.
 
@@ -623,5 +629,6 @@ brought to the foreground (else posted WM_KEYDOWN/WM_CHAR). **Known gaps
 (Windows source):** clicks on the title bar / frame aren't delivered; apps
 that read raw input or the async key state (games, some Chromium / UWP
 surfaces) may ignore posted mouse input; Windows 11 may draw its yellow
-capture border.
+capture border around the invisible window; the hidden window keeps its
+taskbar button and can be Alt-Tabbed to (it stays invisible).
 
