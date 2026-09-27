@@ -324,7 +324,7 @@ internal sealed class WindowInput
 
     private void Focus()
     {
-        if (GetForegroundWindow() == _root) return;
+        if (OwnsForeground()) return;
         if (!WinNative.SetForegroundWindow(_root))
         {
             // Foreground lock: the process that sent the last input may take
@@ -339,8 +339,8 @@ internal sealed class WindowInput
         _flags = flags;
         // Bring the window forward first: switching between SendInput and
         // posted messages mid-sequence can reorder keystrokes ("hi" → "ih").
-        if (down && GetForegroundWindow() != _root) Focus();
-        if (GetForegroundWindow() == _root)
+        if (down && !OwnsForeground()) Focus();
+        if (OwnsForeground())
         {
             // Real keyboard input: shortcuts and key-state checks work.
             _keys.Key(mac, down, flags);
@@ -364,6 +364,20 @@ internal sealed class WindowInput
     }
 
     public void ReleaseAll() { _keys.ReleaseAll(); _captureTarget = IntPtr.Zero; _left = _right = false; }
+
+    /// The foreground window is ours or another top-level window of the same
+    /// process (WinUI apps such as Windows 11 Notepad hand focus between
+    /// their own top-level windows, so an exact HWND match flickers and keys
+    /// would switch between SendInput and posting, which reorders them).
+    private bool OwnsForeground()
+    {
+        IntPtr fg = GetForegroundWindow();
+        if (fg == IntPtr.Zero) return false;
+        return fg == _root || WinNative.Pid(fg) == _pid;
+    }
+
+    private uint _pid => __pid ??= WinNative.Pid(_root);
+    private uint? __pid;
 
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
 }

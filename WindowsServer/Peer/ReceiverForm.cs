@@ -152,7 +152,12 @@ internal sealed class ReceiverForm : Form
     {
         _closingQuietly = true;
         _follow?.Dispose();
-        if (!IsDisposed) Close();
+        if (IsDisposed) return;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Hide();
+        long hid = sw.ElapsedMilliseconds;
+        Close();
+        if (sw.ElapsedMilliseconds > 500) Log.Line($"HANDOFF: receiver hide {hid} ms, close {sw.ElapsedMilliseconds - hid} ms");
     }
 
     protected override void Dispose(bool disposing)
