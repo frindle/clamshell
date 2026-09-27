@@ -511,7 +511,8 @@ internal static class DeskSelfTest
 
     private static void Handoff()
     {
-        var ui = SynchronizationContext.Current!;
+        Console.WriteLine($"info handoff: SynchronizationContext.Current is {SynchronizationContext.Current?.GetType().Name ?? "null"} on thread {Environment.CurrentManagedThreadId}");
+        var ui = WinNative.UiContext();
         var a = new HandoffManager { AllowOwnProcessWindows = true };
         var b = new HandoffManager();
         var aSent = new List<MessageType>();
