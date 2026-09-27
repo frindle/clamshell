@@ -9,9 +9,18 @@ namespace Clamshell;
 // Absolute mouse positioning uses the VIRTUALDESK flag: SendInput's 0..65535
 // range spans the whole virtual desktop, so we map the normalized point into
 // the target display's rectangle first, then into virtual-desktop units.
+//
+// Every event carries dwExtraInfo = Tag, so the shared-desk low-level hooks
+// (Peer/EdgeController.cs) can tell our injected input from the user's —
+// the Windows twin of the Mac injector's private event-source user data.
 internal sealed class InputInjector
 {
+    /// "CLAM" — dwExtraInfo on everything this process injects.
+    public const nuint Tag = 0x434C414D;
     private readonly DisplayRect _bounds;
+    // What we're holding down, so ReleaseAll() can let go when a peer leaves.
+    private readonly HashSet<ushort> _keysDown = new();
+    private bool _leftDown, _rightDown;
     private readonly int _vx, _vy, _vw, _vh; // virtual-desktop origin/size (px)
     private bool _warnedUnmapped;
 
@@ -46,6 +55,7 @@ internal sealed class InputInjector
         uint flags = button == 1
             ? (down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP)
             : (down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP);
+        if (button == 1) _rightDown = down; else _leftDown = down;
         SendMouse(ax, ay, MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK | flags, 0);
     }
 
@@ -57,6 +67,32 @@ internal sealed class InputInjector
         int wy = Sane(dy), wx = Sane(dx);
         if (wy != 0) SendMouse(0, 0, MOUSEEVENTF_WHEEL, wy);
         if (wx != 0) SendMouse(0, 0, MOUSEEVENTF_HWHEEL, wx);
+    }
+
+    /// Wheel in native units (WHEEL_DELTA = 120 per notch) — the peer link
+    /// converts the Mac's pixel deltas itself (PeerInput.WheelFromPixels).
+    public void Wheel(int dx, int dy)
+    {
+        if (dy != 0) SendMouse(0, 0, MOUSEEVENTF_WHEEL, Math.Clamp(dy, -12000, 12000));
+        if (dx != 0) SendMouse(0, 0, MOUSEEVENTF_HWHEEL, Math.Clamp(dx, -12000, 12000));
+    }
+
+    public bool LeftDown => _leftDown;
+
+    /// A left-button release where the cursor is, whether or not we pressed
+    /// it (ends a local drag after the physical button went to the peer).
+    public void ReleaseLeftRaw() { SendMouse(0, 0, MOUSEEVENTF_LEFTUP, 0); _leftDown = false; }
+
+    /// A Windows virtual key directly (Esc to cancel a local drag).
+    public void VirtualKey(ushort vk, bool down) => SendKey(vk, down);
+
+    /// Lets go of every button and key we pressed (a peer left or dropped).
+    public void ReleaseAll()
+    {
+        foreach (var vk in _keysDown.ToList()) SendKey(vk, false);
+        _keysDown.Clear();
+        if (_leftDown) { SendMouse(0, 0, MOUSEEVENTF_LEFTUP, 0); _leftDown = false; }
+        if (_rightDown) { SendMouse(0, 0, MOUSEEVENTF_RIGHTUP, 0); _rightDown = false; }
     }
 
     public void Key(ushort macKeyCode, bool down, ulong _macFlags)
@@ -74,6 +110,12 @@ internal sealed class InputInjector
             }
             return;
         }
+        SendKey(vk.Value, down);
+    }
+
+    private void SendKey(ushort vk, bool down)
+    {
+        if (down) _keysDown.Add(vk); else _keysDown.Remove(vk);
         var inp = new INPUT
         {
             type = INPUT_KEYBOARD,
@@ -81,8 +123,9 @@ internal sealed class InputInjector
             {
                 ki = new KEYBDINPUT
                 {
-                    wVk = vk.Value,
-                    dwFlags = down ? 0u : KEYEVENTF_KEYUP,
+                    wVk = vk,
+                    dwFlags = (down ? 0u : KEYEVENTF_KEYUP) | (IsExtended(vk) ? KEYEVENTF_EXTENDEDKEY : 0u),
+                    dwExtraInfo = (IntPtr)Tag,
                 }
             }
         };
@@ -96,7 +139,7 @@ internal sealed class InputInjector
             type = INPUT_MOUSE,
             U = new INPUTUNION
             {
-                mi = new MOUSEINPUT { dx = dx, dy = dy, mouseData = mouseData, dwFlags = flags }
+                mi = new MOUSEINPUT { dx = dx, dy = dy, mouseData = mouseData, dwFlags = flags, dwExtraInfo = (IntPtr)Tag }
             }
         };
         SendOne(inp);
@@ -117,7 +160,11 @@ internal sealed class InputInjector
         MOUSEEVENTF_LEFTUP = 0x0004, MOUSEEVENTF_RIGHTDOWN = 0x0008, MOUSEEVENTF_RIGHTUP = 0x0010,
         MOUSEEVENTF_WHEEL = 0x0800, MOUSEEVENTF_HWHEEL = 0x1000, MOUSEEVENTF_ABSOLUTE = 0x8000,
         MOUSEEVENTF_VIRTUALDESK = 0x4000;
-    private const uint KEYEVENTF_KEYUP = 0x0002;
+    private const uint KEYEVENTF_KEYUP = 0x0002, KEYEVENTF_EXTENDEDKEY = 0x0001;
+
+    // Navigation keys share scan codes with the keypad; without the extended
+    // flag an injected arrow/Home/Delete can act as a keypad key.
+    private static bool IsExtended(ushort vk) => vk is >= 0x21 and <= 0x2E or 0x5B or 0x5C or 0x6F or 0xA3 or 0xA5;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MOUSEINPUT { public int dx, dy; public int mouseData; public uint dwFlags, time; public IntPtr dwExtraInfo; }
