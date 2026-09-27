@@ -49,6 +49,16 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
   (PASS locally). CI: peer-interop.yml (macos-15), windows-ci peerselftest +
   two-process peerinterop. Local compile check: scratch wb.sh
   (-p:EnableWindowsTargeting=true), run: scratch pt.sh.
+- Windows mDNS (Makaretu) + clipboard + EdgeGeometry/PeerKeys (0d2723b).
+  Mac fix: NWBrowser .bonjourWithTXTRecord (TXT ids were never delivered).
+- Windows shared desk slice: WinNative, CarryDetector (+DropStrip drop
+  target for OLE file drags), EdgeController (LL hooks, park+blank cursor
+  window, dwExtraInfo CLAM tag, Ctrl+Alt+Shift+L), RemoteInputSink,
+  WindowSource.cs (WindowCapture WGC→NV12, WindowParker, WindowInput
+  PostMessage mouse / SendInput-or-WM_CHAR keys, WindowStreamServer),
+  ReceiverForm + PeerVideoDecoder, HandoffManager, PeerManager, PeerMenu
+  (tray "Shared Desk", shared-desk.json). PerMonitorV2 DPI in Program.
+  `ClamshellServer deskselftest` (CI step) drives real hooks/SendInput/WGC.
 - Known gap (both sides): any incoming connection replaces the live link
   before it authenticates (LAN peer can drop the link; cannot join it).
 
@@ -68,7 +78,5 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
 - Controlled side maps to its primary display only (documented gap).
 
 ## Next
-- Windows: mDNS discovery, clipboard, EdgeGeometry/KeyMap + EdgeController
-  (LL hooks), RemoteInputSink, WindowSource (WGC) + stream server,
-  ReceiverForm, HandoffManager, PeerManager + tray menu.
+- Get deskselftest green on windows-latest (fix what it finds).
 - windows-ci.yml selftest steps; PROTOCOL.md; README Unreleased; test plan

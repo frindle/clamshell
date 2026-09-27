@@ -43,6 +43,17 @@ jobs:
             throw "peer interop failed (listener $($l.ExitCode), connector $($c.ExitCode))"
           }
 
+      - name: Shared-desk desktop selftest (real hooks, SendInput, WGC window capture, handoff)
+        # Needs the runner's interactive desktop session: installs the real
+        # low-level hooks and pushes the cursor past the edge with SendInput,
+        # captures a live window with Windows.Graphics.Capture, parks it
+        # off-screen, clicks and types into it through the window stream,
+        # and runs a full HANDOFF_BEGIN/ACCEPT/RETURN between two managers.
+        # Video frames are a WARN, not a FAIL: the known software-encoder gap
+        # on this runner (see "End-to-end viewer connect" below).
+        timeout-minutes: 5
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- deskselftest
+
       - name: Live smoke test (real display enum, encoder probe, listener bind)
         # `selftest` above never touches DXGI/Media Foundation/HttpListener —
         # those need an actual display/session, which is exactly what nobody

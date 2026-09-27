@@ -32,6 +32,7 @@ internal static class Program
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
         if (args.Length > 0 && args[0] == "peerselftest") return PeerSelfTest.Run();
         if (args.Length > 0 && args[0] == "peerinterop") return PeerSelfTest.RunInterop(args[1..]);
+        if (args.Length > 0 && args[0] == "deskselftest") return DeskSelfTest.Run();
         if (args.Length > 0 && args[0] == "windowlist") return WindowEnum.RunCli();
         if (args.Length > 0 && args[0] == "windowcaptureselftest")
         {
@@ -50,6 +51,10 @@ internal static class Program
         ushort basePort = Proto.DefaultPort;
         if (args.Length > 0 && ushort.TryParse(args[0], out var p)) basePort = p;
 
+        // Physical pixels everywhere: the shared desk's hooks, SetCursorPos,
+        // window rects and DXGI output rectangles only agree when the process
+        // is per-monitor DPI aware. Must precede any window.
+        Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.Run(new TrayApp(basePort));

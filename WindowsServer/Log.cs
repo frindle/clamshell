@@ -34,4 +34,7 @@ internal static class Log
 }
 
 // Display rectangle in virtual-desktop pixel coordinates.
-internal readonly record struct DisplayRect(int X, int Y, int Width, int Height);
+internal readonly record struct DisplayRect(int X, int Y, int Width, int Height)
+{
+    public static DisplayRect Of(Rect r) => new((int)r.X, (int)r.Y, (int)r.W, (int)r.H);
+}

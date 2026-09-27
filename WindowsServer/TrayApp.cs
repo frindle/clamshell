@@ -16,6 +16,7 @@ internal sealed class TrayApp : ApplicationContext
     private SettingsForm? _settingsForm;
 
     private readonly UpdateChecker _updateChecker = new();
+    private readonly PeerMenuController _peers = new();
     private readonly System.Windows.Forms.Timer _updateTimer;
     private (string Tag, string Url)? _updateAvailable;
 
@@ -51,6 +52,10 @@ internal sealed class TrayApp : ApplicationContext
 
         StartServing();
         RebuildMenu();
+
+        // Shared desk (peer link with a Mac or another PC), if turned on.
+        _peers.OnChange = RebuildMenu;
+        _peers.StartIfEnabled();
 
         // Same 6h cadence as the Mac app's checkForUpdate() timer.
         _updateTimer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromHours(6).TotalMilliseconds };
@@ -96,6 +101,10 @@ internal sealed class TrayApp : ApplicationContext
         _basePort = newBasePort;
         StartServing();
         RebuildMenu();
+
+        // Shared desk (peer link with a Mac or another PC), if turned on.
+        _peers.OnChange = RebuildMenu;
+        _peers.StartIfEnabled();
     }
 
     private void RebuildMenu()
@@ -114,6 +123,8 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(toggle);
 
         menu.Items.Add(new ToolStripSeparator());
+
+        menu.Items.Add(_peers.MakeMenuItem());
 
         var settings = new ToolStripMenuItem("Settings…");
         settings.Click += (_, _) => OpenSettings();
@@ -175,6 +186,7 @@ internal sealed class TrayApp : ApplicationContext
     private void ExitApp()
     {
         Log.Line("exiting");
+        _peers.Dispose();
         StopServing();
         _updateTimer.Stop();
         if (_icon is not null) _icon.Visible = false;

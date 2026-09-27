@@ -149,7 +149,7 @@ internal static class WindowCaptureSelfTest
         IntPtr CreateForMonitor([In] IntPtr monitor, [In] ref Guid iid);
     }
 
-    private static GraphicsCaptureItem CreateItemForWindow(IntPtr hwnd)
+    internal static GraphicsCaptureItem CreateItemForWindow(IntPtr hwnd)
     {
         var factory = WinRT.ActivationFactory.Get("Windows.Graphics.Capture.GraphicsCaptureItem");
         var interop = (IGraphicsCaptureItemInterop)factory;
@@ -171,7 +171,7 @@ internal static class WindowCaptureSelfTest
     [DllImport("d3d11.dll", EntryPoint = "CreateDirect3D11DeviceFromDXGIDevice", SetLastError = true)]
     private static extern int CreateDirect3D11DeviceFromDXGIDevice(IntPtr dxgiDevice, out IntPtr graphicsDevice);
 
-    private static IDirect3DDevice CreateDirect3DDevice(ID3D11Device d3dDevice)
+    internal static IDirect3DDevice CreateDirect3DDevice(ID3D11Device d3dDevice)
     {
         using var dxgiDevice = d3dDevice.QueryInterface<IDXGIDevice>();
         int hr = CreateDirect3D11DeviceFromDXGIDevice(dxgiDevice.NativePointer, out IntPtr devicePtr);
@@ -203,4 +203,22 @@ internal static class WindowCaptureSelfTest
 
     [DllImport("CoreMessaging.dll")]
     private static extern int CreateDispatcherQueueController(DispatcherQueueOptions options, out IntPtr dispatcherQueueController);
+
+    [ThreadStatic] private static bool _hasDispatcherQueue;
+
+    /// Window handoff (Peer/WindowSource.cs): one DispatcherQueue for the
+    /// calling (UI) thread, created once and kept for the process lifetime.
+    internal static void EnsureDispatcherQueue()
+    {
+        if (_hasDispatcherQueue) return;
+        var o = new DispatcherQueueOptions
+        {
+            dwSize = Marshal.SizeOf<DispatcherQueueOptions>(),
+            threadType = DQTYPE_THREAD_CURRENT,
+            apartmentType = DQTAT_COM_NONE,
+        };
+        int hr = CreateDispatcherQueueController(o, out _);
+        if (hr != 0) throw new InvalidOperationException($"CreateDispatcherQueueController failed (hr=0x{hr:X8})");
+        _hasDispatcherQueue = true;
+    }
 }
