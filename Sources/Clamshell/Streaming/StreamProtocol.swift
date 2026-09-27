@@ -19,6 +19,27 @@ enum StreamMessageType: UInt8 {
     case key = 0x22
     case scroll = 0x23        // client -> host: dx, dy wheel deltas
     case clipboard = 0x30     // both directions: UTF-8 plain text
+
+    // Peer link (v2, PROTOCOL.md "Peer link") — see Peer/PeerProtocol.swift
+    // for payloads. These ride the 5910 control connection between two
+    // paired hosts; INPUT_* and CLIPBOARD above are reused there unchanged.
+    case peerChallenge = 0x40 // server -> client: 32-byte nonce
+    case peerHello = 0x41     // client -> server: identity + signature (+ PIN proof)
+    case peerHelloAck = 0x42  // server -> client: status + identity + signature
+    case edgeEnter = 0x44     // controller -> controlled: cursor arrived, take input
+    case edgeLeave = 0x45     // controller -> controlled: cursor left, release input
+    case clipboardData = 0x46 // both: typed clipboard payload (kind + bytes)
+    case handoffBegin = 0x48  // source -> receiver: window crossing the edge
+    case handoffAccept = 0x49 // receiver -> source
+    case handoffReject = 0x4A // receiver -> source
+    case handoffReturn = 0x4B // receiver -> source: put it back
+    case windowClosed = 0x4C  // source -> receiver: window went away
+    case fileOffer = 0x50     // sender -> receiver
+    case fileAccept = 0x51    // receiver -> sender
+    case fileReject = 0x52    // receiver -> sender
+    case fileChunk = 0x53     // sender -> receiver
+    case fileDone = 0x54      // sender -> receiver: SHA-256 of the whole file
+    case fileCancel = 0x55    // either direction
 }
 
 enum StreamCodec: UInt8 {

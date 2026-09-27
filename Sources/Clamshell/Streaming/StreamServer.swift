@@ -296,8 +296,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
         case .clipboard:
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
-        case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
-            break // host never receives these
+        default:
+            break // host never receives these (host->client types, peer-link types)
         }
     }
 
