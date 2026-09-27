@@ -25,6 +25,7 @@ final class PeerManager {
     /// Feature modules, attached by PeerFeatures.install.
     var clipboard: PeerClipboard?
     var files: FileTransfer?
+    var handoff: HandoffManager?
     private var autoConnect = true
     private var reconnectWork: DispatchWorkItem?
 

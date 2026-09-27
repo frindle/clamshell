@@ -125,10 +125,30 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var cursorTimer: DispatchSourceTimer?
     private var lastSentCursor: CGPoint?
 
-    init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
+    /// Window handoff: only the linked peer may connect (the v1 stream
+    /// protocol itself is unauthenticated). nil = anyone (v1 behaviour).
+    private let allowedRemoteHost: String?
+    /// Window capture resolution multiplier (the window's backing scale), so
+    /// a handed-off Retina window isn't captured at 1x points.
+    private let windowScale: CGFloat
+    /// Fires (on the server's queue) when a client connection ends.
+    var onClientGone: (() -> Void)?
+
+    init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true,
+         allowedRemoteHost: String? = nil, windowScale: CGFloat = 1) {
         self.source = source
         self.port = port
         self.isPrimary = isPrimary
+        self.allowedRemoteHost = allowedRemoteHost.map(Self.normalizeHost)
+        self.windowScale = max(1, min(windowScale, 3))
+    }
+
+    /// "::ffff:10.0.0.2" / "fe80::1%en0" → comparable form.
+    static func normalizeHost(_ h: String) -> String {
+        var s = h
+        if let pct = s.firstIndex(of: "%") { s = String(s[..<pct]) }
+        if s.lowercased().hasPrefix("::ffff:") { s = String(s.dropFirst(7)) }
+        return s.lowercased()
     }
 
     convenience init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
@@ -202,6 +222,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     // MARK: - Connection lifecycle (on `queue`)
 
     private func accept(_ conn: NWConnection) {
+        if let allowed = allowedRemoteHost {
+            guard case .hostPort(let host, _) = conn.endpoint, Self.normalizeHost("\(host)") == allowed else {
+                clog("STREAM: refusing \(conn.endpoint) — this stream is only for \(allowed)")
+                conn.cancel()
+                return
+            }
+        }
         if connection != nil {
             clog("STREAM: new client replaces existing connection")
             teardownSession()
@@ -241,6 +268,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     private func teardownSession() {
         guard connection != nil || stream != nil else { return }
+        if connection != nil { onClientGone?() }
         if clientAnnounced {
             clientAnnounced = false
             scheduleRestorePost()
@@ -420,8 +448,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     // real backing-store pixel size (no cheap way to read a
                     // window's owning screen's backingScaleFactor from
                     // SCWindow alone) — upgrade if Retina windows look soft.
-                    pxWidth = max(Int(scWindow.frame.width), 1)
-                    pxHeight = max(Int(scWindow.frame.height), 1)
+                    // Even dimensions, ≤ 4096 a side (hardware encoder limits).
+                    let scale = min(self.windowScale, 4096 / max(scWindow.frame.width, scWindow.frame.height, 1))
+                    pxWidth = max(Int(scWindow.frame.width * max(scale, 1 / 4096)) & ~1, 2)
+                    pxHeight = max(Int(scWindow.frame.height * max(scale, 1 / 4096)) & ~1, 2)
                     refresh = 60
                     filter = SCContentFilter(desktopIndependentWindow: scWindow)
                 }

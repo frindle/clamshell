@@ -35,7 +35,7 @@ final class EdgeController {
     struct CursorOps {
         var freeze: (Bool) -> Void = { CGAssociateMouseAndMouseCursorPosition($0 ? 0 : 1) }
         var warp: (CGPoint) -> Void = { CGWarpMouseCursorPosition($0) }
-        var hide: (Bool) -> Void = { $0 ? CGDisplayHideCursor(CGMainDisplayID()) : CGDisplayShowCursor(CGMainDisplayID()) }
+        var hide: (Bool) -> Void = { _ = $0 ? CGDisplayHideCursor(CGMainDisplayID()) : CGDisplayShowCursor(CGMainDisplayID()) }
         var cancelLocalDrag: (_ files: Bool, _ at: CGPoint) -> Void = { CarryDetector.cancelLocalDrag(files: $0, at: $1) }
         var displays: () -> [CGRect] = { EdgeController.displayBounds() }
     }

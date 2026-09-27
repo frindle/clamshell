@@ -26,11 +26,15 @@ final class CarryDetector {
     private var pressed: (id: CGWindowID, pid: pid_t, frame: CGRect, title: String, app: String, at: CGPoint)?
     /// Maps one of our own window numbers to the source window id it shows.
     var receiverLookup: (CGWindowID) -> UInt32? = { _ in nil }
+    /// Frame of the window under the last press, before the drag moved it
+    /// (a handed-off window goes back there on a plain return).
+    private(set) var pressedFrame: CGRect?
 
     /// Call on every left-button press (before it's delivered). Main thread.
     func mouseDown(at p: CGPoint) {
         dragChangeCount = NSPasteboard(name: .drag).changeCount
         pressed = Self.window(at: p).map { ($0.id, $0.pid, $0.frame, $0.title, $0.app, p) }
+        pressedFrame = pressed?.frame
     }
 
     func mouseUp() { pressed = nil }
