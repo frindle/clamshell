@@ -40,6 +40,18 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
   `handoff-selftest` PASS incl. park/restore — the Aug AX fault no longer
   reproduces (the earlier miss was an unsettled window frame).
 
+- Windows peer core slice: WindowsServer/Peer/{PeerProtocol,PeerIdentity,
+  PeerLink,SerialQueue,FileTransfer,PeerSelfTest}.cs. PeerLink = TcpListener
+  + hand-rolled RFC 6455 upgrade + WebSocket.CreateFromStream (no URL ACL).
+  Golden hex table + pinned CryptoKit signature + PIN-proof vector shared
+  with PeerProtocolSelfTest.swift. PeerTests/ (net8.0, same files) runs on
+  macOS; scripts/peer-interop.sh pairs Swift <-> C# over loopback both ways
+  (PASS locally). CI: peer-interop.yml (macos-15), windows-ci peerselftest +
+  two-process peerinterop. Local compile check: scratch wb.sh
+  (-p:EnableWindowsTargeting=true), run: scratch pt.sh.
+- Known gap (both sides): any incoming connection replaces the live link
+  before it authenticates (LAN peer can drop the link; cannot join it).
+
 ## Design decisions (keep consistent on Windows)
 - Controller keeps a virtual cursor in the peer's units (screen size from
   HELLO), sends EDGE_ENTER(edge of peer screen, x, y, carry) then v1
@@ -56,7 +68,7 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
 - Controlled side maps to its primary display only (documented gap).
 
 ## Next
-- Windows: PeerProtocol/Identity/Link (TcpListener + manual WS upgrade, no
-  URL ACL; mDNS), EdgeController hooks, WindowSource (WGC), ReceiverForm,
-  FileTransfer, clipboard. Golden byte vectors shared with Swift selftest.
+- Windows: mDNS discovery, clipboard, EdgeGeometry/KeyMap + EdgeController
+  (LL hooks), RemoteInputSink, WindowSource (WGC) + stream server,
+  ReceiverForm, HandoffManager, PeerManager + tray menu.
 - windows-ci.yml selftest steps; PROTOCOL.md; README Unreleased; test plan

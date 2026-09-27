@@ -1,0 +1,36 @@
+name: Shared desk (Mac + cross-language)
+on:
+  push:
+  pull_request:
+
+# The shared-desk peer link is implemented twice (Swift on the Mac, C# on
+# Windows). This job builds both on one macOS runner and proves they agree:
+# the Swift peer selftests, the platform-neutral C# peer code (PeerTests/,
+# the same files ClamshellServer compiles), and a live loopback pairing of
+# the Swift link against the C# link in both directions.
+jobs:
+  interop:
+    runs-on: macos-15
+    env:
+      CLAMSHELL_PEER_DIR: ${{ runner.temp }}/peerdir
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build (Swift)
+        run: swift build
+      - name: Swift peer protocol selftest (golden vectors, crypto, file names)
+        run: .build/debug/Clamshell peer-protocol-selftest
+      - name: Swift peer link selftest (loopback pairing)
+        run: .build/debug/Clamshell peer-link-selftest
+      - name: Swift clipboard + file transfer selftest
+        run: .build/debug/Clamshell peer-files-selftest
+      - name: Swift edge/KVM selftest (synthetic events, never posted)
+        run: .build/debug/Clamshell edge-selftest
+      - name: Build C# peer code (PeerTests)
+        run: dotnet build PeerTests/ClamshellPeerTests.csproj -c Release -o peertests-out
+      - name: C# peer selftest (same golden vectors, loopback link + files)
+        run: dotnet peertests-out/ClamshellPeerTests.dll
+      - name: Swift <-> C# live interop, both directions
+        run: scripts/peer-interop.sh .build/debug/Clamshell peertests-out/ClamshellPeerTests.dll

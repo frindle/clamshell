@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The platform-neutral part of the Windows shared-desk code (peer
+       protocol, identity, link, file transfer, edge geometry), built for
+       plain net8.0 so it runs on macOS/Linux too: CI links it against the
+       Swift build on a Mac runner (peer-interop.yml) to prove both
+       implementations speak the same wire bytes. The Windows app compiles
+       the very same files. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <RootNamespace>Clamshell</RootNamespace>
+    <AssemblyName>ClamshellPeerTests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../WindowsServer/Protocol.cs" />
+    <Compile Include="../WindowsServer/Log.cs" />
+    <Compile Include="../WindowsServer/Peer/PeerProtocol.cs" />
+    <Compile Include="../WindowsServer/Peer/PeerIdentity.cs" />
+    <Compile Include="../WindowsServer/Peer/PeerLink.cs" />
+    <Compile Include="../WindowsServer/Peer/SerialQueue.cs" />
+    <Compile Include="../WindowsServer/Peer/FileTransfer.cs" />
+    <Compile Include="../WindowsServer/Peer/PeerSelfTest.cs" />
+  </ItemGroup>
+</Project>

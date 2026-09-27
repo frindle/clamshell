@@ -235,7 +235,9 @@ extension Data {
     mutating func appendString(_ s: String) {
         var bytes = Data(s.utf8)
         if bytes.count > PeerLimits.maxName {
-            var cut = String(s.utf8.prefix(PeerLimits.maxName)) ?? ""
+            // Whole characters only (a byte cut could split a scalar); every
+            // character is at least one byte, so start from the first 128.
+            var cut = String(s.prefix(PeerLimits.maxName))
             while cut.utf8.count > PeerLimits.maxName { cut.removeLast() }
             bytes = Data(cut.utf8)
         }
