@@ -101,10 +101,19 @@ final class InputInjector {
                 wheel1: sane(dy * sign), wheel2: sane(dx * sign), wheel3: 0)?.post(tap: .cghidEventTap)
     }
 
+    /// Only the documented modifier bits cross the trust boundary; the rest
+    /// of a CGEventFlags word (non-coalesced, secondary-fn, private bits)
+    /// is not something a remote peer gets to set on events posted here.
+    static let allowedFlagBits: UInt64 =
+        CGEventFlags.maskAlphaShift.rawValue | CGEventFlags.maskShift.rawValue |
+        CGEventFlags.maskControl.rawValue | CGEventFlags.maskAlternate.rawValue |
+        CGEventFlags.maskCommand.rawValue | CGEventFlags.maskNumericPad.rawValue |
+        CGEventFlags.maskSecondaryFn.rawValue | CGEventFlags.maskHelp.rawValue
+
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         guard let event = CGEvent(keyboardEventSource: nil,
                                   virtualKey: CGKeyCode(macKeyCode), keyDown: down) else { return }
-        event.flags = CGEventFlags(rawValue: flags)
+        event.flags = CGEventFlags(rawValue: flags & Self.allowedFlagBits)
         event.post(tap: .cghidEventTap)
     }
 }
