@@ -76,7 +76,7 @@ internal sealed class HandoffManager : IDisposable
         var (sw, sh) = server.Size;
         Send(PeerMsg.HandoffBegin(new HandoffBeginPayload(id, peerEdge, (float)position, (float)w.GrabX, (float)w.GrabY,
             (uint)Math.Max(w.Frame.W, 1), (uint)Math.Max(w.Frame.H, 1), server.Port, w.Title, w.App)));
-        Log.Line($"HANDOFF: \"{w.App} — {w.Title}\" → peer on port {server.Port} ({sw}x{sh}){(parked ? ", parked off-screen" : "")}");
+        Log.Line($"HANDOFF: \"{w.App} — {w.Title}\" → peer on port {server.Port} ({sw}x{sh}){(parked ? (parker.Ghosted ? ", hidden in place" : ", parked off-screen") : "")}");
         StartWatching();
         var timeout = new System.Windows.Forms.Timer { Interval = 15000 };
         timeout.Tick += (_, _) =>
@@ -165,7 +165,9 @@ internal sealed class HandoffManager : IDisposable
     {
         if (!_receivers.Remove(sourceWindowId, out var f)) return;
         Log.Line($"HANDOFF: sending window {sourceWindowId} back to the peer");
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         f.CloseQuietly();
+        if (sw.ElapsedMilliseconds > 500) Log.Line($"HANDOFF: closing the receiver took {sw.ElapsedMilliseconds} ms");
         Send(PeerMsg.HandoffReturn(sourceWindowId, edge, (float)position));
         OnChange();
     }
