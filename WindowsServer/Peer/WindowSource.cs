@@ -354,7 +354,7 @@ internal sealed class WindowStreamServer : IDisposable
     {
         if (host is null || !IPAddress.TryParse(host.Split('%')[0], out var a)) return host;
         if (a.IsIPv4MappedToIPv6) a = a.MapToIPv4();
-        a.ScopeId = 0;
+        if (a.AddressFamily == AddressFamily.InterNetworkV6) a.ScopeId = 0;
         return a.ToString();
     }
 

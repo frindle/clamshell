@@ -461,137 +461,167 @@ evidence, none of them a unit test:
   hardware.** No physical Windows machine was available in this
   environment.
 
-**Not implemented:** the control-connection / HANDOFF_* multiplexed protocol
-below, drag-trigger detection, and AX-based window hiding on the Mac side
-(blocked, see above). Windows-side window capture (the
-`Windows.Graphics.Capture` path described in v2 below) — needed before this
-viewer can be tested against a real Windows-hosted window stream, or before
-Windows can be a window-handoff *source* at all.
+**Superseded:** the control connection, drag-trigger detection, window
+hiding and Windows-side window capture this section lists as missing are now
+built — see "Peer link (v2)" below. The v1 window stream above is exactly the
+video/input leg a handoff negotiates.
 
-## Window Handoff v2 (PROPOSED — not implemented, not a contract yet)
+## Peer link (v2) — shared desk between two paired machines
 
-Drag an app window off the edge of one machine's screen and have it reappear,
-live and interactive, as a native-feeling floating window on a *second*
-machine's screen — and back again. Started 2026-08-08: Mac + a Windows VM
-(hosted on Unraid, GPU-passthrough to its own physical monitor — the Mac has
-zero OS-level awareness that monitor exists). Keyboard/mouse continuity is
-out of scope here — solved separately (Synergy-style software KVM, planned as
-a later phase, or hardware IP-KVM). This section is capture/stream/handoff
-only, and unlike v1's host-serves/client-connects asymmetry, **both machines
-run every role**: each is a sender (owns real windows, can stream one out) and
-a receiver (can render an incoming stream as a local floating window) at once.
-The single-window streaming pipeline above (fixed port, explicit selection)
-is the capture/encode/stream leg this whole design will eventually reuse; the
-control-connection/HANDOFF_* messages below are the still-unbuilt multiplexed
-discovery/trigger layer on top of it.
+Synergy-style: two machines (Mac↔Mac, Mac↔Windows, Windows↔Windows) share
+one mouse and keyboard across a screen edge, sync the clipboard, move files by
+drag-and-drop, and hand live windows back and forth. Both machines run every
+role at once. Implemented in `Sources/Clamshell/Peer/` + `WindowHandoff/`
+(Mac) and `WindowsServer/Peer/` (Windows); the byte layout below is pinned by
+a shared golden table (`peer-protocol-selftest` / `peerselftest`) and a
+Swift⇄C# interop run (`scripts/peer-interop.sh`, CI `peer-interop.yml`).
 
-**Why not v1's per-display-port model:** v1 serves a small, fixed set of
-displays at predictable ports (`basePort + index`). Windows are dynamic —
-opened, closed, dragged, ID reused — so a fixed port per window doesn't work.
-Instead: one persistent **control connection** per machine pair (new fixed
-port, proposed **5910**), multiplexing window list/handoff control messages
-*and* tagged video/input for however many windows are actively remoted
-between that pair at once.
+### Transport and discovery
 
-**Pairing:** reuses the existing QR/saved-machines model (README "QR pairing
-+ saved machines") rather than inventing discovery — pair the Mac and the
-Windows-VM agent once, each saves the other's address.
+- One **WebSocket on TCP 5910** per machine pair (`ws://host:5910/`, binary
+  messages, the same `[type u8][len u32 BE][payload]` framing as v1; a WS
+  message may carry several frames or part of one — receivers reassemble).
+  Windows does the RFC 6455 upgrade by hand over a plain `TcpListener`, so no
+  URL ACL / elevation, and both sides know the peer's real address.
+- Discovery: DNS-SD **`_clamshell-peer._tcp`**, TXT `id=<peer id>`,
+  `name=<display name>`, `v=2` (Bonjour on the Mac, `Makaretu.Dns.Multicast`
+  on Windows). A machine ignores its own id. Connecting by address works
+  without mDNS.
+- Auto-reconnect: when two machines that trust each other see each other,
+  only the one with the **smaller peer id** dials (so they never
+  cross-connect); after a drop it retries every 3 s.
+- One link at a time. **Known gap:** an incoming connection replaces the
+  current link before it has authenticated, so a host on the LAN can drop a
+  link (it cannot join it — every message before authentication is refused).
 
-### Proposed message types (control connection, same `[type][len][payload]` framing)
+### Identity, pairing, authentication (0x40–0x42)
 
-| Type | Name | Direction | Payload |
-|------|------|-----------|---------|
-| 0x40 | WINDOW_LIST_REQUEST | peer → peer | empty |
-| 0x41 | WINDOW_LIST_RESPONSE | peer → peer | count(2 BE), then per window: windowId(4 BE), titleLen(1)+title(UTF-8), appNameLen(1)+appName(UTF-8), widthPx(4 BE), heightPx(4 BE) |
-| 0x42 | HANDOFF_BEGIN | source → dest | windowId(4 BE), crossX/crossY (Float32 BE ×2, normalized 0..1 position where the drag crossed the trigger edge), titleLen+title, appNameLen+appName, widthPx(4 BE), heightPx(4 BE) |
-| 0x43 | HANDOFF_ACCEPT | dest → source | windowId(4 BE) — dest opened a receiver window, ready for frames |
-| 0x44 | HANDOFF_REJECT | dest → source | windowId(4 BE), reasonLen(1)+reason(UTF-8) |
-| 0x45 | WINDOW_STREAM_START | dest → source | windowId(4 BE) — begin encoding/sending |
-| 0x46 | WINDOW_STREAM_FRAME | source → dest | windowId(4 BE) + v1's VIDEO_FRAME payload shape (flags, ptsMicros, AVCC NALs) |
-| 0x47 | WINDOW_INPUT_MOUSE_MOVE / _BUTTON / _KEY / _SCROLL | dest → source | windowId(4 BE) + v1's matching INPUT_* payload, coordinates normalized to *this window's* bounds, not display bounds |
-| 0x48 | HANDOFF_RETURN | dest → source | windowId(4 BE) — dragged back across the edge; source un-hides the real window, dest tears down its receiver |
-| 0x49 | WINDOW_CLOSED | source → dest | windowId(4 BE) — real window closed while remoted; dest closes its receiver too |
+Each install has a P-256 ECDSA key (Mac: Application Support/Clamshell;
+Windows: %LOCALAPPDATA%\Clamshell; `CLAMSHELL_PEER_DIR` overrides). Public key
+on the wire = 65-byte X9.63 (`04‖X‖Y`); **peer id** = lowercase hex SHA-256 of
+it. Signatures are raw `r‖s` (64 bytes) over `nonce ‖ own public key`. A
+6-digit **pairing PIN** is shown on each machine (menu / tray); PIN proof =
+HMAC-SHA256(key = SHA-256("clamshell-pair:" + PIN), data = nonce ‖ own public key).
+Strings are `len u16 BE + UTF-8`, at most 128 bytes (truncated on a character
+boundary).
 
-### Capture
+| Type | Name | Dir | Payload |
+|------|------|-----|---------|
+| 0x40 | PEER_CHALLENGE | server → client | serverNonce (32) |
+| 0x41 | PEER_HELLO | client → server | version u8 (=2), flags u8 (bit 0 = PIN proof present), publicKey (65), clientNonce (32), signature over serverNonce (64), [pinProof over serverNonce (32)], name str, screenW u32, screenH u32 |
+| 0x42 | PEER_HELLO_ACK | server → client | version u8, status u8 (0 ok, 1 untrusted, 2 bad PIN, 3 bad signature, 4 busy, 5 version); if ok: publicKey (65), signature over clientNonce (64), proofFlag u8, [pinProof over clientNonce (32)], name str, screenW u32, screenH u32 |
 
-- **Mac**: `SCContentFilter(desktopIndependentWindow:)` — works on a window
-  that's off-screen/occluded, not on one that's minimized.
-- **Windows**: `Windows.Graphics.Capture`'s `GraphicsCaptureItem.CreateFromWindowId`
-  — same off-screen-ok/minimized-not-ok constraint, needs verifying against a
-  real VM (no GPU passthrough inside the VM itself for the *capture* side,
-  since the VM captures its own windows before the passthrough GPU scans them
-  out — capture path doesn't touch the passthrough hardware).
+Server: signature must verify; an untrusted key must carry a valid PIN proof
+for the server's PIN (else `untrusted` / `bad PIN`), and is then trusted.
+Client: signature must verify; if it doesn't already trust the server it must
+have typed the server's PIN and the ACK must carry a matching proof — so
+neither side trusts "whoever answered". Anything but these three before
+authentication closes the connection. Screen sizes are each side's primary
+display in its own input units (points on a Mac, pixels on Windows).
 
-  **This is a new capture technology for this codebase, not a port of the
-  existing one.** `WindowsServer`'s current display capture (`DisplayCapture.cs`)
-  is DXGI Desktop Duplication (`IDXGIOutputDuplication`, via Vortice) — a
-  whole-display API with no per-window filter concept. The alternatives that
-  stay within DXGI/Win32 (`PrintWindow`, `BitBlt` from a window's DC) were
-  considered and rejected: `BitBlt` only works for on-screen, unoccluded
-  windows, which breaks the moment the source window is hidden off-screen
-  (the whole mechanism this feature depends on); `PrintWindow` is
-  unreliable for GPU-composited windows (Chrome, video, anything DirectX)
-  even with `PW_RENDERFULLCONTENT`. `Windows.Graphics.Capture` is the only
-  Windows API that reliably captures off-screen, GPU-composited windows —
-  matching what ScreenCaptureKit already does on Mac — so it coexists
-  alongside DXGI Desktop Duplication as a second capture path used only for
-  window handoff, not a replacement for display streaming.
+### Shared mouse and keyboard (0x44–0x45 + v1 INPUT_*)
 
-  Practically: needs the project's `TargetFramework` bumped from
-  `net8.0-windows` to a versioned moniker (`net8.0-windows10.0.19041.0`,
-  the floor for reliable per-window `GraphicsCaptureItem` creation) to get
-  WinRT projections for free from the C#/WinRT source generator — no manual
-  CsWinRT NuGet package needed for the standard projected surface. The one
-  piece that *does* need manual COM interop is turning an `HWND` into a
-  `GraphicsCaptureItem`: `IGraphicsCaptureItemInterop.CreateForWindow`
-  isn't part of the standard projection (Microsoft's own WGC samples
-  P/Invoke-declare this interface directly). Also needs a
-  `DispatcherQueueController` running on the calling thread before any WGC
-  call — the Windows analog of the Mac's `NSApplication.shared` fix for
-  `CGS_REQUIRE_INIT` (both are "this capture API needs a real windowing
-  session, not just a bare process" quirks). Bumping the TFM to a versioned
-  Windows moniker also raises the minimum Windows version this app runs on
-  — worth flagging explicitly when this lands, not a silent side effect.
+| Type | Name | Payload |
+|------|------|---------|
+| 0x44 | EDGE_ENTER | edge u8 (edge of the **controlled** screen the cursor enters on: 0 left, 1 right, 2 top, 3 bottom), x f32, y f32 (normalized 0…1, top-left origin), leftButtonDown u8 |
+| 0x45 | EDGE_LEAVE | empty — control goes back to the controller |
 
-### Hiding the source window without minimizing it
+- Each machine configures which of its edges leads to the peer. Pushing the
+  pointer out through that edge (of a display with nothing beyond it) sends
+  EDGE_ENTER on the opposite edge; the controller freezes/hides its cursor,
+  keeps a virtual cursor in the peer's screen units (speed scale =
+  clamp(peerW / localW, 0.5, 3)) and sends v1 INPUT_MOUSE_MOVE /
+  INPUT_MOUSE_BUTTON / INPUT_KEY / INPUT_SCROLL, all swallowed locally.
+  Leaving the peer's screen by the entry edge sends EDGE_LEAVE and the local
+  cursor reappears where it crossed.
+- The controlled side honours input only between EDGE_ENTER and EDGE_LEAVE,
+  maps it to its **primary display** (known gap: secondary displays of the
+  controlled machine aren't reachable), and tags everything it injects so its
+  own edge detection ignores it. Receiving EDGE_ENTER while controlling the
+  other side abandons our crossing (last crossing wins).
+- Keys are macOS virtual key codes + CGEventFlags bits (v1 INPUT_KEY). Windows
+  maps Ctrl ⇄ Command, Win ⇄ Control, Alt ⇄ Option. Modifiers travel as their
+  own key down/up; Caps Lock as a down+up tap.
+- Scroll is macOS pixel deltas (positive y = up, positive x = left); Windows
+  converts 120 wheel units ⇄ 40 px.
+- Crossing with the left button held is allowed only when it carries
+  something (below); EDGE_ENTER leftButtonDown = 1 means "carrying": the
+  controlled side injects no press and treats the next left release as the
+  end of the carry.
+- Panic key while controlling: Mac Ctrl+Option+Command+L, Windows
+  Ctrl+Alt+Shift+L — takes control back immediately.
 
-Capture requires the window to not be minimized, so "hide" means **move it
-off-screen** (large negative coordinate), not `AXUIElement`/`SetWindowPos`
-minimize. Mac: Accessibility API (`AXUIElementSetAttributeValue` on
-`kAXPositionAttribute`). Windows: `SetWindowPos`. Restored to its original
-position on HANDOFF_RETURN or disconnect.
+### Clipboard (v1 0x30 + 0x46)
 
-### Drag-trigger detection (per machine, watches its own windows only)
+Text rides v1 CLIPBOARD (UTF-8). Images ride **0x46 CLIPBOARD_DATA**:
+`kind u8` (1 = PNG) + bytes. Each side polls its clipboard (Mac change count,
+Windows sequence number), sends new copies, and doesn't echo what it just
+wrote. Limit 32 MiB. Copied files aren't synced — drag them or use Send Files.
 
-- **Mac**: global `CGEventTap` on left-mouse-drag; `AXUIElementCopyAttributeValue`
-  identifies the window under the cursor at drag-start and polls its live
-  frame during the drag. On mouse-up, if the window's frame center has crossed
-  the configured trigger edge (top, since the portable monitor is mounted
-  above), fire HANDOFF_BEGIN.
-- **Windows**: `SetWinEventHook` on `EVENT_SYSTEM_MOVESIZESTART/END` +
-  `EVENT_OBJECT_LOCATIONCHANGE`, `GetWindowRect` for the live frame, same
-  edge-threshold logic against whichever edge is configured for that side.
-- Trigger edge is a **per-machine config value**, not something either side
-  can infer — there's no shared physical-layout API since these are two
-  independent OS instances with no compositor in common.
+### Files (0x50–0x55)
 
-### Open questions before implementation starts
+| Type | Name | Payload |
+|------|------|---------|
+| 0x50 | FILE_OFFER | transferId u32, size u64, name str |
+| 0x51 | FILE_ACCEPT | transferId u32 |
+| 0x52 | FILE_REJECT | transferId u32, reason u8 |
+| 0x53 | FILE_CHUNK | transferId u32, offset u64, bytes (≤ 128 KiB) |
+| 0x54 | FILE_DONE | transferId u32, sha256 (32) |
+| 0x55 | FILE_CANCEL | transferId u32, reason u8 |
 
-1. Exact edge-threshold heuristic (drag must *end* past the edge, vs. cross
-   it and pause, vs. a dedicated modifier-key-drag) — needs to feel
-   intentional, not accidental.
-2. Multi-monitor on the Mac side: which of the Mac's own displays (if more
-   than one) has the "hot edge" active.
-3. Auth on the control connection — same open item as v1 (currently trusted
-   LAN/VPN only), but this one also injects input and moves windows, a bigger
-   blast radius if it's ever exposed off-LAN.
-4. Focus/activation semantics when a receiver window is clicked — does it
-   need to feel like a truly local window (Spaces, Mission Control, Alt-Tab)
-   or is a plain floating window enough for v1 of this feature.
+Outgoing files go one at a time (queued); up to 4 incoming at once;
+auto-accepted from the paired peer into
+Downloads (hidden `.part` file, renamed on a matching SHA-256; name sanitized,
+unique-suffixed). Chunks strictly in order, ≤ 8 in flight; offer unanswered
+for 60 s = failed; ≤ 8 GiB. Folders are sent as a `.zip`. Reject/cancel
+reasons: 0 user, 1 error, 2 too large, 3 disk, 4 unsupported, 5 busy.
 
-Latency target (estimate, not yet measured): same-LAN hardware capture →
-encode → decode pipeline as v1's display streaming, 15–35ms glass-to-glass is
-realistic (comparable to Moonlight/Sunshine on LAN); window content is
-typically smaller than a full display so should land at the favorable end.
-Real number needs a glass-to-glass test once both ends exist — extend
-`stream-selftest`/`SelfTest.cs` with per-stage timing rather than guessing.
+**Drag-and-drop:** files dragged across the edge are sent when the button is
+released on the other machine (the controller drove the drag) or as soon as
+the peer's cursor leaves (the peer drove a drag that started on this
+machine); the local drag is cancelled (Esc) so nothing drops at the edge.
+The Mac reads the drag pasteboard; Windows lines the edge with a 2-px,
+nearly transparent drop target while the button is held.
+
+### Window handoff (0x48–0x4C)
+
+| Type | Name | Dir | Payload |
+|------|------|-----|---------|
+| 0x48 | HANDOFF_BEGIN | source → receiver | windowId u32, edge u8 (receiver's screen), position f32 (0…1 along it), grabX f32, grabY f32 (cursor within the window, 0…1), width u32, height u32, streamPort u16, title str, appName str |
+| 0x49 | HANDOFF_ACCEPT | receiver → source | windowId u32 |
+| 0x4A | HANDOFF_REJECT | receiver → source | windowId u32, reason u8 |
+| 0x4B | HANDOFF_RETURN | receiver → source | windowId u32, edge u8 (0xFF = none: restore where it was), position f32 |
+| 0x4C | WINDOW_CLOSED | source → receiver | windowId u32 — the real window closed, or the source took it back ("Bring Back") |
+
+Flow: a window dragged by its title bar across the edge (the window under the
+press has moved), or picked from the menu, is **served on a fresh v1 window
+stream** on a port in **5921–5940** that accepts only the peer's address; the
+real window is **parked** almost entirely off-screen (still composited, so
+capture continues; never minimized) and HANDOFF_BEGIN is sent. The receiver
+opens a borderless window (title strip + "↩ Send back"), dials
+`ws://source:streamPort/` and speaks plain v1: HELLO → HELLO_ACK (codec,
+captured size) → VIDEO_FRAME…, INPUT_* back normalized to the video. While
+the carrying drag is still held the receiver window follows the cursor.
+No HANDOFF_ACCEPT within 15 s → the window comes back. ↩, closing the
+receiver, or dragging it back across the edge sends HANDOFF_RETURN; the
+source restores the window (under the cursor if it was dragged home). The
+source checks every second that the real window still exists (WINDOW_CLOSED
+if not). A dropped link brings every window home and closes every receiver.
+
+Capture: Mac ScreenCaptureKit (`desktopIndependentWindow`), Windows
+Windows.Graphics.Capture (`IGraphicsCaptureItemInterop.CreateForWindow`, needs a
+DispatcherQueue on the calling thread; the capture size is fixed at start —
+a resized window is cropped/padded). Park/restore: Mac Accessibility
+position, Windows `SetWindowPos`. Receiver codecs: the Mac asks for HEVC, the
+Windows receiver for H.264; the source falls back to H.264 and says so in
+HELLO_ACK.
+
+Input into a parked window: the Mac posts events to the owning process
+(window-targeted). Windows posts mouse messages to the child window under
+the mapped point, and injects keys with SendInput when the window can be
+brought to the foreground (else posted WM_KEYDOWN/WM_CHAR). **Known gaps
+(Windows source):** clicks on the title bar / frame aren't delivered; apps
+that read raw input or the async key state (games, some Chromium / UWP
+surfaces) may ignore posted mouse input; Windows 11 may draw its yellow
+capture border.
+

@@ -65,7 +65,7 @@ internal sealed class HandoffManager : IDisposable
         {
             if (_outgoing.Values.Any(o => o.Server.Port == port)) continue;
             try { server = new WindowStreamServer(w.Handle, port, host); }
-            catch (SocketException) { }
+            catch (SocketException e) when (e.SocketErrorCode == SocketError.AddressAlreadyInUse) { }
             catch (Exception e) { Log.Line($"HANDOFF: cannot capture \"{w.Title}\": {e.Message}"); return false; }
         }
         if (server is null) { Log.Line($"HANDOFF: no free window-stream port in {FirstPort}-{LastPort}"); return false; }
