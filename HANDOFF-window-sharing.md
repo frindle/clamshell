@@ -29,6 +29,17 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
   the drag triggers (onCarryDropped / onPeerLeftCarrying → files.send),
   "Send Files to …" menu item, `peer --send path`. `peer-files-selftest` PASS.
 
+- Mac window handoff slice: WindowHider (AX window found by pid + frame
+  match, parked in the display's bottom-right corner, restored to the
+  pre-drag origin), StreamServer(allowedRemoteHost:, windowScale:),
+  ReceiverWindow (borderless, AVSampleBufferDisplayLayer, title strip with
+  "Send back", follows the cursor while the carrying drag is held),
+  HandoffManager (ports 5921-5940, 15 s accept timeout, 1 s closed-window
+  watcher, reset on unlink), wired in PeerFeatures (window crossing → begin,
+  receiver crossing → HANDOFF_RETURN, "Bring Back Handed-off Windows").
+  `handoff-selftest` PASS incl. park/restore — the Aug AX fault no longer
+  reproduces (the earlier miss was an unsettled window frame).
+
 ## Design decisions (keep consistent on Windows)
 - Controller keeps a virtual cursor in the peer's units (screen size from
   HELLO), sends EDGE_ENTER(edge of peer screen, x, y, carry) then v1
@@ -45,10 +56,6 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
 - Controlled side maps to its primary display only (documented gap).
 
 ## Next
-- Mac window handoff source (WindowHider via AX pid+frame match, hide to
-  bottom-right corner sliver like AeroSpace, StreamServer on 5921+,
-  allow only peer IP) + ReceiverWindow (FrameAssembler + AVSampleBuffer
-  DisplayLayer, title strip with Return), selftest.
 - Windows: PeerProtocol/Identity/Link (TcpListener + manual WS upgrade, no
   URL ACL; mDNS), EdgeController hooks, WindowSource (WGC), ReceiverForm,
   FileTransfer, clipboard. Golden byte vectors shared with Swift selftest.

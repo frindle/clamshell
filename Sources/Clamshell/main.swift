@@ -218,6 +218,13 @@ if args.count > 1 {
     case "peer-files-selftest":
         // Clipboard + file transfer between two loopback peer links.
         exit(PeerFilesSelfTest.run())
+    case "handoff-selftest":
+        // Window handoff between two loopback peer links, on a real window
+        // of a child process (frames need Screen Recording, park/restore
+        // needs Accessibility — each SKIPs without it).
+        exit(HandoffSelfTest.run())
+    case "handoff-selftest-window":
+        HandoffSelfTest.runChildWindow()
     case "peer":
         // Headless shared desk (PROTOCOL.md "Peer link"): KVM, clipboard,
         // files and window handoff with a paired machine. See PeerCommand.
@@ -234,7 +241,7 @@ if args.count > 1 {
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
               "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | peer-protocol-selftest | peer-link-selftest | " +
-              "edge-selftest | peer-files-selftest | peer]")
+              "edge-selftest | peer-files-selftest | handoff-selftest | peer]")
         exit(64)
     }
 }
