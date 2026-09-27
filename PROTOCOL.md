@@ -632,3 +632,22 @@ surfaces) may ignore posted mouse input; Windows 11 may draw its yellow
 capture border around the invisible window; the hidden window keeps its
 taskbar button and can be Alt-Tabbed to (it stays invisible).
 
+### What is proven, and how
+
+- `clamshell peer-protocol-selftest` / `ClamshellServer peerselftest`: golden
+  wire vectors, signatures and PIN proofs shared by Swift and C#.
+- `scripts/peer-interop.sh` (CI: peer-interop.yml, macOS): Swift ↔ C# pair,
+  link, clipboard and file transfer over loopback, both directions.
+- `clamshell edge-selftest`, `peer-files-selftest`, `handoff-selftest` (Mac,
+  local only: they need a logged-in session with Accessibility and Screen
+  Recording).
+- `ClamshellServer deskselftest` (CI: windows-ci.yml on windows-latest,
+  real desktop session): LL hooks, crossing, key mapping, panic key,
+  carry detection, WGC capture of a hidden window, a stranger's address
+  refused, posted clicks while hidden, typing into Notepad, and a handoff
+  round trip between two HandoffManagers (begin, accept, HELLO_ACK, return,
+  WINDOW_CLOSED). Video frames WARN there: the runner's software H.264
+  encoder doesn't start.
+- Not proven: anything between two physical machines, and a video frame
+  from a Windows source reaching a receiver.
+
