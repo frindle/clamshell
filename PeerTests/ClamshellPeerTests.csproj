@@ -23,5 +23,12 @@
     <Compile Include="../WindowsServer/Peer/SerialQueue.cs" />
     <Compile Include="../WindowsServer/Peer/FileTransfer.cs" />
     <Compile Include="../WindowsServer/Peer/PeerSelfTest.cs" />
+    <Compile Include="../WindowsServer/Peer/EdgeGeometry.cs" />
+    <Compile Include="../WindowsServer/Peer/PeerKeys.cs" />
+    <Compile Include="../WindowsServer/MacKeyMap.cs" />
+    <Compile Include="../WindowsServer/Peer/PeerDiscovery.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Makaretu.Dns.Multicast.New" Version="0.38.0" />
   </ItemGroup>
 </Project>

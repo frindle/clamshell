@@ -27,8 +27,11 @@ enum PeerInteropTest {
     }
 
     static func run(_ args: [String]) -> Int32 {
-        let usage = "usage: peer-interop listen <port> <dir> | connect <host> <port> <pin> <dir>"
+        let usage = "usage: peer-interop listen <port> <dir> | connect <host> <port> <pin> <dir> | mdns <name> <port> <seconds>"
         guard let mode = args.first else { print(usage); return 2 }
+        if mode == "mdns", args.count == 4, let port = UInt16(args[2]), let secs = Double(args[3]) {
+            return mdns(name: args[1], port: port, seconds: secs)
+        }
         let listen = mode == "listen"
         guard (listen && args.count == 3) || (mode == "connect" && args.count == 5),
               let port = UInt16(args[listen ? 1 : 2]) else { print(usage); return 2 }
@@ -104,5 +107,30 @@ enum PeerInteropTest {
         if bad == 0 { print("ok   \(expected.count) golden messages received byte-identical") }
         print(bad == 0 ? "PASS" : "FAIL: \(bad) problem(s)")
         return bad == 0 ? 0 : 1
+    }
+
+    /// Advertises `name` on `port` over Bonjour and browses for
+    /// _clamshell-peer._tcp for `seconds`, printing "found <name> id=<id>"
+    /// for every other Clamshell seen (the C# side's mDNS included).
+    private static func mdns(name: String, port: UInt16, seconds: Double) -> Int32 {
+        let link = PeerLink(identity: PeerIdentity(), trust: PeerTrustStore(fileURL: nil), localName: name, port: port) { (1, 1) }
+        var seen = Set<String>()
+        let lock = NSLock()
+        link.onDiscoveredChange = { peers in
+            lock.withLock {
+                for p in peers where !seen.contains(p.name + (p.id ?? "")) {
+                    seen.insert(p.name + (p.id ?? ""))
+                    print("found \(p.name) id=\(p.id ?? "-")"); fflush(stdout)
+                }
+            }
+        }
+        do { try link.startListening(advertise: true) } catch { print("FAIL: listen: \(error)"); return 1 }
+        print("advertising \(name) id=\(link.identity.id)"); fflush(stdout)
+        link.startBrowsing()
+        Thread.sleep(forTimeInterval: seconds)
+        let done = DispatchSemaphore(value: 0)
+        link.stop { done.signal() }
+        _ = done.wait(timeout: .now() + 3)
+        return 0
     }
 }

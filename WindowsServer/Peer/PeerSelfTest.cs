@@ -41,6 +41,8 @@ internal static class PeerSelfTest
         Framing();
         Crypto();
         FileNames();
+        Edge();
+        Keys();
         if (includeLoopback)
         {
             Loopback();
@@ -308,6 +310,65 @@ internal static class PeerSelfTest
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
+    // MARK: - Edge geometry (same cases as EdgeSelfTest.swift)
+
+    private static bool Near(double a, double b, double eps = 0.01) => Math.Abs(a - b) <= eps;
+
+    private static void Edge()
+    {
+        var single = new[] { new Rect(0, 0, 1440, 900) };
+        var e = EdgeGeometry.Exit(1439, 450, 4, 0, PeerEdge.Right, single);
+        Check(e is { } x && Near(x.Fraction, 0.5), "right edge exit at mid-height");
+        Check(EdgeGeometry.Exit(1439, 450, -4, 0, PeerEdge.Right, single) is null, "moving away from the edge doesn't cross");
+        Check(EdgeGeometry.Exit(1200, 450, 4, 0, PeerEdge.Right, single) is null, "not at the edge doesn't cross");
+        Check(EdgeGeometry.Exit(0, 225, -3, 0, PeerEdge.Left, single) is { } l && Near(l.Fraction, 0.25), "left edge exit at a quarter");
+        Check(EdgeGeometry.Exit(-5, 225, -3, 0, PeerEdge.Left, single) is { } lb && Near(lb.Fraction, 0.25), "hook point past the edge still exits");
+        Check(EdgeGeometry.Exit(360, 0, 0, -2, PeerEdge.Top, single) is { } t && Near(t.Fraction, 0.25), "top edge exit");
+        Check(EdgeGeometry.Exit(1080, 899, 0, 2, PeerEdge.Bottom, single) is { } b && Near(b.Fraction, 0.75), "bottom edge exit");
+        var dual = new[] { new Rect(0, 0, 1440, 900), new Rect(1440, -90, 1920, 1080) };
+        Check(EdgeGeometry.Exit(1439, 450, 5, 0, PeerEdge.Right, dual) is null, "seam between two local displays is not an exit");
+        Check(EdgeGeometry.Exit(3359, 450, 5, 0, PeerEdge.Right, dual) is { } far && far.Display == dual[1] && Near(far.Fraction, 0.5),
+              "outer edge of the second display exits");
+        var stacked = new[] { new Rect(0, 0, 1000, 800), new Rect(500, -600, 1000, 600) };
+        Check(EdgeGeometry.Exit(200, 0, 0, -3, PeerEdge.Top, stacked) is not null, "uncovered stretch of a top edge exits");
+        Check(EdgeGeometry.Exit(700, 0, 0, -3, PeerEdge.Top, stacked) is null, "covered stretch of a top edge does not");
+        var r = EdgeGeometry.ReentryPoint(single[0], PeerEdge.Right, 0.5);
+        Check(Near(r.X, 1436) && Near(r.Y, 449.5), "re-entry point is inset from the edge");
+        Check(Near(EdgeGeometry.SpeedScale(1440, 2880), 2) && Near(EdgeGeometry.SpeedScale(1440, 100), 0.5)
+              && Near(EdgeGeometry.SpeedScale(1000, 9000), 3), "speed scale clamps to 0.5…3");
+
+        var c = new RemoteCursor(PeerEdge.Left, 0.5, 1921, 1081);
+        Check(Near(c.X, 0) && Near(c.Y, 540), "enters on the peer's left edge");
+        Check(c.Move(100, 0) is null && Near(c.Normalized.X, 100.0 / 1920), "moves inward");
+        Check(c.Move(0, 5000) is null && Near(c.Y, 1080), "clamped at the bottom");
+        var back = c.Move(-150, 0);
+        Check(back is { } bk && Near(bk, 1.0), "leaving through the entry edge returns the along-edge position");
+        var tc = new RemoteCursor(PeerEdge.Top, 0.25, 1001, 501);
+        Check(Near(tc.X, 250) && Near(tc.Y, 0), "enters on the top edge");
+        Check(tc.Move(0, 10) is null && tc.Move(0, -11) is not null, "top entry leaves upward");
+        Check(new RemoteCursor(PeerEdge.Right, 0, 101, 101).Move(1000, 0) is not null, "right entry leaves rightward");
+    }
+
+    private static void Keys()
+    {
+        Check(PeerKeys.MacCode(PeerKeys.VK_LCONTROL, false) == 55 && PeerKeys.MacCode(PeerKeys.VK_RCONTROL, true) == 54, "Ctrl → Command");
+        Check(PeerKeys.MacCode(PeerKeys.VK_LWIN, true) == 59 && PeerKeys.MacCode(PeerKeys.VK_LMENU, false) == 58
+              && PeerKeys.MacCode(PeerKeys.VK_RSHIFT, false) == 60, "Win → Control, Alt → Option, right Shift");
+        Check(PeerKeys.MacCode('C', false) == 8 && PeerKeys.MacCode('A', false) == 0 && PeerKeys.MacCode('1', false) == 18, "letters and digits");
+        Check(PeerKeys.MacCode(PeerKeys.VK_RETURN, false) == 36 && PeerKeys.MacCode(PeerKeys.VK_RETURN, true) == 76, "Return vs keypad Enter");
+        Check(PeerKeys.MacCode(0x60, false) == 82 && PeerKeys.MacCode(0x2D, true) == 114 && PeerKeys.MacCode(0x7C, false) == 105, "keypad 0, Insert → Help, F13");
+        Check(PeerKeys.MacCode(0x25, true) == 123 && PeerKeys.MacCode(0x2E, true) == 117, "arrows, forward delete");
+        Check(PeerKeys.MacCode(0xFF, false) is null, "unmapped VK → null");
+        // Every Mac→Windows row that isn't a modifier round-trips.
+        bool round = MacKeyMap.All.Where(r => !PeerKeys.IsModifier(r.Mac) && r.Vk is not (0x10 or 0x11 or 0x12))
+            .All(r => MacKeyMap.ToWindows(PeerKeys.MacCode(r.Vk, r.Mac == 76) ?? 0xFFFF) == r.Vk);
+        Check(round, "VK → mac → VK round-trips for every mapped key");
+        Check(PeerKeys.ModifierBit(55) == PeerKeys.FlagCommand && PeerKeys.ModifierBit(59) == PeerKeys.FlagControl
+              && PeerKeys.ModifierBit(0) == 0, "modifier flag bits (CGEventFlags)");
+        Check(PeerKeys.IsPanic('L', PeerKeys.FlagCommand | PeerKeys.FlagAlternate | PeerKeys.FlagShift)
+              && !PeerKeys.IsPanic('L', PeerKeys.FlagCommand | PeerKeys.FlagAlternate), "panic key Ctrl+Alt+Shift+L");
+    }
+
     // MARK: - Loopback link + file transfer
 
     private static void Loopback()
@@ -437,7 +498,24 @@ internal static class PeerSelfTest
     /// peerinterop listen <port> <dir> | connect <host> <port> <pin> <dir>
     public static int RunInterop(string[] args)
     {
-        const string usage = "usage: peerinterop listen <port> <dir> | connect <host> <port> <pin> <dir>";
+        if (args.Length == 4 && args[0] == "mdns" && ushort.TryParse(args[2], out var mport) && double.TryParse(args[3], out var secs))
+        {
+            // Advertise + browse like the Mac's Bonjour, print what's found.
+            var id = PeerIdentity.CreateEphemeral().Id;
+            using var d = new PeerDiscovery();
+            var seen = new HashSet<string>();
+            d.OnChange += list =>
+            {
+                lock (seen)
+                    foreach (var f in list)
+                        if (seen.Add(f.Name + f.Id)) Console.WriteLine($"found {f.Name} id={f.Id ?? "-"} at {f.Host}:{f.Port}");
+            };
+            d.Start(args[1], id, mport);
+            Console.WriteLine($"advertising {args[1]} id={id}");
+            Thread.Sleep(TimeSpan.FromSeconds(secs));
+            return 0;
+        }
+        const string usage = "usage: peerinterop listen <port> <dir> | connect <host> <port> <pin> <dir> | mdns <name> <port> <seconds>";
         bool listen = args.Length > 0 && args[0] == "listen";
         if (!((listen && args.Length == 3) || (args.Length == 5 && args[0] == "connect"))
             || !ushort.TryParse(args[listen ? 1 : 2], out var port)) { Console.WriteLine(usage); return 2; }

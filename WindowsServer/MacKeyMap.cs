@@ -47,7 +47,19 @@ internal static class MacKeyMap
         // Function keys F1..F12 (Win VK_F1=0x70..VK_F12=0x7B)
         [122]=0x70, [120]=0x71, [99]=0x72, [118]=0x73, [96]=0x74, [97]=0x75,
         [98]=0x76, [100]=0x77, [101]=0x78, [109]=0x79, [103]=0x7A, [111]=0x7B,
+        // F13..F19 (Win VK_F13=0x7C..)
+        [105]=0x7C, [107]=0x7D, [113]=0x7E, [106]=0x7F, [64]=0x80, [79]=0x81, [80]=0x82,
+        // Keypad (Win VK_NUMPAD0=0x60.., MULTIPLY 0x6A, ADD 0x6B, SUBTRACT 0x6D,
+        // DECIMAL 0x6E, DIVIDE 0x6F); keypad Enter is VK_RETURN; Clear -> VK_CLEAR.
+        [82]=0x60, [83]=0x61, [84]=0x62, [85]=0x63, [86]=0x64, [87]=0x65, [88]=0x66,
+        [89]=0x67, [91]=0x68, [92]=0x69, [67]=0x6A, [69]=0x6B, [78]=0x6D, [65]=0x6E,
+        [75]=0x6F, [76]=VK_RETURN, [71]=0x0C,
+        // Help/Insert (the Mac's Help key sits where Insert is), ISO section key.
+        [114]=0x2D, [10]=0xE2,
     };
+
+    /// Every (mac, VK) row — PeerKeys builds the reverse (PC driving a Mac) from it.
+    public static IEnumerable<(ushort Mac, ushort Vk)> All => Map.Select(kv => (kv.Key, kv.Value));
 
     /// <summary>Maps a macOS virtual key code to a Win32 VK, or null if unmapped.</summary>
     public static ushort? ToWindows(ushort macKeyCode) =>

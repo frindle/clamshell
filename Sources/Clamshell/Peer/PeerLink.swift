@@ -106,7 +106,9 @@ final class PeerLink {
     }
 
     func startBrowsing() {
-        let browser = NWBrowser(for: .bonjour(type: peerServiceType, domain: nil), using: .tcp)
+        // .bonjourWithTXTRecord, not .bonjour: only that descriptor delivers the TXT
+        // metadata (id) — without it the self-filter and auto-connect never see ids.
+        let browser = NWBrowser(for: .bonjourWithTXTRecord(type: peerServiceType, domain: nil), using: .tcp)
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             guard let self else { return }
             var found: [DiscoveredPeer] = []
