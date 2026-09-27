@@ -22,6 +22,13 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
   `PeerFeatures.install(on:)` / `menuItems(for:)` in PeerCommand.swift is the
   hook where clipboard/files/handoff modules get attached.
 
+- Mac clipboard + files slice: PeerClipboard (text via CLIPBOARD, PNG via
+  CLIPBOARD_DATA kind 1, PNG+TIFF on paste, no echo), FileTransfer (auto-
+  accept to ~/Downloads via hidden .part, sha256 verify, folders → ditto zip,
+  8 chunks in flight, 4 incoming max), PeerFeatures.swift wires routes and
+  the drag triggers (onCarryDropped / onPeerLeftCarrying → files.send),
+  "Send Files to …" menu item, `peer --send path`. `peer-files-selftest` PASS.
+
 ## Design decisions (keep consistent on Windows)
 - Controller keeps a virtual cursor in the peer's units (screen size from
   HELLO), sends EDGE_ENTER(edge of peer screen, x, y, carry) then v1
@@ -38,9 +45,6 @@ Resume checklist: `git -C <worktree> branch --show-current` must print
 - Controlled side maps to its primary display only (documented gap).
 
 ## Next
-- Mac clipboard peer mode (text + PNG via CLIPBOARD / CLIPBOARD_DATA),
-  FileTransfer (offer/accept/chunk/done, Downloads, sha256), drop trigger
-  wiring (onCarryCrossed/onCarryDropped/onPeerLeftCarrying), selftest.
 - Mac window handoff source (WindowHider via AX pid+frame match, hide to
   bottom-right corner sliver like AeroSpace, StreamServer on 5921+,
   allow only peer IP) + ReceiverWindow (FrameAssembler + AVSampleBuffer
