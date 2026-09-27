@@ -17,8 +17,8 @@ namespace Clamshell;
 //             of our receivers = receiver carry, our own form = nothing
 //   stream    WGC capture of a window, HELLO → HELLO_ACK with its size,
 //             a stranger's address refused, posted clicks land on the
-//             mapped point even while parked off-screen, capture continues
-//             while parked, park/restore positions, typing into Notepad
+//             mapped point even while parked (invisible, click-through),
+//             capture continues while parked, restore, typing into Notepad
 //   handoff   two HandoffManagers back to back: BEGIN → receiver form →
 //             ACCEPT → RETURN restores the window; closing the source
 //             window sends WINDOW_CLOSED and closes the receiver
@@ -339,17 +339,16 @@ internal static class DeskSelfTest
         Check(form.LastClick is { } lc && Math.Abs(lc.X - exp.X) <= 2 && Math.Abs(lc.Y - exp.Y) <= 2,
               $"stream: posted click lands on the mapped point ({form.LastClick} vs {exp})");
 
-        // Park: off-screen, still captured, still clickable; restore puts it back.
+        // Park: invisible + click-through in place, still captured, still
+        // clickable; restore puts it back.
         var parker = new WindowParker(form.Handle, null);
         var origin = form.Location;
         parker.Park();
         PumpFor(200);
-        var v = WinNative.VirtualScreen();
-        var pf = WinNative.Frame(form.Handle)!.Value;
-        Check(pf.Left >= v.MaxX - 20 && pf.Top >= v.MaxY - 20, $"stream: parked at the virtual screen's bottom-right ({pf.Left},{pf.Top})");
+        Check(IsGhost(form.Handle) && form.Location == origin, $"stream: parked = invisible (alpha 0) and click-through, in place");
         long parkedFrom = WindowCaptureFrames(server);
         Pump(() => WindowCaptureFrames(server) > parkedFrom + 5, 3000);
-        Check(WindowCaptureFrames(server) > parkedFrom + 5, "stream: capture keeps delivering frames while parked off-screen");
+        Check(WindowCaptureFrames(server) > parkedFrom + 5, "stream: capture keeps delivering live frames while parked");
         clicks = form.Clicks;
         ClickAt(0.3f, 0.7f);
         Pump(() => form.Clicks > clicks, 2000);
@@ -358,7 +357,8 @@ internal static class DeskSelfTest
               $"stream: posted click still lands while parked ({form.LastClick} vs {exp})");
         parker.Restore();
         PumpFor(100);
-        Check(form.Location == origin, $"stream: restore puts the window back ({form.Location} vs {origin})");
+        Check(form.Location == origin && !IsGhost(form.Handle) && (WinNative.GetWindowLong(form.Handle, -20) & 0x80000) == 0,
+              $"stream: restore makes the window visible and clickable again ({form.Location} vs {origin})");
 
         // Video end to end.
         Pump(() => Has(MessageType.VideoFrame), 4000);
@@ -406,6 +406,13 @@ internal static class DeskSelfTest
 
     private static long WindowCaptureFrames(WindowStreamServer s) => s.CaptureFrames;
 
+    private static bool IsGhost(IntPtr h)
+    {
+        int ex = WinNative.GetWindowLong(h, -20);
+        if ((ex & 0x80000) == 0 || (ex & 0x20) == 0) return false;
+        return WinNative.GetLayeredWindowAttributes(h, out _, out byte alpha, out uint flags) && (flags & 2) != 0 && alpha == 0;
+    }
+
     private static string EditText(IntPtr root)
     {
         var sb = new System.Text.StringBuilder(1024);
@@ -452,27 +459,19 @@ internal static class DeskSelfTest
         }
         var on = Measure();
         var parker = new WindowParker(form.Handle, null);
-        parker.Park();
+        parker.ParkOffScreen();
         var off = Measure();
         parker.Restore();
         PumpFor(200);
-        int ex = WinNative.GetWindowLong(form.Handle, -20 /* GWL_EXSTYLE */);
-        (long, int) Ghost(byte alpha)
-        {
-            SetWindowLong(form.Handle, -20, ex | 0x80000 /* WS_EX_LAYERED */ | 0x20 /* WS_EX_TRANSPARENT */);
-            SetLayeredWindowAttributes(form.Handle, 0, alpha, 2 /* LWA_ALPHA */);
-            return Measure();
-        }
-        var ghost1 = Ghost(1);
-        var ghost0 = Ghost(0);
-        SetWindowLong(form.Handle, -20, ex);
-        Console.WriteLine($"info park probe: frames/2s (centre luma) on-screen {on.Frames} ({on.Luma}), parked off-screen {off.Frames} ({off.Luma}), " +
-                          $"on-screen alpha 1/255 click-through {ghost1.Item1} ({ghost1.Item2}), alpha 0 {ghost0.Item1} ({ghost0.Item2})");
+        parker.Park();
+        var ghost = Measure();
+        parker.Restore();
+        PumpFor(200);
+        var back = Measure();
+        Console.WriteLine($"info park probe: frames/2s (centre-row luma) on-screen {on.Frames} ({on.Luma}), moved off-screen {off.Frames} ({off.Luma}), " +
+                          $"ghost park {ghost.Frames} ({ghost.Luma}), restored {back.Frames} ({back.Luma})");
         Step("park probe");
     }
-
-    [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr h, int index, int value);
-    [DllImport("user32.dll")] private static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
 
     // MARK: - handoff
 
@@ -504,15 +503,15 @@ internal static class DeskSelfTest
         Check(rf?.AckSize is { } sz && sz.W > 0, $"handoff: receiver form dialled the window stream and got HELLO_ACK {rf?.AckSize}");
         if (rf is not null && Pump(() => rf.FramesShown > 0, 3000)) Check(true, $"handoff: receiver form is showing decoded frames ({rf.FramesShown})");
         else Warn("handoff: receiver form shows no frames — the runner's encoder gap (see video)");
-        var parked = WinNative.Frame(form.Handle)!.Value;
-        Check(parked.Left > WinNative.VirtualScreen().MaxX - 20, "handoff: source window parked off-screen");
+        Check(IsGhost(form.Handle), "handoff: source window parked (invisible, click-through)");
 
         Step("handoff: sending the receiver back");
         b.ReturnReceiver(id, null, 0);
+        Step("handoff: receiver closed, source ending the handoff");
         Pump(() => a.OutgoingCount == 0, 3000);
         PumpFor(100);
         Check(a.OutgoingCount == 0 && b.ReceiverCount == 0, "handoff: HANDOFF_RETURN closes the receiver and ends the handoff");
-        Check(form.Location == origin, $"handoff: the window is back where it was ({form.Location} vs {origin})");
+        Check(form.Location == origin && !IsGhost(form.Handle), $"handoff: the window is back, visible, where it was ({form.Location} vs {origin})");
 
         // The source window closing ends it from the other side.
         var form2 = TestForm("Clamshell handoff close test");

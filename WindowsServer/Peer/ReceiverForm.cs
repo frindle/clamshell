@@ -74,7 +74,17 @@ internal sealed class ReceiverForm : Form
             e.Cancel = true; // Alt+F4 / taskbar close = send it home
             OnReturnRequested();
         };
-        Shown += (_, _) => _ = RunAsync();
+    }
+
+    private bool _started;
+
+    /// Dials the window stream. Called by HandoffManager right after Show()
+    /// (not from the Shown event, which deskselftest never saw fire).
+    public void Connect()
+    {
+        if (_started) return;
+        _started = true;
+        _ = RunAsync();
     }
 
     protected override CreateParams CreateParams

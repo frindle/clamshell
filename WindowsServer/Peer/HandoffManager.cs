@@ -180,6 +180,7 @@ internal sealed class HandoffManager : IDisposable
         _receivers[b.WindowId] = f;
         f.Place(b.Edge, b.Position);
         f.Show();
+        f.Connect();
         if (IsCarryHeld()) f.Follow(b.GrabX, b.GrabY, IsCarryHeld);
         f.Activate();
         Send(PeerMsg.HandoffAccept(b.WindowId));

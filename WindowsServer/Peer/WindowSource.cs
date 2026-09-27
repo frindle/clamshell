@@ -20,11 +20,11 @@ namespace Clamshell;
 //                   BGRA staging texture → NV12 (the encoder's fixed size;
 //                   a window that grows is cropped, one that shrinks is
 //                   padded with whatever was last there).
-//   WindowParker    moves the real window almost entirely off the virtual
-//                   screen (WGC keeps capturing it: DWM still renders it)
-//                   and puts it back.
+//   WindowParker    makes the real window invisible and click-through in
+//                   place (WGC keeps getting live frames) and puts it back.
 //   WindowInput     mouse → PostMessage to the child window under the point
-//                   (the window is off-screen, so SendInput can't hit it);
+//                   (the window is invisible and click-through, so SendInput
+//                   can't hit it);
 //                   keys → SendInput when the window can be made foreground,
 //                   else posted WM_KEYDOWN/WM_CHAR. Honest gaps: title-bar /
 //                   frame clicks are ignored, and apps that read raw input or
@@ -149,13 +149,28 @@ internal sealed class WindowCapture : IDisposable
     }
 }
 
-/// Moves a top-level window almost entirely off the virtual screen (so it's
-/// out of the way but still composed, which WGC needs) and back.
+/// Hides a handed-off window while Windows.Graphics.Capture keeps getting
+/// live frames of it, and brings it back.
+///
+/// The default "ghost" park leaves the window where it is but makes it
+/// fully transparent (layered, alpha 0) and click-through: DWM keeps
+/// composing it, so WGC keeps delivering fresh frames (measured by
+/// deskselftest's park probe: ~57 frames/2 s ghosted vs ~2 moved
+/// off-screen, where Windows stops repainting it). A window that is already
+/// layered (its own transparency or per-pixel alpha) can't be ghosted
+/// without breaking it, so it's moved almost entirely off the virtual
+/// screen instead; its stream then freezes until the window repaints.
+/// Honest leftovers: a ghosted window still has its taskbar button and can
+/// be Alt-Tabbed to (it stays invisible).
 internal sealed class WindowParker
 {
     public IntPtr Handle { get; }
     public WinNative.RECT Original;
     public bool Parked { get; private set; }
+    public bool Ghosted { get; private set; }
+
+    private const int GWL_EXSTYLE = -20, WS_EX_LAYERED = 0x80000, WS_EX_TRANSPARENT = 0x20;
+    private int _exStyle;
 
     public WindowParker(IntPtr h, Rect? preDragFrame)
     {
@@ -171,18 +186,44 @@ internal sealed class WindowParker
 
     public bool Park()
     {
+        _exStyle = WinNative.GetWindowLong(Handle, GWL_EXSTYLE);
+        if ((_exStyle & WS_EX_LAYERED) == 0)
+        {
+            WinNative.SetWindowLong(Handle, GWL_EXSTYLE, _exStyle | WS_EX_LAYERED | WS_EX_TRANSPARENT);
+            if (WinNative.SetLayeredWindowAttributes(Handle, 0, 0, 2 /* LWA_ALPHA */))
+            {
+                Ghosted = Parked = true;
+                return true;
+            }
+            WinNative.SetWindowLong(Handle, GWL_EXSTYLE, _exStyle);
+        }
+        return Parked = ParkOffScreen();
+    }
+
+    /// The fallback park (and what deskselftest's probe compares against).
+    public bool ParkOffScreen()
+    {
         var v = WinNative.VirtualScreen();
-        Parked = WinNative.SetWindowPos(Handle, IntPtr.Zero, (int)v.MaxX - 1, (int)v.MaxY - 1, 0, 0,
+        return WinNative.SetWindowPos(Handle, IntPtr.Zero, (int)v.MaxX - 1, (int)v.MaxY - 1, 0, 0,
             WinNative.SWP_NOSIZE | WinNative.SWP_NOZORDER | WinNative.SWP_NOACTIVATE);
-        return Parked;
     }
 
     public void Restore() => MoveTo(Original.Left, Original.Top);
 
     public void MoveTo(int x, int y)
     {
+        Unghost();
         WinNative.SetWindowPos(Handle, IntPtr.Zero, x, y, 0, 0, WinNative.SWP_NOSIZE | WinNative.SWP_NOZORDER | WinNative.SWP_NOACTIVATE);
         Parked = false;
+    }
+
+    private void Unghost()
+    {
+        if (!Ghosted) return;
+        Ghosted = false;
+        // Clearing WS_EX_LAYERED drops the alpha; the window repaints normally.
+        WinNative.SetWindowLong(Handle, GWL_EXSTYLE, _exStyle);
+        WinNative.RedrawWindow(Handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0400 /* INVALIDATE|ERASE|ALLCHILDREN|FRAME */);
     }
 
     public (int W, int H) Size => (Original.Width, Original.Height);
@@ -296,6 +337,9 @@ internal sealed class WindowInput
     private void Key(ushort mac, bool down, ulong flags)
     {
         _flags = flags;
+        // Bring the window forward first: switching between SendInput and
+        // posted messages mid-sequence can reorder keystrokes ("hi" → "ih").
+        if (down && GetForegroundWindow() != _root) Focus();
         if (GetForegroundWindow() == _root)
         {
             // Real keyboard input: shortcuts and key-state checks work.
