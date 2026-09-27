@@ -165,10 +165,12 @@ internal sealed class ReceiverForm : Form
     /// receive in flight). The receive loop disposes the decoder it owns.
     private void ShutDownStream()
     {
-        _cts.Cancel();
-        var ws = _ws;
+        // Cancel() runs the in-flight receive's cancellation callbacks inline
+        // (they abort the socket), so it goes off the UI thread too.
+        var ws = _ws; var cts = _cts;
         _ = Task.Run(() =>
         {
+            try { cts.Cancel(); } catch { }
             try { ws.Abort(); } catch { }
             try { ws.Dispose(); } catch { }
         });
