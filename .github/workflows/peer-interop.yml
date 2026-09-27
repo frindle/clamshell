@@ -11,10 +11,10 @@ on:
 jobs:
   interop:
     runs-on: macos-15
-    env:
-      CLAMSHELL_PEER_DIR: ${{ runner.temp }}/peerdir
     steps:
       - uses: actions/checkout@v4
+      - name: Scratch peer directory (never the runner user's real one)
+        run: echo "CLAMSHELL_PEER_DIR=$RUNNER_TEMP/peerdir" >> "$GITHUB_ENV"
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'

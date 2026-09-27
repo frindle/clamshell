@@ -34,6 +34,9 @@
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
     <!-- WASAPI loopback system-audio capture. -->
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- mDNS/DNS-SD for the shared-desk peer link: advertise and browse
+         _clamshell-peer._tcp the same way the Mac does with Bonjour. -->
+    <PackageReference Include="Makaretu.Dns.Multicast.New" Version="0.38.0" />
   </ItemGroup>
 
 </Project>
