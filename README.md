@@ -622,11 +622,17 @@ form.
   a WebSocket on TCP 5910, found over Bonjour/mDNS. Mac: menu bar
   "Shared Desk", or `clamshell peer`. Windows: tray "Shared Desk". Wire
   format: [PROTOCOL.md](PROTOCOL.md#peer-link-v2--shared-desk-between-two-paired-machines).
-  Proven by selftests and CI: edge crossing, key/modifier mapping, the panic
-  key, carry detection, the pairing/crypto golden vectors shared by Swift and
-  C#, Swift↔C# link interop, file transfer and handoff loopback. Windows runs
-  on real LL hooks, SendInput and Windows.Graphics.Capture. Not yet proven:
-  anything between two physical machines (test script below).
+  Proven by selftests and CI:
+  - The pairing/crypto golden vectors shared by Swift and C#.
+  - Swift↔C# link interop, including clipboard and file transfer.
+  - On a real Windows desktop: edge crossing, key mapping and the panic key
+    (real LL hooks and SendInput), carry detection, live capture of a hidden
+    window, clicks and typing into it, and a handoff round trip.
+  - On the Mac (run locally): edge, file and handoff selftests.
+
+  Not yet proven: anything between two physical machines, and video from a
+  Windows source (the CI runner's encoder won't start). The test script is
+  below.
 
 ### 0.9.13 — 2026-08-30
 - **No more login loop on a headless Mac.** Collapsing onto a lone virtual
