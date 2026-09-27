@@ -397,6 +397,7 @@ internal sealed class WindowStreamServer : IDisposable
                     await WsUpgrade.ServerAsync(s, TimeSpan.FromSeconds(10));
                     var ws = WebSocket.CreateFromStream(s, new WebSocketCreationOptions { IsServer = true, KeepAliveInterval = TimeSpan.FromSeconds(20) });
                     var c = new Client(this, tcp, ws);
+                    Log.Line($"HANDOFF: window stream on {Port}: receiver {remote} connected");
                     lock (_gate)
                     {
                         _client?.Close();
