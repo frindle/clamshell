@@ -166,10 +166,14 @@ internal static class DeskSelfTest
     {
         using var own = TestForm("carry test");
         own.Show();
+        own.Activate();
         PumpFor(300);
         var cd = new CarryDetector { DropStripsEnabled = false };
         var f = WinNative.Frame(own.Handle)!.Value;
-        cd.MouseDown(f.Left + 40, f.Top + 10);
+        double px = f.Left + f.Width / 2.0, py = f.Top + f.Height / 2.0;
+        var under = WinNative.RootWindowAt(px, py);
+        if (under != own.Handle) Log.Line($"deskselftest: press point resolves to {WinNative.ClassName(under)} \"{WinNative.Title(under)}\", not the test form");
+        cd.MouseDown(px, py);
         own.Location = new System.Drawing.Point(own.Location.X + 60, own.Location.Y + 30);
         PumpFor(100);
         Check(cd.Evaluate() is null, "carry: moving our own (non-receiver) form carries nothing");
@@ -211,6 +215,7 @@ internal static class DeskSelfTest
             Text = title;
             StartPosition = FormStartPosition.Manual;
             Location = new System.Drawing.Point(80, 80);
+            TopMost = true; // a console-launched form may open behind other windows
             ClientSize = new System.Drawing.Size(480, 320);
             _anim.Tick += (_, _) => { _t++; BackColor = System.Drawing.Color.FromArgb(_t * 7 % 256, 90, 200); };
             _anim.Start();
