@@ -84,10 +84,7 @@ internal sealed class WindowCapture : IDisposable
             var size = frame.ContentSize;
             try
             {
-                var access = frame.Surface.As<IDirect3DDxgiInterfaceAccess>();
-                var iid = typeof(ID3D11Texture2D).GUID;
-                IntPtr ptr = access.GetInterface(ref iid);
-                using var tex = new ID3D11Texture2D(ptr);
+                using var tex = new ID3D11Texture2D(TexturePointer(frame.Surface));
                 _staging ??= _device.CreateTexture2D(new Texture2DDescription
                 {
                     Width = (uint)Width, Height = (uint)Height, MipLevels = 1, ArraySize = 1,
@@ -126,10 +123,29 @@ internal sealed class WindowCapture : IDisposable
         _device.Dispose();
     }
 
-    [ComImport, Guid("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IDirect3DDxgiInterfaceAccess
+    // IDirect3DDxgiInterfaceAccess::GetInterface (vtable slot 3) on the
+    // surface's ABI pointer; raw like CreateItemForWindow, because C#/WinRT
+    // objects aren't COM runtime-callable wrappers a [ComImport] cast works on.
+    private static readonly Guid IID_IDirect3DDxgiInterfaceAccess = new("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1");
+
+    private static unsafe IntPtr TexturePointer(Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface surface)
     {
-        IntPtr GetInterface([In] ref Guid iid);
+        IntPtr unk = WinRT.MarshalInterface<Windows.Graphics.DirectX.Direct3D11.IDirect3DSurface>.FromManaged(surface);
+        try
+        {
+            Guid accessIid = IID_IDirect3DDxgiInterfaceAccess;
+            Marshal.ThrowExceptionForHR(Marshal.QueryInterface(unk, ref accessIid, out IntPtr access));
+            try
+            {
+                var getInterface = (delegate* unmanaged[Stdcall]<IntPtr, Guid*, IntPtr*, int>)(*(IntPtr**)access)[3];
+                Guid texIid = typeof(ID3D11Texture2D).GUID;
+                IntPtr tex;
+                Marshal.ThrowExceptionForHR(getInterface(access, &texIid, &tex));
+                return tex; // owned by the ID3D11Texture2D wrapper
+            }
+            finally { Marshal.Release(access); }
+        }
+        finally { Marshal.Release(unk); }
     }
 }
 

@@ -139,30 +139,31 @@ internal static class WindowCaptureSelfTest
     }
 
     // --- WGC interop: turning an HWND into a GraphicsCaptureItem isn't part
-    // of the standard C#/WinRT projection -- Microsoft's own WGC samples
-    // P/Invoke-declare this factory interface directly. See PROTOCOL.md. ---
+    // of the standard C#/WinRT projection. See PROTOCOL.md. ---
 
-    [ComImport, Guid("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    private interface IGraphicsCaptureItemInterop
-    {
-        IntPtr CreateForWindow([In] IntPtr window, [In] ref Guid iid);
-        IntPtr CreateForMonitor([In] IntPtr monitor, [In] ref Guid iid);
-    }
+    // C#/WinRT hands back activation factories as IObjectReference, not as
+    // runtime-callable COM objects, so a cast to a [ComImport] interface
+    // fails (InvalidCastException). QueryInterface for
+    // IGraphicsCaptureItemInterop and call CreateForWindow (vtable slot 3,
+    // after IUnknown) directly instead.
+    private static readonly Guid IID_IGraphicsCaptureItemInterop = new("3628E81B-3CAC-4C60-B7F4-23CE0E0C3356");
+    private static readonly Guid IID_IGraphicsCaptureItem = new("79C3F95B-31F7-4EC2-A464-632EF5D30760");
 
-    internal static GraphicsCaptureItem CreateItemForWindow(IntPtr hwnd)
+    internal static unsafe GraphicsCaptureItem CreateItemForWindow(IntPtr hwnd)
     {
-        var factory = WinRT.ActivationFactory.Get("Windows.Graphics.Capture.GraphicsCaptureItem");
-        var interop = (IGraphicsCaptureItemInterop)factory;
-        var iid = typeof(GraphicsCaptureItem).GUID;
-        IntPtr itemPtr = interop.CreateForWindow(hwnd, ref iid);
+        using var factory = WinRT.ActivationFactory.Get("Windows.Graphics.Capture.GraphicsCaptureItem");
+        Guid interopIid = IID_IGraphicsCaptureItemInterop;
+        Marshal.ThrowExceptionForHR(Marshal.QueryInterface(factory.ThisPtr, ref interopIid, out IntPtr interop));
         try
         {
-            return GraphicsCaptureItem.FromAbi(itemPtr);
+            var createForWindow = (delegate* unmanaged[Stdcall]<IntPtr, IntPtr, Guid*, IntPtr*, int>)(*(IntPtr**)interop)[3];
+            Guid itemIid = IID_IGraphicsCaptureItem;
+            IntPtr itemPtr;
+            Marshal.ThrowExceptionForHR(createForWindow(interop, hwnd, &itemIid, &itemPtr));
+            try { return GraphicsCaptureItem.FromAbi(itemPtr); }
+            finally { Marshal.Release(itemPtr); }
         }
-        finally
-        {
-            Marshal.Release(itemPtr);
-        }
+        finally { Marshal.Release(interop); }
     }
 
     // --- D3D11 device -> WinRT IDirect3DDevice interop, same standard
