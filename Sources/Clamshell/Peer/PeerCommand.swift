@@ -1,7 +1,7 @@
 import AppKit
 
 // `clamshell peer [--edge left|right|top|bottom] [--connect host[:port]]
-//                 [--pin 123456] [--port 5910] [--no-advertise]`
+//                 [--pin 123456] [--port 5910] [--no-advertise] [--send path]`
 //
 // Runs the shared desk headless (no menu bar item) — the way to try it from
 // a dev build without touching an installed Clamshell.app. Prints this
@@ -14,6 +14,7 @@ enum PeerCommand {
         var pin: String?
         var port = peerLinkDefaultPort
         var advertise = true
+        var sendPaths: [URL] = []
         var i = 0
         func value() -> String? { i += 1; return i < args.count ? args[i] : nil }
         while i < args.count {
@@ -30,6 +31,9 @@ enum PeerCommand {
             case "--port":
                 guard let v = value(), let p = UInt16(v) else { usage() }
                 port = p
+            case "--send":
+                guard let v = value() else { usage() }
+                sendPaths.append(URL(fileURLWithPath: (v as NSString).expandingTildeInPath))
             case "--no-advertise":
                 advertise = false
             default:
@@ -63,6 +67,11 @@ enum PeerCommand {
             if line != lastLine { print("[\(Self.stamp())] \(line)"); lastLine = line }
             let peers = manager.discovered.map { p in
                 "\(p.name)\(p.id.flatMap { manager.trust.peer(id: $0) } != nil ? " (paired)" : "")"
+            }
+            if manager.state.isLinked, !sendPaths.isEmpty {
+                print("[\(Self.stamp())] sending \(sendPaths.map(\.lastPathComponent).joined(separator: ", "))")
+                manager.files?.send(urls: sendPaths)
+                sendPaths = []
             }
             if peers != lastPeers {
                 print("[\(Self.stamp())] discovered: \(peers.isEmpty ? "none" : peers.joined(separator: ", "))")
@@ -101,14 +110,7 @@ enum PeerCommand {
     }
 
     private static func usage() -> Never {
-        print("Usage: clamshell peer [--edge left|right|top|bottom] [--connect host[:port]] [--pin NNNNNN] [--port N] [--no-advertise]")
+        print("Usage: clamshell peer [--edge left|right|top|bottom] [--connect host[:port]] [--pin NNNNNN] [--port N] [--no-advertise] [--send path]...")
         exit(64)
     }
-}
-
-/// Installs the feature modules (clipboard, files, handoff) on a manager.
-/// One place so the menu bar app and the CLI get the same set.
-enum PeerFeatures {
-    static func install(on manager: PeerManager) {}
-    static func menuItems(for manager: PeerManager) -> [NSMenuItem] { [] }
 }

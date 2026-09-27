@@ -215,6 +215,9 @@ if args.count > 1 {
         // Shared-desk KVM logic: edge geometry, virtual cursor, key rules and
         // the EdgeController state machine on synthetic (never posted) events.
         exit(EdgeSelfTest.run())
+    case "peer-files-selftest":
+        // Clipboard + file transfer between two loopback peer links.
+        exit(PeerFilesSelfTest.run())
     case "peer":
         // Headless shared desk (PROTOCOL.md "Peer link"): KVM, clipboard,
         // files and window handoff with a paired machine. See PeerCommand.
@@ -231,7 +234,7 @@ if args.count > 1 {
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
               "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | peer-protocol-selftest | peer-link-selftest | " +
-              "edge-selftest | peer]")
+              "edge-selftest | peer-files-selftest | peer]")
         exit(64)
     }
 }

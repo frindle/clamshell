@@ -22,6 +22,9 @@ final class PeerManager {
     private(set) var peerName: String?
     /// Any UI (menu, CLI) re-reads state from here.
     var onChange: () -> Void = {}
+    /// Feature modules, attached by PeerFeatures.install.
+    var clipboard: PeerClipboard?
+    var files: FileTransfer?
     private var autoConnect = true
     private var reconnectWork: DispatchWorkItem?
 
