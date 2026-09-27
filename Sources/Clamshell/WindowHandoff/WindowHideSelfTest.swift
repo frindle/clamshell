@@ -41,16 +41,18 @@ import AXPrivateShim
 // Needs the user: check System Settings > Privacy & Security > Accessibility
 // directly, or a reboot -- not something fixable from inside this codebase.
 //
-// Both are real dead ends investigated live, not guesses. Not yet isolated:
-// whether this Mac's specific macOS version changed `_AXUIElementGetWindow`'s
-// behavior/requirements, or whether an ad-hoc-signed bare CLI binary (not
-// the real signed Clamshell.app bundle) gets systematically different AX
-// treatment than what AXIsProcessTrusted()==true implies -- that would
-// explain BOTH failures at once. Needs either a reference implementation to
-// diff the exact call convention against, or testing from inside the real
-// signed .app bundle, before spending more time guessing at this private
-// API's undocumented contract. Left in place (not reverted) as the current
-// best attempt and a clear record of what's been tried.
+// ROOT CAUSE (settled): the System Events cross-check above is decisive --
+// every AX technique failed because the Accessibility server on that Mac was
+// returning empty/"missing value" answers for every process, including to
+// Apple's own fully-trusted System Events. That is an environmental fault
+// (AX daemon state; a reboot / re-toggling the Accessibility grant clears
+// it), NOT a signing/binary-trust difference between the bare CLI and the
+// .app bundle and NOT a change in `_AXUIElementGetWindow`'s contract. The
+// code here is therefore kept as the real hide/restore mechanism:
+// WindowHandoff/WindowHider.swift wraps the same readPosition/setPosition
+// AX calls for the live feature and degrades to "stream in place" when AX
+// answers are missing, so a recurrence never blocks a handoff.
+// Re-run `clamshell window-hide-selftest` after a reboot to confirm.
 enum WindowHideSelfTest {
     static func run(windowId: UInt32?) async -> Int32 {
         guard AXIsProcessTrusted() else {

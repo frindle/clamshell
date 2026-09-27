@@ -405,11 +405,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     refresh = (mode?.refreshRate ?? 0) > 0 ? mode!.refreshRate : 60
                     filter = SCContentFilter(display: scDisplay, excludingWindows: [])
                 case .window(let windowID):
-                    // Window Handoff (PROTOCOL.md): explicit-selection v1, no
-                    // AX-based hide/drag-trigger (blocked on this dev Mac —
-                    // see WindowHandoff/WindowHideSelfTest.swift), so the
-                    // window is captured wherever it currently sits.
-                    let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
+                    // Window Handoff (PROTOCOL.md): onScreenWindowsOnly must
+                    // be false — a handed-off window is parked off-screen by
+                    // WindowHider while it streams, and the on-screen-only
+                    // list would not contain it (capture itself is fine
+                    // off-screen: SCContentFilter(desktopIndependentWindow:)).
+                    let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
                     guard let scWindow = content.windows.first(where: { $0.windowID == windowID }) else {
                         clog("STREAM: window \(windowID) not found (closed, minimized, or off-screen?)")
                         self.queue.async { self.teardownSession() }
