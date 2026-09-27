@@ -11,6 +11,21 @@ final class InputInjector {
     private var leftDown = false
     private var rightDown = false
     private var lastPoint = CGPoint.zero
+    private var modifierFlags: CGEventFlags = []
+
+    /// Every event this class posts is tagged with this user-data value on a
+    /// private event source, so the peer link's own CGEventTap
+    /// (Peer/EdgeController.swift) can recognise and pass through injected
+    /// input instead of treating it as the local user reaching a screen edge.
+    static let injectedTag: Int64 = 0x434C_414D // "CLAM"
+    static let source: CGEventSource? = {
+        let s = CGEventSource(stateID: .privateState)
+        s?.userData = injectedTag
+        return s
+    }()
+    static func isInjected(_ event: CGEvent) -> Bool {
+        event.getIntegerValueField(.eventSourceUserData) == injectedTag
+    }
 
     init(displayID: CGDirectDisplayID) {
         self.boundsProvider = { CGDisplayBounds(displayID) } // global desktop coords, points
@@ -67,8 +82,10 @@ final class InputInjector {
                               : rightDown ? .rightMouseDragged
                               : .mouseMoved
         let button: CGMouseButton = rightDown ? .right : .left
-        CGEvent(mouseEventSource: nil, mouseType: type,
-                mouseCursorPosition: point, mouseButton: button)?.post(tap: .cghidEventTap)
+        let event = CGEvent(mouseEventSource: Self.source, mouseType: type,
+                            mouseCursorPosition: point, mouseButton: button)
+        event?.flags = modifierFlags
+        event?.post(tap: .cghidEventTap)
     }
 
     func mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32) {
@@ -77,9 +94,11 @@ final class InputInjector {
         if right { rightDown = down } else { leftDown = down }
         let type: CGEventType = right ? (down ? .rightMouseDown : .rightMouseUp)
                                       : (down ? .leftMouseDown : .leftMouseUp)
-        CGEvent(mouseEventSource: nil, mouseType: type,
-                mouseCursorPosition: point,
-                mouseButton: right ? .right : .left)?.post(tap: .cghidEventTap)
+        let event = CGEvent(mouseEventSource: Self.source, mouseType: type,
+                            mouseCursorPosition: point,
+                            mouseButton: right ? .right : .left)
+        event?.flags = modifierFlags
+        event?.post(tap: .cghidEventTap)
     }
 
     func scroll(dx: Float32, dy: Float32) {
@@ -97,7 +116,7 @@ final class InputInjector {
         func sane(_ v: Float32) -> Int32 { v.isFinite ? Int32(min(max(v, -10000), 10000)) : 0 }
         let invert = UserDefaults.standard.bool(forKey: "invertScroll")
         let sign: Float32 = invert ? -1 : 1
-        CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+        CGEvent(scrollWheelEvent2Source: Self.source, units: .pixel, wheelCount: 2,
                 wheel1: sane(dy * sign), wheel2: sane(dx * sign), wheel3: 0)?.post(tap: .cghidEventTap)
     }
 
@@ -111,9 +130,52 @@ final class InputInjector {
         CGEventFlags.maskSecondaryFn.rawValue | CGEventFlags.maskHelp.rawValue
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
-        guard let event = CGEvent(keyboardEventSource: nil,
+        guard let event = CGEvent(keyboardEventSource: Self.source,
                                   virtualKey: CGKeyCode(macKeyCode), keyDown: down) else { return }
-        event.flags = CGEventFlags(rawValue: flags & Self.allowedFlagBits)
+        let masked = CGEventFlags(rawValue: flags & Self.allowedFlagBits)
+        event.flags = masked
+        // Modifier keys posted as plain key events don't make the system
+        // hold the modifier for the *mouse* events that follow (a Cmd-click
+        // from a peer), so remember the peer's modifier state and stamp it
+        // on mouse events too.
+        if Self.modifierMask(for: macKeyCode) != nil {
+            modifierFlags = masked
+        }
         event.post(tap: .cghidEventTap)
+    }
+
+    /// Which CGEventFlags bit a modifier key code toggles, nil for non-modifiers.
+    static func modifierMask(for keyCode: UInt16) -> CGEventFlags? {
+        switch keyCode {
+        case 54, 55: return .maskCommand
+        case 56, 60: return .maskShift
+        case 58, 61: return .maskAlternate
+        case 59, 62: return .maskControl
+        case 57: return .maskAlphaShift
+        case 63: return .maskSecondaryFn
+        default: return nil
+        }
+    }
+
+    /// Lets go of anything a peer left pressed — called when its cursor
+    /// leaves this machine or the link drops, so a button or modifier can't
+    /// stay stuck down on a machine nobody is touching.
+    /// Caps Lock is a toggle, not a held key, so it is deliberately left alone.
+    func releaseAll() {
+        let p = lastPointNormalized()
+        if leftDown { mouseButton(button: 0, down: false, x: Float32(p.x), y: Float32(p.y)) }
+        if rightDown { mouseButton(button: 1, down: false, x: Float32(p.x), y: Float32(p.y)) }
+        for (code, mask) in [(55, CGEventFlags.maskCommand), (56, .maskShift), (58, .maskAlternate), (59, .maskControl), (63, .maskSecondaryFn)]
+            where modifierFlags.contains(mask) {
+            modifierFlags.remove(mask)
+            key(macKeyCode: UInt16(code), down: false, flags: modifierFlags.rawValue)
+        }
+        modifierFlags = []
+    }
+
+    private func lastPointNormalized() -> CGPoint {
+        let b = boundsProvider()
+        guard b.width > 0, b.height > 0 else { return .zero }
+        return CGPoint(x: (lastPoint.x - b.origin.x) / b.width, y: (lastPoint.y - b.origin.y) / b.height)
     }
 }
