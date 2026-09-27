@@ -35,9 +35,32 @@ internal static class DeskSelfTest
     {
         if (ok) { _pass++; Console.WriteLine($"ok   {what}"); }
         else { _fail++; Console.WriteLine($"FAIL {what}"); }
+        Step(what);
     }
 
-    private static void Warn(string what) { _warn++; Console.WriteLine($"WARN {what}"); }
+    private static void Warn(string what) { _warn++; Console.WriteLine($"WARN {what}"); Step(what); }
+
+    // Watchdog: a hang names the last step instead of eating the CI timeout.
+    private static string _step = "start";
+    private static long _stepAt = Environment.TickCount64;
+    private static void Step(string what) { Volatile.Write(ref _step, what); Interlocked.Exchange(ref _stepAt, Environment.TickCount64); }
+
+    private static void StartWatchdog()
+    {
+        new Thread(() =>
+        {
+            while (true)
+            {
+                Thread.Sleep(1000);
+                if (Environment.TickCount64 - Interlocked.Read(ref _stepAt) > 45000)
+                {
+                    Console.WriteLine($"FAIL HANG: no progress for 45 s after \"{Volatile.Read(ref _step)}\"");
+                    Console.Out.Flush();
+                    Environment.Exit(3);
+                }
+            }
+        }) { IsBackground = true }.Start();
+    }
 
     /// Pumps the UI thread until `cond` or the timeout.
     private static bool Pump(Func<bool> cond, int ms)
@@ -60,9 +83,11 @@ internal static class DeskSelfTest
         WinNative.EnsurePerMonitorDpi();
         Application.EnableVisualStyles();
         SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+        StartWatchdog();
         try { Edge(); } catch (Exception e) { Check(false, $"edge: threw {e}"); }
         try { CarryChecks(); } catch (Exception e) { Check(false, $"carry: threw {e}"); }
         try { Stream(); } catch (Exception e) { Check(false, $"stream: threw {e}"); }
+        try { ParkProbe(); } catch (Exception e) { Warn($"park probe: threw {e.Message}"); }
         try { Handoff(); } catch (Exception e) { Check(false, $"handoff: threw {e}"); }
         Console.WriteLine(_fail == 0 ? $"PASS ({_pass} checks, {_warn} warnings)" : $"FAILED: {_fail} of {_pass + _fail} checks");
         return _fail == 0 ? 0 : 1;
@@ -399,6 +424,56 @@ internal static class DeskSelfTest
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string cls, string? title);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessage(IntPtr h, int msg, IntPtr w, System.Text.StringBuilder l);
 
+    // MARK: - park probe (measurement, never fails)
+    //
+    // Does WGC keep delivering fresh frames for a window parked off-screen,
+    // or for one left on-screen but made (almost) fully transparent and
+    // click-through? Prints frames/2 s and the mean luma of the centre row so
+    // a transparent capture (black) is told apart from real content.
+
+    private static void ParkProbe()
+    {
+        using var form = TestForm("Clamshell park probe");
+        form.Show();
+        PumpFor(300);
+        using var cap = new WindowCapture(form.Handle);
+        int lumaNow = -1;
+        cap.OnNv12 = nv12 =>
+        {
+            int row = cap.Height / 2 * cap.Width, sum = 0;
+            for (int x = 0; x < cap.Width; x++) sum += nv12[row + x];
+            Volatile.Write(ref lumaNow, sum / Math.Max(cap.Width, 1));
+        };
+        (long Frames, int Luma) Measure()
+        {
+            long f0 = Interlocked.Read(ref cap.Frames);
+            PumpFor(2000);
+            return (Interlocked.Read(ref cap.Frames) - f0, Volatile.Read(ref lumaNow));
+        }
+        var on = Measure();
+        var parker = new WindowParker(form.Handle, null);
+        parker.Park();
+        var off = Measure();
+        parker.Restore();
+        PumpFor(200);
+        int ex = WinNative.GetWindowLong(form.Handle, -20 /* GWL_EXSTYLE */);
+        (long, int) Ghost(byte alpha)
+        {
+            SetWindowLong(form.Handle, -20, ex | 0x80000 /* WS_EX_LAYERED */ | 0x20 /* WS_EX_TRANSPARENT */);
+            SetLayeredWindowAttributes(form.Handle, 0, alpha, 2 /* LWA_ALPHA */);
+            return Measure();
+        }
+        var ghost1 = Ghost(1);
+        var ghost0 = Ghost(0);
+        SetWindowLong(form.Handle, -20, ex);
+        Console.WriteLine($"info park probe: frames/2s (centre luma) on-screen {on.Frames} ({on.Luma}), parked off-screen {off.Frames} ({off.Luma}), " +
+                          $"on-screen alpha 1/255 click-through {ghost1.Item1} ({ghost1.Item2}), alpha 0 {ghost0.Item1} ({ghost0.Item2})");
+        Step("park probe");
+    }
+
+    [DllImport("user32.dll")] private static extern int SetWindowLong(IntPtr h, int index, int value);
+    [DllImport("user32.dll")] private static extern bool SetLayeredWindowAttributes(IntPtr h, uint key, byte alpha, uint flags);
+
     // MARK: - handoff
 
     private static void Handoff()
@@ -432,6 +507,7 @@ internal static class DeskSelfTest
         var parked = WinNative.Frame(form.Handle)!.Value;
         Check(parked.Left > WinNative.VirtualScreen().MaxX - 20, "handoff: source window parked off-screen");
 
+        Step("handoff: sending the receiver back");
         b.ReturnReceiver(id, null, 0);
         Pump(() => a.OutgoingCount == 0, 3000);
         PumpFor(100);
@@ -445,9 +521,11 @@ internal static class DeskSelfTest
         var fr2 = WinNative.Frame(form2.Handle)!.Value.ToRect();
         a.Begin(new Carry.Window(form2.Handle, (uint)Environment.ProcessId, fr2, form2.Text, "ClamshellServer", 0.5, 0.05, fr2), PeerEdge.Left, 0.5);
         Pump(() => b.ReceiverCount == 1, 3000);
+        Step("handoff: closing the source window");
         form2.Close(); form2.Dispose();
         Pump(() => b.ReceiverCount == 0, 4000);
         Check(aSent.Contains(MessageType.WindowClosed) && b.ReceiverCount == 0, "handoff: closing the source window sends WINDOW_CLOSED and closes the receiver");
+        Step("handoff: disposing");
         a.Dispose(); b.Dispose();
         PumpFor(200);
     }

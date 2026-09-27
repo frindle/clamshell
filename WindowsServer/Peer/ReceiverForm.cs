@@ -159,7 +159,9 @@ internal sealed class ReceiverForm : Form
         string h = _host.Contains(':') ? $"[{_host}]" : _host;
         try
         {
+            Log.Line($"HANDOFF: receiver dialling {h}:{_port}");
             await _ws.ConnectAsync(new Uri($"ws://{h}:{_port}/"), _cts.Token);
+            Log.Line($"HANDOFF: receiver connected to {h}:{_port}");
             Status("live");
             Send(PeerMsg.StreamHello(StreamCodec.H264));
             var parser = new FrameParser { OnMessage = OnStreamMessage };
@@ -185,6 +187,7 @@ internal sealed class ReceiverForm : Form
         {
             case MessageType.HelloAck when p.Length >= 10:
                 AckSize = (Be.U32(p, 2), Be.U32(p, 6));
+                Log.Line($"HANDOFF: receiver got HELLO_ACK {AckSize} codec {p[1]}");
                 _decoder?.Dispose();
                 try
                 {
