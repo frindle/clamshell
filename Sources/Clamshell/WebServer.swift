@@ -146,8 +146,12 @@ final class WebServer {
                 // POST bodies (clipboard): read Content-Length bytes past the
                 // headers. GETs have no Content-Length, so their flow is
                 // unchanged (body arrives empty).
+                // Network trust boundary: a negative header value (e.g.
+                // "Content-Length: -1") used to sail past the size cap and
+                // then trap in `prefix(contentLength)` — a remote crash of
+                // the whole app from an unauthenticated request on 5901.
                 let contentLength = Self.contentLength(in: head)
-                guard contentLength <= 1_048_576 else {
+                guard contentLength >= 0, contentLength <= 1_048_576 else {
                     self.send(conn, status: "413 Payload Too Large", contentType: "text/plain",
                               body: Data("too large".utf8))
                     return
@@ -166,11 +170,15 @@ final class WebServer {
         }
     }
 
-    private static func contentLength(in head: String) -> Int {
+    /// Parsed Content-Length, 0 when absent. Unparseable or negative values
+    /// come back as -1 so the caller rejects the request instead of guessing.
+    static func contentLength(in head: String) -> Int {
         for line in head.split(separator: "\r\n").dropFirst() {
             let lower = line.lowercased()
             guard lower.hasPrefix("content-length:") else { continue }
-            return Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) ?? 0
+            let value = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+            guard let n = Int(value), n >= 0 else { return -1 }
+            return n
         }
         return 0
     }
