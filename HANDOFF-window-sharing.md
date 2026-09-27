@@ -2,28 +2,50 @@
 
 Resume checklist: `git -C <worktree> branch --show-current` must print
 `window-handoff-v2` and the path must be the agent worktree under
-`.claude/worktrees/`, never the primary checkout.
+`.claude/worktrees/`, never the primary checkout. Never write to the real
+~/Library/Application Support/Clamshell when smoke-testing: run
+`CLAMSHELL_PEER_DIR=<scratch> .build/debug/Clamshell peer --no-advertise --port 5996`.
 
 ## Done
-- Review fixes (4 commits): WebServer negative Content-Length trap,
-  selectWindowStream stop/start port race, InputInjector flag mask,
-  StreamServer window source `onScreenWindowsOnly: false` + AX note.
+- Review fixes (4 commits), peer link protocol (0x40+), PeerIdentity,
+  PeerLink (Bonjour, WS 5910, mutual ECDSA). Selftests
+  `peer-protocol-selftest`, `peer-link-selftest` PASS.
+- InputInjector: CLAM-tagged private event source (`isInjected`), peer
+  modifier state stamped on mouse events, `releaseAll()`, double-click
+  clickState, off-screen window target → `postToPid` with window number.
+- Mac KVM slice: Peer/EdgeGeometry.swift (pure edge/virtual-cursor/key
+  rules), CarryDetector (drag pasteboard + moved-window detection),
+  EdgeController (session CGEventTap, CursorOps seam), RemoteInputSink
+  (carry mode), PeerManager (routing, auto-reconnect: smaller id dials),
+  PeerMenu ("Shared Desk" submenu in StatusBarApp), `clamshell peer` CLI,
+  `clamshell edge-selftest` PASS (43 checks). PeerLink.remoteHost added.
+  `PeerFeatures.install(on:)` / `menuItems(for:)` in PeerCommand.swift is the
+  hook where clipboard/files/handoff modules get attached.
 
-- Peer link protocol (0x40+): Sources/Clamshell/Peer/PeerProtocol.swift,
-  PeerIdentity.swift (P-256 id file, PIN HMAC, trust store), PeerLink.swift
-  (Bonjour advertise/browse, WS 5910, mutual ECDSA auth). Selftests:
-  `peer-protocol-selftest`, `peer-link-selftest` (loopback 5998/5999) PASS.
-  Gotchas: WS NWConnection client must dial a `.url` endpoint; receive only
-  after `.ready`; refusal ACK sent before close.
-
-## In progress
-- Mac PeerManager wiring (EdgeController / RemoteInputSink / clipboard /
-  file transfer / handoff) — nothing written yet.
+## Design decisions (keep consistent on Windows)
+- Controller keeps a virtual cursor in the peer's units (screen size from
+  HELLO), sends EDGE_ENTER(edge of peer screen, x, y, carry) then v1
+  INPUT_MOUSE_MOVE normalized; leaving through the entry edge sends
+  EDGE_LEAVE. Delta scale = clamp(peerW/localW, 0.5, 3).
+- Crossing with the left button down only when carrying (files / moved
+  window / our ReceiverWindow); otherwise blocked at the edge.
+- EDGE_ENTER leftButtonDown=1 = carry: receiver injects no press and
+  swallows the next left release (ends carry).
+- EDGE_LEAVE on the controlled side with its injected left button down →
+  evaluate carry there (files → send to peer, window → handoff to peer,
+  receiver window → HANDOFF_RETURN).
+- Panic key Ctrl+Opt+Cmd+L (Windows: Ctrl+Alt+Win+L? pick Ctrl+Alt+Shift+L).
+- Controlled side maps to its primary display only (documented gap).
 
 ## Next
-- Mac EdgeController (CGEventTap KVM) / RemoteInputSink
-- Mac clipboard peer mode, file transfer, drag-drop trigger
-- Mac window handoff source (hide via AX) + ReceiverWindow
-- Windows: PeerLink (HttpListener WS + Makaretu mDNS), EdgeController hooks,
-  WindowSource (WGC), ReceiverForm, FileTransfer, clipboard
+- Mac clipboard peer mode (text + PNG via CLIPBOARD / CLIPBOARD_DATA),
+  FileTransfer (offer/accept/chunk/done, Downloads, sha256), drop trigger
+  wiring (onCarryCrossed/onCarryDropped/onPeerLeftCarrying), selftest.
+- Mac window handoff source (WindowHider via AX pid+frame match, hide to
+  bottom-right corner sliver like AeroSpace, StreamServer on 5921+,
+  allow only peer IP) + ReceiverWindow (FrameAssembler + AVSampleBuffer
+  DisplayLayer, title strip with Return), selftest.
+- Windows: PeerProtocol/Identity/Link (TcpListener + manual WS upgrade, no
+  URL ACL; mDNS), EdgeController hooks, WindowSource (WGC), ReceiverForm,
+  FileTransfer, clipboard. Golden byte vectors shared with Swift selftest.
 - windows-ci.yml selftest steps; PROTOCOL.md; README Unreleased; test plan

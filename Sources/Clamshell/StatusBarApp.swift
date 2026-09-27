@@ -56,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var windowStreamServer: StreamServer?
     private var activeWindowStream: (id: UInt32, title: String)?
     private var capturableWindows: [WindowList.Entry] = []
+    /// Shared Desk (PROTOCOL.md "Peer link"): KVM, clipboard, files and
+    /// window handoff with a paired machine. Off unless enabled in the menu.
+    private let peerMenu = PeerMenuController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Must run before anything else touches display config — a prior
@@ -213,6 +216,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         refreshCapturableWindows()
+
+        peerMenu.onChange = { [weak self] in self?.rebuildMenu() }
+        peerMenu.startIfEnabled()
     }
 
     /// Repopulates the window picker (Streaming > Stream a Window…). Called at
@@ -238,6 +244,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// a crash or force-quit (nothing runs then, by definition) — that's
     /// what the launch-time recovery sweep is for.
     func applicationWillTerminate(_ notification: Notification) {
+        // Hands the mouse back and un-hides any handed-off window first.
+        peerMenu.stop()
         guard coordinator.state != .idle else { return }
         clog("quitting while collapsed — restoring before exit")
         coordinator.restore()
@@ -462,6 +470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let streamingItem = NSMenuItem(title: "Streaming", action: nil, keyEquivalent: "")
         menu.addItem(streamingItem)
         menu.setSubmenu(streamingMenu, for: streamingItem)
+        menu.addItem(peerMenu.makeMenuItem())
 
         let systemMenu = NSMenu()
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
