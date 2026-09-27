@@ -12,6 +12,19 @@ final class InputInjector {
     private var rightDown = false
     private var lastPoint = CGPoint.zero
     private var modifierFlags: CGEventFlags = []
+    /// Double/triple-click bookkeeping: synthetic events carry clickState 1
+    /// unless we set it, so without this a peer's double-click is two
+    /// single clicks (no word select, no opening files).
+    private var lastDownAt: TimeInterval = 0
+    private var lastDownPoint = CGPoint.zero
+    private var lastDownButton: UInt8 = 0
+    private var clickCount: Int64 = 0
+    /// Window Handoff source: the handed-off window is parked (almost
+    /// entirely) off-screen, where a HID-level click can't reach it — the
+    /// cursor is clamped to the displays. When the window is mostly off
+    /// every display, events go straight to its owning process instead,
+    /// tagged with the window number (see `post(_:)`).
+    private let windowTarget: (id: CGWindowID, pid: pid_t)?
 
     /// Every event this class posts is tagged with this user-data value on a
     /// private event source, so the peer link's own CGEventTap
@@ -29,6 +42,7 @@ final class InputInjector {
 
     init(displayID: CGDirectDisplayID) {
         self.boundsProvider = { CGDisplayBounds(displayID) } // global desktop coords, points
+        self.windowTarget = nil
         Self.warnIfNoAccessibilityPermission()
     }
 
@@ -39,6 +53,7 @@ final class InputInjector {
     /// window stays wherever the user leaves it while streamed.
     init(windowID: UInt32) {
         self.boundsProvider = { Self.liveWindowBounds(windowID) ?? .zero }
+        self.windowTarget = Self.ownerPid(windowID).map { (CGWindowID(windowID), $0) }
         Self.warnIfNoAccessibilityPermission()
     }
 
@@ -59,6 +74,44 @@ final class InputInjector {
               let boundsDict = info[kCGWindowBounds as String] as? [String: CGFloat],
               let rect = CGRect(dictionaryRepresentation: boundsDict as CFDictionary) as CGRect? else { return nil }
         return rect
+    }
+
+    private static func ownerPid(_ windowID: UInt32) -> pid_t? {
+        guard let info = (CGWindowListCopyWindowInfo(.optionIncludingWindow, CGWindowID(windowID)) as? [[String: Any]])?.first,
+              let pid = info[kCGWindowOwnerPID as String] as? Int else { return nil }
+        return pid_t(pid)
+    }
+
+    /// True when less than half of `rect` lies on any display.
+    static func isMostlyOffscreen(_ rect: CGRect) -> Bool {
+        guard rect.width > 0, rect.height > 0 else { return false }
+        var ids = [CGDirectDisplayID](repeating: 0, count: 16)
+        var n: UInt32 = 0
+        CGGetActiveDisplayList(16, &ids, &n)
+        var visible: CGFloat = 0
+        for id in ids.prefix(Int(n)) {
+            let i = CGDisplayBounds(id).intersection(rect)
+            if !i.isNull { visible += i.width * i.height }
+        }
+        return visible < rect.width * rect.height / 2
+    }
+
+    /// Posts at the HID level, or — for a handed-off window parked
+    /// off-screen — straight to its owning process with the window number
+    /// set, which is how AppKit routes an event to a window without a
+    /// hit-test. Best effort: apps that hit-test themselves (some
+    /// cross-platform toolkits) may ignore off-screen clicks; keys are
+    /// unaffected. Documented in PROTOCOL.md "Window handoff".
+    private func post(_ event: CGEvent, isMouse: Bool) {
+        if let target = windowTarget, Self.isMostlyOffscreen(boundsProvider()) {
+            if isMouse {
+                event.setIntegerValueField(.mouseEventWindowUnderMousePointer, value: Int64(target.id))
+                event.setIntegerValueField(.mouseEventWindowUnderMousePointerThatCanHandleThisEvent, value: Int64(target.id))
+            }
+            event.postToPid(target.pid)
+        } else {
+            event.post(tap: .cghidEventTap)
+        }
     }
 
     private func map(_ x: Float32, _ y: Float32) -> CGPoint {
@@ -82,10 +135,11 @@ final class InputInjector {
                               : rightDown ? .rightMouseDragged
                               : .mouseMoved
         let button: CGMouseButton = rightDown ? .right : .left
-        let event = CGEvent(mouseEventSource: Self.source, mouseType: type,
-                            mouseCursorPosition: point, mouseButton: button)
-        event?.flags = modifierFlags
-        event?.post(tap: .cghidEventTap)
+        guard let event = CGEvent(mouseEventSource: Self.source, mouseType: type,
+                                  mouseCursorPosition: point, mouseButton: button) else { return }
+        event.flags = modifierFlags
+        if leftDown || rightDown { event.setIntegerValueField(.mouseEventClickState, value: max(clickCount, 1)) }
+        post(event, isMouse: true)
     }
 
     func mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32) {
@@ -94,11 +148,24 @@ final class InputInjector {
         if right { rightDown = down } else { leftDown = down }
         let type: CGEventType = right ? (down ? .rightMouseDown : .rightMouseUp)
                                       : (down ? .leftMouseDown : .leftMouseUp)
-        let event = CGEvent(mouseEventSource: Self.source, mouseType: type,
-                            mouseCursorPosition: point,
-                            mouseButton: right ? .right : .left)
-        event?.flags = modifierFlags
-        event?.post(tap: .cghidEventTap)
+        guard let event = CGEvent(mouseEventSource: Self.source, mouseType: type,
+                                  mouseCursorPosition: point,
+                                  mouseButton: right ? .right : .left) else { return }
+        if down {
+            let now = ProcessInfo.processInfo.systemUptime
+            let near = abs(point.x - lastDownPoint.x) <= 4 && abs(point.y - lastDownPoint.y) <= 4
+            clickCount = (near && button == lastDownButton && now - lastDownAt <= Self.doubleClickInterval) ? clickCount + 1 : 1
+            lastDownAt = now; lastDownPoint = point; lastDownButton = button
+        }
+        event.setIntegerValueField(.mouseEventClickState, value: max(clickCount, 1))
+        event.flags = modifierFlags
+        post(event, isMouse: true)
+    }
+
+    /// NSEvent.doubleClickInterval without importing AppKit here.
+    static var doubleClickInterval: TimeInterval {
+        let v = UserDefaults.standard.double(forKey: "com.apple.mouse.doubleClickThreshold")
+        return v > 0 ? v : 0.5
     }
 
     func scroll(dx: Float32, dy: Float32) {
@@ -116,8 +183,16 @@ final class InputInjector {
         func sane(_ v: Float32) -> Int32 { v.isFinite ? Int32(min(max(v, -10000), 10000)) : 0 }
         let invert = UserDefaults.standard.bool(forKey: "invertScroll")
         let sign: Float32 = invert ? -1 : 1
-        CGEvent(scrollWheelEvent2Source: Self.source, units: .pixel, wheelCount: 2,
-                wheel1: sane(dy * sign), wheel2: sane(dx * sign), wheel3: 0)?.post(tap: .cghidEventTap)
+        guard let event = CGEvent(scrollWheelEvent2Source: Self.source, units: .pixel, wheelCount: 2,
+                                  wheel1: sane(dy * sign), wheel2: sane(dx * sign), wheel3: 0) else { return }
+        if windowTarget != nil {
+            // Scroll goes to the window under the pointer; aim it at the
+            // last point the viewer's pointer was over, inside the window,
+            // even when the window is parked off-screen.
+            let b = boundsProvider()
+            if b.width > 0 { event.location = b.contains(lastPoint) ? lastPoint : CGPoint(x: b.midX, y: b.midY) }
+        }
+        post(event, isMouse: true)
     }
 
     /// Only the documented modifier bits cross the trust boundary; the rest
@@ -141,7 +216,7 @@ final class InputInjector {
         if Self.modifierMask(for: macKeyCode) != nil {
             modifierFlags = masked
         }
-        event.post(tap: .cghidEventTap)
+        post(event, isMouse: false)
     }
 
     /// Which CGEventFlags bit a modifier key code toggles, nil for non-modifiers.

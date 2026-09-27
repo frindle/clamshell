@@ -211,6 +211,14 @@ if args.count > 1 {
         // Two peer links over real loopback WebSockets: PIN pairing, trust
         // persistence, reconnect, and message flow — no Bonjour, no hardware.
         exit(PeerLinkSelfTest.run())
+    case "edge-selftest":
+        // Shared-desk KVM logic: edge geometry, virtual cursor, key rules and
+        // the EdgeController state machine on synthetic (never posted) events.
+        exit(EdgeSelfTest.run())
+    case "peer":
+        // Headless shared desk (PROTOCOL.md "Peer link"): KVM, clipboard,
+        // files and window handoff with a paired machine. See PeerCommand.
+        PeerCommand.run(Array(args.dropFirst(2)))
     case "self-heal-guard-selftest":
         // Covers only SelfRelaunchGuard's crash-loop cooldown logic (pure,
         // injectable). Does NOT and cannot cover PhantomDisplayDetector
@@ -222,7 +230,8 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | peer-protocol-selftest | peer-link-selftest]")
+              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | peer-protocol-selftest | peer-link-selftest | " +
+              "edge-selftest | peer]")
         exit(64)
     }
 }

@@ -49,6 +49,9 @@ final class PeerLink {
     private var handshakeTimeout: DispatchWorkItem?
     private(set) var state: PeerLinkState = .idle
     private(set) var discovered: [DiscoveredPeer] = []
+    /// Address of the linked peer (no port, IPv6 scope stripped) — where a
+    /// window handoff's video stream is dialled. Set when the link comes up.
+    private(set) var remoteHost: String?
     /// Current pairing PIN — regenerated after every successful pairing so a
     /// PIN read off the screen is single-use.
     private(set) var pairingPIN = PeerIdentity.randomPIN()
@@ -371,6 +374,11 @@ final class PeerLink {
             pairingPIN = PeerIdentity.randomPIN()
         }
         trust.trust(publicKey: publicKey, name: name)
+        if case .hostPort(let host, _)? = connection?.currentPath?.remoteEndpoint {
+            var h = "\(host)"
+            if let pct = h.firstIndex(of: "%") { h = String(h[..<pct]) }
+            remoteHost = h
+        }
         let info = PeerInfo(id: PeerIdentity.peerId(for: publicKey), name: name, publicKey: publicKey, pairedAt: Date())
         clog("PEER: linked with \(name) (\(info.id.prefix(12))…) screen \(screen.0)x\(screen.1)")
         setState(.linked(info, screenWidth: screen.0, screenHeight: screen.1))
