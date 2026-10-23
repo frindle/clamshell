@@ -192,3 +192,135 @@ enum StreamSelfTest {
         return buffer
     }
 }
+
+// Selftest that proves a 11-byte HELLO posts `collapse` without using
+// DistributedNotificationCenter (the post closure is swapped for a local store).
+enum HelloCollapseSelfTest {
+    static func run() -> Int32 {
+        var posts: [[String: String]] = []
+        let originalPost = StreamServer.postCollapse
+        StreamServer.postCollapse = { info in
+            posts.append(info)
+        }
+        defer { StreamServer.postCollapse = originalPost }
+
+        var failCount = 0
+        func spinUntilPost() {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.3))
+        }
+
+        // Case 1: 11-byte HELLO [1, 1] + BE32(2732) + BE32(2048) + [0] at offset 2
+        do {
+            var bytes = Data([1, 1])
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2732).bigEndian) { Data($0) })
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2048).bigEndian) { Data($0) })
+            bytes.append(0)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            posts.removeAll()
+            server.handleClientDisplayInfo(bytes, at: 2)
+            spinUntilPost()
+            if posts.count == 1,
+               posts[0]["width"] == "2732",
+               posts[0]["height"] == "2048",
+               posts[0]["external"] == "0" {
+                print("PASS hello11 2732x2048")
+            } else {
+                print("FAIL hello11: expected 1 post with width=2732 height=2048 external=0, got \(posts.count) posts: \(posts)")
+                failCount += 1
+            }
+        }
+
+        // Case 2: 2-byte HELLO [1, 1] at offset 2 (too short, no post)
+        do {
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            posts.removeAll()
+            server.handleClientDisplayInfo(Data([1, 1]), at: 2)
+            spinUntilPost()
+            if posts.isEmpty {
+                print("PASS hello2_no_post")
+            } else {
+                print("FAIL hello2_no_post: expected 0 posts, got \(posts.count)")
+                failCount += 1
+            }
+        }
+
+        // Case 3: CLIENT_DISPLAYS payload BE32(1920) + BE32(1080) + [0] (9 bytes) at offset 0
+        do {
+            var bytes = Data()
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(1920).bigEndian) { Data($0) })
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(1080).bigEndian) { Data($0) })
+            bytes.append(0)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            posts.removeAll()
+            server.handleClientDisplayInfo(bytes, at: 0)
+            spinUntilPost()
+            if posts.count == 1,
+               posts[0]["width"] == "1920",
+               posts[0]["height"] == "1080" {
+                print("PASS clientDisplays 1920x1080")
+            } else {
+                print("FAIL clientDisplays: expected 1 post with width=1920 height=1080, got \(posts.count) posts: \(posts)")
+                failCount += 1
+            }
+        }
+
+        // Case 4: Case-1 bytes as a slice with non-zero startIndex
+        do {
+            var bytes = Data([1, 1])
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2732).bigEndian) { Data($0) })
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2048).bigEndian) { Data($0) })
+            bytes.append(0)
+            let sliced = Data([0xFF] + bytes).dropFirst()
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            posts.removeAll()
+            server.handleClientDisplayInfo(sliced, at: 2)
+            spinUntilPost()
+            if posts.count == 1,
+               posts[0]["width"] == "2732",
+               posts[0]["height"] == "2048" {
+                print("PASS hello11_slice 2732x2048")
+            } else {
+                print("FAIL hello11_slice: expected 1 post with width=2732 height=2048, got \(posts.count) posts: \(posts)")
+                failCount += 1
+            }
+        }
+
+        // Case 5: Case-1 bytes but size 600x400 (below 640x480 threshold): no post
+        do {
+            var bytes = Data([1, 1])
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(600).bigEndian) { Data($0) })
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(400).bigEndian) { Data($0) })
+            bytes.append(0)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            posts.removeAll()
+            server.handleClientDisplayInfo(bytes, at: 2)
+            spinUntilPost()
+            if posts.isEmpty {
+                print("PASS small_no_post")
+            } else {
+                print("FAIL small_no_post: expected 0 posts, got \(posts.count)")
+                failCount += 1
+            }
+        }
+
+        // Case 6: Non-primary server with case-1 bytes: no post
+        do {
+            var bytes = Data([1, 1])
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2732).bigEndian) { Data($0) })
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2048).bigEndian) { Data($0) })
+            bytes.append(0)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: false)
+            posts.removeAll()
+            server.handleClientDisplayInfo(bytes, at: 2)
+            spinUntilPost()
+            if posts.isEmpty {
+                print("PASS nonPrimary_no_post")
+            } else {
+                print("FAIL nonPrimary_no_post: expected 0 posts, got \(posts.count)")
+                failCount += 1
+            }
+        }
+
+        return failCount == 0 ? 0 : 1
+    }
+}

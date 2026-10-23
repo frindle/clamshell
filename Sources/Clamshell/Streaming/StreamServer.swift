@@ -303,6 +303,15 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     // MARK: - Client display info -> host auto-configuration (on `queue`)
 
+    /// Posts the `collapse` distributed notification. Swappable so
+    /// `hello-collapse-selftest` can capture posts without collapsing the
+    /// running app.
+    static var postCollapse: ([String: String]) -> Void = { info in
+        DistributedNotificationCenter.default().postNotificationName(
+            Notification.Name("com.frindle.clamshell.collapse"), object: nil,
+            userInfo: info, deliverImmediately: true)
+    }
+
     /// The client reports its real screen size (and whether it has a second
     /// display surface) in HELLO / CLIENT_DISPLAYS. Forward it to the menu
     /// bar app over the same distributed-notification channel Sunshine's
@@ -310,7 +319,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// device (and dual mode auto-toggled) without a manual preset pick.
     /// Only the primary connection speaks for the client; secondary display
     /// connections would otherwise fight over the geometry.
-    private func handleClientDisplayInfo(_ payload: Data, at offset: Int) {
+    func handleClientDisplayInfo(_ payload: Data, at offset: Int) {
         guard isPrimary, payload.count >= offset + 9 else { return }
         let w = payload.beUInt32(at: offset), h = payload.beUInt32(at: offset + 4)
         let secondDisplay = (payload[payload.startIndex + offset + 8] & 1) == 1
@@ -331,9 +340,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             var info: [String: String] = ["width": String(w), "height": String(h),
                                           "external": secondDisplay ? "1" : "0", "source": "stream"]
             if let s = secondInfo { info["widthB"] = String(s.w); info["heightB"] = String(s.h) }
-            DistributedNotificationCenter.default().postNotificationName(
-                Notification.Name("com.frindle.clamshell.collapse"), object: nil,
-                userInfo: info, deliverImmediately: true)
+            Self.postCollapse(info)
         }
     }
 
