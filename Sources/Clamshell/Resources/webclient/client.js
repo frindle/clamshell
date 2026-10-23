@@ -16,6 +16,7 @@
 // AudioSpecificConfig (0x11,0x90) since the wire carries no ADTS/cookie.
 
 import { codeToMacVK } from '/client/keymap.js';
+import { helloPayload, attachResizeReporter } from '/client/hello.js';
 
 const params = new URLSearchParams(location.search);
 const display = ['a', 'b', 'c'].includes(params.get('display')) ? params.get('display') : 'a';
@@ -28,10 +29,14 @@ const BRIDGE_PORT = { a: 5906, b: 5907, c: 5908 }[display];
 
 // Message types (StreamProtocol.swift).
 const T = {
-  HELLO: 0x01, HELLO_ACK: 0x02, STREAM_STATUS: 0x04, HOST_LOCK_STATE: 0x05,
+  HELLO: 0x01, HELLO_ACK: 0x02, CLIENT_DISPLAYS: 0x03, STREAM_STATUS: 0x04, HOST_LOCK_STATE: 0x05,
   VIDEO_FRAME: 0x10, KEYFRAME_REQUEST: 0x11, AUDIO_FRAME: 0x13,
   MOUSE_MOVE: 0x20, MOUSE_BUTTON: 0x21, KEY: 0x22, SCROLL: 0x23, CLIPBOARD: 0x30,
 };
+
+// Re-report the window size to the host (CLIENT_DISPLAYS) after resizing stops;
+// the initial size rides in HELLO.
+attachResizeReporter(window, (p) => send(frameMsg(T.CLIENT_DISPLAYS, p)));
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -176,7 +181,7 @@ function scheduleReconnect() {
 function send(data) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(data); }
 
 function sendHello() {
-  send(frameMsg(T.HELLO, new Uint8Array([1 /* version */, 1 /* requestedCodec = H.264 */])));
+  send(frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio)));
 }
 
 // MARK: - HELLO_ACK / video decode setup
