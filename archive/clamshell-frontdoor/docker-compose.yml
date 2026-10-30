@@ -1,0 +1,32 @@
+services:
+  clamshell-frontdoor:
+    build: .
+    container_name: clamshell-frontdoor
+    restart: unless-stopped
+    environment:
+      TARGET_HOST: "10.0.15.20"
+      CLAMSHELL_PORT: "5901"
+      VNC_PORT: "5900"
+      SSH_PORT: "22"
+      CLAMSHELL_URL: "https://clamshell.penndalton.com"
+      VNC_URL: "https://vnc.penndalton.com"
+      # TODO: confirm the real SSH ingress hostname once the Cloudflare
+      # Access SSH app (item 3) is actually created -- this is a guess
+      # based on the handoff doc's suggested naming, not yet verified.
+      SSH_URL: "https://macstudio-ssh.penndalton.com"
+      TCP_PROBE_TIMEOUT: "1.5"
+      PORT: "8080"
+    # TODO: assign a real static IP + MAC on the br0 macvlan network,
+    # following the same pattern as plex-automation/docker-compose.yml
+    # (mac_address + networks.br0.ipv4_address). Left unset here since I
+    # don't have visibility into the full IP allocation table and don't
+    # want to guess and collide with an existing service. Alternatively,
+    # if this only needs to be reachable via the Cloudflare Tunnel (not
+    # directly on the LAN), a simple port mapping may be simpler than
+    # macvlan -- confirm which pattern fits before deploying.
+    ports:
+      - "8080:8080"
+
+networks:
+  br0:
+    external: true
