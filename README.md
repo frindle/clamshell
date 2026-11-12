@@ -509,6 +509,13 @@ form.
 
 ### Unreleased
 
+### 0.9.14 — 2026-11-12
+- **The stream fits the browser window.** The web client now sends its real
+  display size in HELLO, so the host sizes the stream to the browser instead
+  of the saved preset, and it re-reports the size when the window is resized.
+  A new selftest (`hello-collapse-selftest`) covers the 11-byte HELLO, the
+  legacy 2-byte HELLO and CLIENT_DISPLAYS.
+
 ### 0.9.13 — 2026-08-30
 - **No more login loop on a headless Mac.** Collapsing onto a lone virtual
   display while the screen was locked made macOS re-lock ~1s after the user
