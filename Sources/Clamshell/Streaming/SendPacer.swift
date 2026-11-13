@@ -31,7 +31,7 @@ struct SendPacer {
 
     private(set) var inFlight = 0
     private(set) var awaitingKeyframe = false
-    private var keyframeRequestedAt: TimeInterval = 0
+    private var keyframeRequestedAt: TimeInterval?
     private var lastProgressAt: TimeInterval = 0
 
     init(softLimit: Int = 8, hardLimit: Int = 24,
@@ -80,7 +80,7 @@ struct SendPacer {
     mutating func reset() {
         inFlight = 0
         awaitingKeyframe = false
-        keyframeRequestedAt = 0
+        keyframeRequestedAt = nil
         lastProgressAt = 0
     }
 
@@ -88,7 +88,7 @@ struct SendPacer {
     /// again only if the last request is older than `keyframeRetry` (frames
     /// already in the encoder would otherwise each trigger another keyframe).
     private mutating func markKeyframeRequest(_ now: TimeInterval, force: Bool = false) -> Bool {
-        guard force || now - keyframeRequestedAt >= keyframeRetry else { return false }
+        if !force, let last = keyframeRequestedAt, now - last < keyframeRetry { return false }
         keyframeRequestedAt = now
         return true
     }
