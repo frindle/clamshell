@@ -85,13 +85,14 @@ final class WebServer {
 
     func start() {
         guard !isRunning else { return }
+        LANTLS.reload() // inert unless a cert and key are configured (README "LAN TLS")
         do {
             try startHTTP()
             try startWS()
             try startStreamBridges()
             isRunning = true
             let bound = bindHosts.isEmpty ? "all interfaces" : bindHosts.joined(separator: ", ")
-            clog("web access ON: http://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bound))")
+            clog("web access ON: http\(LANTLS.identity != nil ? "s" : "")://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bound))")
         } catch {
             clog("web access failed to start: \(error)")
             stop()
@@ -175,7 +176,7 @@ final class WebServer {
     }
 
     private func startHTTP() throws {
-        let listeners = try makeListeners(port: httpPort) { .tcp }
+        let listeners = try makeListeners(port: httpPort) { LANTLS.parameters() }
         for listener in listeners {
             listener.newConnectionHandler = { [weak self] conn in
                 conn.start(queue: self?.queue ?? .global())
@@ -565,7 +566,7 @@ final class WebServer {
 
     private func startWS() throws {
         let listeners = try makeListeners(port: wsPort) {
-            let wsParams = NWParameters.tcp
+            let wsParams = LANTLS.parameters()
             let wsOptions = NWProtocolWebSocket.Options()
             wsOptions.autoReplyPing = true
             wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
@@ -647,7 +648,7 @@ final class WebServer {
         for (i, port) in Self.streamBridgePorts.enumerated() {
             let targetPort = Self.streamTargetPorts[i]
             let ls = try makeListeners(port: port) {
-                let wsParams = NWParameters.tcp
+                let wsParams = LANTLS.parameters()
                 let wsOptions = NWProtocolWebSocket.Options()
                 wsOptions.autoReplyPing = true
                 wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)

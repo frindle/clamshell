@@ -142,7 +142,9 @@ function connect() {
     // directly at each display's dedicated bridge port (5906/5907/5908) —
     // the Mac side needs no path parsing since each port is already
     // single-purpose.
-    ? `wss://${location.host}/ws/${display}`
+    // Served over https on a port (LAN TLS, README) rather than through the
+    // tunnel on 443: the bridge ports speak TLS themselves.
+    ? (location.port ? `wss://${location.hostname}:${BRIDGE_PORT}` : `wss://${location.host}/ws/${display}`)
     : `ws://${location.hostname}:${BRIDGE_PORT}`;
   const sock = new WebSocket(wsUrl);
   ws = sock;
