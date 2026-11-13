@@ -865,7 +865,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             // A stream client that only changed the size (window resized,
             // another monitor size picked) keeps its stream: resize the
             // virtual display where it stands. StreamFleet then re-sizes the
-            // capture and encoder (StreamServer.rebuildForNewSize).
+            // capture and encoder (StreamServer.displaySizeMayHaveChanged).
             if fromStream, !dual, !coordinator.dualMode, coordinator.resizeInPlace(to: preset) {
                 externallyCollapsed = true
                 streamCollapsed = true

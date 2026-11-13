@@ -596,8 +596,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     }
 
     private func attachFrameHandler(to encoder: VideoEncoder) {
-        encoder.onEncodedFrame = { [weak self] keyframe, pts, nalData in
-            self?.queue.async { self?.sendFrame(keyframe: keyframe, ptsMicros: pts, nalData: nalData) }
+        encoder.onEncodedFrame = { [weak self, weak encoder] keyframe, pts, nalData in
+            self?.queue.async {
+                // A callback that fired just before an in-place resize swapped
+                // encoders must not send its old-size frame after the new HELLO_ACK.
+                guard let self, let encoder, self.encoder === encoder else { return }
+                self.sendFrame(keyframe: keyframe, ptsMicros: pts, nalData: nalData)
+            }
         }
     }
 
@@ -632,8 +637,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     // New encoder first: if the new size cannot be encoded at all,
                     // nothing has been touched yet.
                     let newEncoder = try VideoEncoder.makeEncoder(width: Int32(w), height: Int32(h), preferred: oldEncoder.codec)
-                    try await stream.updateConfiguration(
-                        self.makeConfiguration(width: w, height: h, refresh: refresh, withAudio: withAudio))
+                    do {
+                        try await stream.updateConfiguration(
+                            self.makeConfiguration(width: w, height: h, refresh: refresh, withAudio: withAudio))
+                    } catch {
+                        newEncoder.invalidate()
+                        throw error
+                    }
                     self.queue.async {
                         self.finishResize(stream: stream, sessionConn: sessionConn, oldEncoder: oldEncoder,
                                           newEncoder: newEncoder, widthPx: w, heightPx: h)
@@ -653,11 +663,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     private func finishResize(stream resizedStream: SCStream, sessionConn: NWConnection?, oldEncoder: VideoEncoder,
                               newEncoder: VideoEncoder, widthPx: Int, heightPx: Int) {
-        resizing = false
         guard connection === sessionConn, connection != nil, stream === resizedStream else {
+            // A stale task from an older connection: leave `resizing` alone, it
+            // belongs to whatever session is current (teardown resets it).
             newEncoder.invalidate()
             return
         }
+        resizing = false
         attachFrameHandler(to: newEncoder)
         newEncoder.setBitrate(bitrate)
         // Frames the old encoder still has in flight are the wrong size for the
