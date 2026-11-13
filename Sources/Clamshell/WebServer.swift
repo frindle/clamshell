@@ -85,20 +85,38 @@ final class WebServer {
 
     func start() {
         guard !isRunning else { return }
+        LANTLS.reload() // inert unless a cert and key are configured (README "LAN TLS")
+        startTLSWatch()
         do {
             try startHTTP()
             try startWS()
             try startStreamBridges()
             isRunning = true
             let bound = bindHosts.isEmpty ? "all interfaces" : bindHosts.joined(separator: ", ")
-            clog("web access ON: http://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bound))")
+            clog("web access ON: http\(LANTLS.identity != nil ? "s" : "")://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bound))")
         } catch {
             clog("web access failed to start: \(error)")
             stop()
         }
     }
 
+    /// Every 6 hours, reload the TLS identity if the certificate or key file
+    /// changed (a renewed wildcard) or the TLS config appeared or went away,
+    /// by restarting the listeners. Main queue.
+    private var tlsWatch: Timer?
+    private func startTLSWatch() {
+        tlsWatch?.invalidate()
+        tlsWatch = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            guard let self, self.isRunning, LANTLS.needsReload() else { return }
+            clog("LAN TLS: certificate or configuration changed — restarting the web listeners")
+            self.stop()
+            self.start()
+        }
+    }
+
     func stop() {
+        tlsWatch?.invalidate()
+        tlsWatch = nil
         rebindWork?.cancel()
         rebindWork = nil
         rebindAttempts = 0
@@ -193,7 +211,7 @@ final class WebServer {
     }
 
     private func startHTTP() throws {
-        let listeners = try makeListeners(port: httpPort) { .tcp }
+        let listeners = try makeListeners(port: httpPort) { LANTLS.parameters() }
         for listener in listeners {
             listener.newConnectionHandler = { [weak self] conn in
                 conn.start(queue: self?.queue ?? .global())
@@ -531,8 +549,12 @@ final class WebServer {
         const A = {w: \(dual.a.pointsWide), h: \(dual.a.pointsHigh)};
         const B = {w: \(dual.b.pointsWide), h: \(dual.b.pointsHigh)};
         const IS_B = \(slot == .b);
+        // https with a port = LAN TLS: the bridge itself speaks wss on wsPort.
+        // https without a port = the tunnel, which routes /websockify.
         const wsUrl = location.protocol === 'https:'
-            ? 'wss://' + location.host + '/websockify'
+            ? (location.port
+                ? 'wss://' + location.hostname + ':\(wsPort)'
+                : 'wss://' + location.host + '/websockify')
             : 'ws://' + location.hostname + ':\(wsPort)';
 
         const screen = document.getElementById('screen');
@@ -583,7 +605,7 @@ final class WebServer {
 
     private func startWS() throws {
         let listeners = try makeListeners(port: wsPort) {
-            let wsParams = NWParameters.tcp
+            let wsParams = LANTLS.parameters()
             let wsOptions = NWProtocolWebSocket.Options()
             wsOptions.autoReplyPing = true
             wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
@@ -665,7 +687,7 @@ final class WebServer {
         for (i, port) in Self.streamBridgePorts.enumerated() {
             let targetPort = Self.streamTargetPorts[i]
             let ls = try makeListeners(port: port) {
-                let wsParams = NWParameters.tcp
+                let wsParams = LANTLS.parameters()
                 let wsOptions = NWProtocolWebSocket.Options()
                 wsOptions.autoReplyPing = true
                 wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)

@@ -54,6 +54,7 @@ final class StreamProtocolTests: XCTestCase {
         let f = StreamMessage.frame(type: .clipboard, payload: Data([1, 2, 3]))
         XCTAssertEqual([UInt8](f), [0x30, 0, 0, 0, 3, 1, 2, 3])
         XCTAssertEqual([UInt8](StreamMessage.frame(type: .keyframeRequest)), [0x11, 0, 0, 0, 0])
+        XCTAssertEqual([UInt8](StreamMessage.frame(type: .ping)), [0x07, 0, 0, 0, 0])
     }
 
     func testHelloVariants() {

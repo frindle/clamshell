@@ -13,8 +13,12 @@
 // on from the menu (browsers only let audio start from a click).
 
 import { codeToMacVK } from '/client/keymap.js';
-import { helloPayload, attachResizeReporter } from '/client/hello.js';
-import { HeldKeys, reconnectDelay, frameAction } from '/client/input.js';
+import {
+  helloPayload, clientDisplaysPayload, attachResizeReporter, loadPrefs, savePrefs, normalizePrefs, parseSize, SIZE_PRESETS, pickCodec,
+} from '/client/hello.js';
+import {
+  HeldKeys, reconnectDelay, frameAction, ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue,
+} from '/client/input.js';
 import { AudioPlayer, audioSupported } from '/client/audio.js';
 
 const params = new URLSearchParams(location.search);
@@ -29,13 +33,23 @@ const BRIDGE_PORT = { a: 5906, b: 5907, c: 5908 }[display];
 // Message types (StreamProtocol.swift).
 const T = {
   HELLO: 0x01, HELLO_ACK: 0x02, CLIENT_DISPLAYS: 0x03, STREAM_STATUS: 0x04, HOST_LOCK_STATE: 0x05,
-  VIDEO_FRAME: 0x10, KEYFRAME_REQUEST: 0x11, AUDIO_FRAME: 0x13,
+  PING: 0x07, VIDEO_FRAME: 0x10, KEYFRAME_REQUEST: 0x11, AUDIO_FRAME: 0x13,
   MOUSE_MOVE: 0x20, MOUSE_BUTTON: 0x21, KEY: 0x22, SCROLL: 0x23, CLIPBOARD: 0x30,
 };
 
 // Re-report the window size to the host (CLIENT_DISPLAYS) after resizing stops;
 // the initial size rides in HELLO.
-attachResizeReporter(window, (p) => send(frameMsg(T.CLIENT_DISPLAYS, p)));
+// Monitor-size preference (menu: Display size / Retina), kept per browser.
+function safeStorage() { try { return window.localStorage; } catch (e) { return null; } }
+let displayPrefs = (() => { const st = safeStorage(); return st ? loadPrefs(st) : normalizePrefs(null); })();
+
+// Codec to request: HEVC when this browser can decode it, until an HEVC
+// decoder error makes us fall back to H.264 for the rest of the session.
+let wantCodec = 1;
+let h264Only = false;
+try { h264Only = window.sessionStorage.getItem('clamshell.h264') === '1'; } catch (e) { /* ignore */ }
+
+attachResizeReporter(window, (p) => send(frameMsg(T.CLIENT_DISPLAYS, p)), 250, globalThis, () => displayPrefs);
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -71,9 +85,73 @@ const originalLockBannerText = lockBanner.textContent;
 // on both transports -- port 5901 direct-LAN, or same-origin over the
 // Cloudflare Tunnel (README "Browser access"), which routes this hostname to
 // the same WebServer.
+// Over LAN TLS (https on a port, not through the tunnel) noVNC is told where
+// the TLS websocket is: host, port 5902 and encrypt=1, plus autoconnect.
 const vncFallbackURL = location.protocol === 'https:'
-  ? `${location.origin}/vnc.html`
+  ? (location.port
+    ? `${location.origin}/vnc.html?autoconnect=1&host=${encodeURIComponent(location.hostname)}&port=5902&encrypt=1`
+    : `${location.origin}/vnc.html`)
   : `http://${location.hostname}:5901/vnc.html`;
+
+// Display size picker, Retina toggle. In-DOM buttons (a native <select> loses
+// its popup when the hover menu closes); clicks keep the menu open.
+{
+  const panel = document.getElementById('hoverPanel');
+  const sizeBtn = document.getElementById('sizeBtn');
+  const sizeList = document.getElementById('sizeList');
+  const retinaBtn = document.getElementById('retinaBtn');
+  const customRow = document.getElementById('customRow');
+  const customInput = document.getElementById('customInput');
+  const customApply = document.getElementById('customApply');
+  const sizeLabel = () => {
+    const p = displayPrefs;
+    if (p.size === 'custom') return p.custom;
+    return (SIZE_PRESETS.find((x) => x.id === p.size) || SIZE_PRESETS[0]).label;
+  };
+  const refresh = () => {
+    sizeBtn.textContent = `Display size: ${sizeLabel()}`;
+    retinaBtn.textContent = `Retina: ${displayPrefs.retina ? '2\u00d7' : '1\u00d7'}`;
+    customRow.hidden = displayPrefs.size !== 'custom' && !customRow.dataset.editing;
+    for (const b of sizeList.querySelectorAll('button')) b.classList.toggle('on', b.dataset.id === displayPrefs.size);
+  };
+  for (const p of SIZE_PRESETS) {
+    const b = document.createElement('button');
+    b.dataset.id = p.id;
+    b.textContent = p.label;
+    b.addEventListener('click', () => {
+      if (p.id === 'custom') {
+        customRow.dataset.editing = '1';
+        customInput.value = displayPrefs.custom || '';
+        refresh();
+        customInput.focus();
+        return;
+      }
+      delete customRow.dataset.editing;
+      displayPrefs = normalizePrefs({ ...displayPrefs, size: p.id });
+      refresh(); applyDisplayPrefs();
+    });
+    sizeList.appendChild(b);
+  }
+  sizeBtn.addEventListener('click', () => { sizeList.hidden = !sizeList.hidden; });
+  retinaBtn.addEventListener('click', () => {
+    displayPrefs = normalizePrefs({ ...displayPrefs, retina: !displayPrefs.retina });
+    refresh(); applyDisplayPrefs();
+  });
+  const applyCustom = () => {
+    const sz = parseSize(customInput.value);
+    customInput.classList.toggle('bad', !sz);
+    if (!sz) return;
+    delete customRow.dataset.editing;
+    displayPrefs = normalizePrefs({ ...displayPrefs, size: 'custom', custom: `${sz.w}x${sz.h}` });
+    refresh(); applyDisplayPrefs();
+  };
+  customApply.addEventListener('click', applyCustom);
+  customInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') applyCustom(); });
+  // Keep the menu open while it is being used.
+  panel.addEventListener('click', () => menu.classList.add('open'));
+  document.addEventListener('pointerdown', (e) => { if (!menu.contains(e.target)) menu.classList.remove('open'); });
+  refresh();
+}
 
 // Populate the hover menu with the other two displays.
 {
@@ -142,7 +220,9 @@ function connect() {
     // directly at each display's dedicated bridge port (5906/5907/5908) —
     // the Mac side needs no path parsing since each port is already
     // single-purpose.
-    ? `wss://${location.host}/ws/${display}`
+    // Served over https on a port (LAN TLS, README) rather than through the
+    // tunnel on 443: the bridge ports speak TLS themselves.
+    ? (location.port ? `wss://${location.hostname}:${BRIDGE_PORT}` : `wss://${location.host}/ws/${display}`)
     : `ws://${location.hostname}:${BRIDGE_PORT}`;
   const sock = new WebSocket(wsUrl);
   ws = sock;
@@ -232,10 +312,41 @@ window.addEventListener('online', reconnectNow);
 // navigating away / closing the tab is what actually stops it, matching the
 // native client's "retries forever until user disconnects" contract.
 
-function send(data) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(data); }
+let lastSentAt = Date.now();
+function send(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.send(data); lastSentAt = Date.now(); }
+}
+
+// Keepalive (see input.js keepaliveDue). Old hosts skip the unknown type.
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN && keepaliveDue(Date.now(), lastSentAt)) send(frameMsg(T.PING));
+}, 5000);
 
 function sendHello() {
-  send(frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio)));
+  send(frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio,
+    { prefs: displayPrefs, codec: wantCodec })));
+}
+
+// Re-send the size right away (menu choice changed). The host resizes in place.
+function applyDisplayPrefs() {
+  const st = safeStorage();
+  if (st) savePrefs(st, displayPrefs);
+  send(frameMsg(T.CLIENT_DISPLAYS, clientDisplaysPayload(
+    window.innerWidth, window.innerHeight, window.devicePixelRatio, displayPrefs)));
+}
+
+// HEVC decoder failed mid-stream: reconnect asking for H.264, and stick with
+// it until the tab is closed.
+function fallBackToH264(reason) {
+  if (wantCodec === 1) return false;
+  console.warn('[Clamshell] HEVC decode failed, reconnecting with H.264:', reason);
+  wantCodec = 1;
+  h264Only = true;
+  try { window.sessionStorage.setItem('clamshell.h264', '1'); } catch (e) { /* ignore */ }
+  decoder = null;
+  showStatus('Switching to H.264…');
+  if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
+  return true;
 }
 
 // MARK: - HELLO_ACK / video decode setup
@@ -258,7 +369,7 @@ async function handle(type, payload) {
       canvas.height = videoH;
       swBanner.classList.toggle('show', !hardware);
       decoder = null; // rebuilt from the next keyframe's parameter sets
-      waitingForKey = false;
+      waitingForKey = true; // delta frames before that keyframe are skipped
       pendingCodecByte = codecByte;
       break;
     }
@@ -376,12 +487,14 @@ async function onVideoFrame(payload) {
         error: (e) => {
           console.error('[Clamshell] decoder error', e);
           if (decoder === dec) decoder = null;
+          if (isHEVC && fallBackToH264(e)) return;
           requestKeyframe();
         },
       });
       dec.configure({ codec, codedWidth: videoW, codedHeight: videoH, optimizeForLatency: true });
       decoder = dec;
     } catch (e) {
+      if (isHEVC && fallBackToH264(e)) return;
       decoderFailed = true;
       const name = isHEVC ? 'HEVC' : 'H.264';
       errBanner.textContent = `This browser can't decode ${name} (${e.message || e}) — try Chrome (chrome://flags → enable HEVC) or Safari.`;
@@ -555,14 +668,19 @@ canvas.addEventListener('wheel', (e) => {
   send(frameMsg(T.SCROLL, concat(f32(e.deltaX * mul), f32(e.deltaY * mul))));
 }, { passive: false });
 
+// "Ctrl acts as Cmd": remembered per browser, on by default on Windows/Linux.
+const CTRL_KEY = 'clamshell.ctrlAsCmd';
+let ctrlAsCmd = ctrlAsCmdDefault(navigator);
+try {
+  const v = window.localStorage.getItem(CTRL_KEY);
+  if (v === '1' || v === '0') ctrlAsCmd = v === '1';
+} catch (e) { /* ignore */ }
+
 function cgFlags(e) {
-  let f = 0n;
-  if (e.getModifierState && e.getModifierState('CapsLock')) f |= 0x10000n;
-  if (e.shiftKey) f |= 0x20000n;
-  if (e.ctrlKey) f |= 0x40000n;
-  if (e.altKey) f |= 0x80000n;
-  if (e.metaKey) f |= 0x100000n;
-  return f;
+  return modifierFlags({
+    caps: !!(e.getModifierState && e.getModifierState('CapsLock')),
+    shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey,
+  }, ctrlAsCmd);
 }
 
 function sendKey(macVK, down, flags) {
@@ -584,8 +702,8 @@ function releaseInput() {
 window.addEventListener('blur', releaseInput);
 
 canvas.addEventListener('keydown', (e) => {
-  const vk = codeToMacVK[e.code];
-  if (vk === undefined) return;
+  const vk = remapKey(e.code, codeToMacVK[e.code], ctrlAsCmd);
+  if (codeToMacVK[e.code] === undefined) return;
   e.preventDefault();
   maybeResumeSound();
   if (!e.repeat && pasteFromLocal(e, vk)) return;
@@ -593,8 +711,8 @@ canvas.addEventListener('keydown', (e) => {
   sendKey(vk, true, cgFlags(e));
 });
 canvas.addEventListener('keyup', (e) => {
-  const vk = codeToMacVK[e.code];
-  if (vk === undefined) return;
+  const vk = remapKey(e.code, codeToMacVK[e.code], ctrlAsCmd);
+  if (codeToMacVK[e.code] === undefined) return;
   e.preventDefault();
   const flags = cgFlags(e);
   const released = held.release(e.code);
@@ -613,8 +731,10 @@ let lastClipboard = null;
 // prompt. Safari shows a "Paste" bubble on every read and Firefox refuses,
 // so only Chromium gets the read-on-paste path below.
 let canReadClipboard = false;
+// Resolves once the permission state is known, so the first Cmd-V never races it.
+let clipboardPermission = Promise.resolve();
 if (isPrimary && navigator.clipboard && navigator.clipboard.readText && navigator.permissions) {
-  navigator.permissions.query({ name: 'clipboard-read' })
+  clipboardPermission = navigator.permissions.query({ name: 'clipboard-read' })
     .then((p) => { canReadClipboard = p.state !== 'denied'; })
     .catch(() => {});
 }
@@ -623,18 +743,41 @@ if (isPrimary && navigator.clipboard && navigator.clipboard.readText && navigato
 // socket as the keystroke so the host has it before it pastes. Before, the
 // local clipboard only reached the Mac when the tab was hidden, so copying
 // in another window and pasting here pasted something old.
+//
+// The very first read can show Chrome's permission prompt. The prompt takes
+// focus (the blur handler lets go of Cmd on the Mac) and the key must not go
+// out until the read is answered, or a bare "v" is typed. So the whole chord
+// is sent after the read settles, Cmd included, when the read took long
+// enough to have been a prompt.
+let pasteBusy = false;
 function pasteFromLocal(e, vk) {
-  if (!canReadClipboard || e.code !== 'KeyV' || !e.metaKey || e.ctrlKey || e.altKey) return false;
+  // The key that means Command here: Ctrl when swapped, else the Meta key.
+  const cmdDown = ctrlAsCmd ? e.ctrlKey : e.metaKey;
+  const otherDown = ctrlAsCmd ? e.metaKey : e.ctrlKey;
+  if (e.code !== 'KeyV' || !cmdDown || otherDown || e.altKey) return false;
+  if (pasteBusy) return true; // a read is pending: swallow, don't type a stray "v"
   const flags = cgFlags(e);
-  navigator.clipboard.readText()
-    .then((t) => {
-      if (t && t !== lastClipboard) {
-        lastClipboard = t;
-        send(frameMsg(T.CLIPBOARD, new TextEncoder().encode(t)));
-      }
+  const cmdVK = 55; // left Command
+  pasteBusy = true;
+  const started = Date.now();
+  clipboardPermission
+    .then(() => {
+      if (!canReadClipboard) return 'skip';
+      return navigator.clipboard.readText().then((t) => {
+        if (t && t !== lastClipboard) {
+          lastClipboard = t;
+          send(frameMsg(T.CLIPBOARD, new TextEncoder().encode(t)));
+        }
+      });
     })
     .catch(() => {})
-    .finally(() => { sendKey(vk, true, flags); sendKey(vk, false, flags); });
+    .finally(() => {
+      pasteBusy = false;
+      const slow = Date.now() - started > 250; // a permission prompt was up
+      if (slow) sendKey(cmdVK, true, flags);
+      sendKey(vk, true, flags); sendKey(vk, false, flags);
+      if (slow) sendKey(cmdVK, false, 0n);
+    });
   return true;
 }
 
@@ -687,6 +830,20 @@ document.addEventListener('visibilitychange', () => {
 // Touch devices have no hover; tapping the dot opens and closes the menu.
 qualityDot.addEventListener('click', () => menu.classList.toggle('open'));
 canvas.addEventListener('pointerdown', () => menu.classList.remove('open'));
+
+// Ctrl acts as Cmd toggle
+{
+  const ctrlBtn = document.getElementById('ctrlBtn');
+  const show = () => { ctrlBtn.textContent = `Ctrl acts as \u2318: ${ctrlAsCmd ? 'on' : 'off'}`; };
+  ctrlBtn.addEventListener('click', () => {
+    releaseInput(); // don't leave the old mapping's modifier held
+    ctrlAsCmd = !ctrlAsCmd;
+    try { window.localStorage.setItem(CTRL_KEY, ctrlAsCmd ? '1' : '0'); } catch (e) { /* ignore */ }
+    show();
+    canvas.focus();
+  });
+  show();
+}
 
 fullscreenBtn.hidden = !document.documentElement.requestFullscreen;
 fullscreenBtn.addEventListener('click', async () => {
@@ -751,4 +908,5 @@ setInterval(() => {
   qualityDot.title = statsEl.textContent;
 }, 1000);
 
-connect();
+// Decide the codec before the first HELLO (isConfigSupported is async).
+pickCodec(globalThis.VideoDecoder, h264Only).then((c) => { wantCodec = c; }, () => {}).finally(() => connect());
