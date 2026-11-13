@@ -128,8 +128,13 @@ final class VideoEncoder: @unchecked Sendable {
         // (kVTPropertyNotSupportedErr) — reordering off already gives zero delay.
         setProp(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, kCFBooleanTrue)
         setProp(kVTCompressionPropertyKey_ExpectedFrameRate, 60 as CFNumber)
-        setProp(kVTCompressionPropertyKey_MaxKeyFrameInterval, 120 as CFNumber)
-        setProp(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 2 as CFNumber)
+        // A keyframe every 6 s at most (was 2 s). Keyframes are several times the
+        // size of other frames, so fewer of them smooths the bitrate. Recovery
+        // stays fast because clients ask for one on demand: KEYFRAME_REQUEST
+        // (0x11) from the browser and iOS clients on any gap or decoder error,
+        // plus SendPacer's own retry. A new connection gets one at HELLO.
+        setProp(kVTCompressionPropertyKey_MaxKeyFrameInterval, 360 as CFNumber)
+        setProp(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 6 as CFNumber)
         // Starting bitrate; StreamServer adapts it live via setBitrate(_:).
         // Starts at the floor, not the ceiling — a cold connection (esp. Wi-Fi,
         // fresh TCP slow-start) can't absorb a 20 Mbps first I-frame, which was

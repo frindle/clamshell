@@ -4,12 +4,16 @@ import Foundation
 /// The file is the post-test diagnostic artifact: every collapse, restore,
 /// detection flip, and failure lands here with a timestamp.
 private let clogQueue = DispatchQueue(label: "com.frindle.clamshell.log")
+// Built once: a formatter per log line was the most expensive part of clog.
+// ISO8601DateFormatter is thread-safe.
+private let clogStampFormatter = ISO8601DateFormatter()
+private let clogURL = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Logs/Clamshell.log")
 
 func clog(_ message: String) {
     NSLog("[clamshell] %@", message)
-    let url = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Logs/Clamshell.log")
-    let stamp = ISO8601DateFormatter().string(from: Date())
+    let url = clogURL
+    let stamp = clogStampFormatter.string(from: Date())
     guard let data = "\(stamp) \(message)\n".data(using: .utf8) else { return }
     // clog is called from the network/video/audio/main queues concurrently;
     // serialize the file append + rotation so writes can't interleave or race.
