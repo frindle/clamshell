@@ -45,12 +45,13 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 
 | Type | Name             | Direction     | Payload |
 |------|------------------|---------------|---------|
-| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set]] |
+| 0x01 | HELLO            | client → host | version(1)=1, requestedCodec(1) [, clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached, bit 1 = plain 1x display) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set]] |
 | 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
-| 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
+| 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached, bit 1 = plain 1x display) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
 | 0x04 | STREAM_STATUS    | host → client | currentBitrateKbps(2 BE) — see "Connection quality" |
 | 0x05 | HOST_LOCK_STATE  | host → client | locked(1: 0/1) — see "Lock screen fallback" |
 | 0x06 | CURSOR_POS       | host → client | x(Float32 BE), y(Float32 BE) — normalized 0..1 in this display's source-frame space; see "Cursor-follow auto-pan" |
+| 0x07 | PING             | both | empty. Keepalive: the browser client sends one after 20 s of sending nothing; the host echoes it. Hosts older than 0.9.23 skip it as an unknown type |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
@@ -105,6 +106,20 @@ surface) as the primary size and never sets the flag. The trailing HELLO
 bytes are optional both ways: an old client omits them, an old host ignores
 them. CLIENT_DISPLAYS carries the same fields mid-session (monitor plugged or
 unplugged after connecting).
+
+**flags bit 1 (0.9.22): plain 1x display.** Set, the host builds the virtual
+display with pixels == points instead of the default HiDPI (pixels == 2 x
+points). The browser's Retina 2x/1x toggle uses it (1x quarters the pixels for
+slow links). Hosts older than 0.9.22 ignore the bit and build a HiDPI display
+of the same pixel size, so the picture is still correct. Sizes above
+7680x4320 are clamped.
+
+**Resizing mid-session does not reconnect.** A CLIENT_DISPLAYS with a new size
+resizes the virtual display, then the host rebuilds only its encoder, updates
+the capture size and sends a fresh HELLO_ACK with the new width and height
+followed by a keyframe. The client rebuilds its decoder and canvas from that
+HELLO_ACK. If the resize cannot be done in place the host closes the
+connection and the client reconnects, as before 0.9.22.
 
 Only the **primary** connection's report is honored. The host forwards it to
 the Clamshell menu bar app (same distributed-notification channel as the

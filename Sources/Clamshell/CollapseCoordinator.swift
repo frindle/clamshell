@@ -49,6 +49,12 @@ final class CollapseCoordinator {
 
     var preset: DisplayPreset = .iPadAir13
 
+    /// Create the virtual display with room to grow, so a stream client that
+    /// picks another size is served by `resizeInPlace` instead of a full
+    /// restore and re-collapse (which drops the stream). Set by the caller
+    /// before `collapse()` for stream-driven collapses only.
+    var resizable = false
+
     /// Dual display mode: create a second virtual display (sized `presetB`)
     /// to the right of the first, as an empty extended desktop. Physical
     /// displays still mirror onto display A exactly as in single mode; B
@@ -159,7 +165,7 @@ final class CollapseCoordinator {
 
         layout.snapshot()
 
-        virtualDisplay.create(preset: preset, slot: .a) { [weak self] virtualID in
+        virtualDisplay.create(preset: preset, slot: .a, resizable: resizable) { [weak self] virtualID in
             guard let self else { return }
             guard self.state == .collapsing else {
                 // restore() ran while creation was retrying — clean up.
@@ -214,6 +220,19 @@ final class CollapseCoordinator {
                 self.finishCollapse(virtualID: virtualID, secondID: nil)
             }
         }
+    }
+
+    /// Changes display A's size while collapsed, keeping the same display
+    /// (and so the stream capturing it). Single-display mode only: display B
+    /// is laid out to the right of A's width. False means nothing changed and
+    /// the caller should restore and collapse again.
+    func resizeInPlace(to newPreset: DisplayPreset) -> Bool {
+        guard state == .collapsed, !dualMode else { return false }
+        guard virtualDisplay.reconfigure(preset: newPreset, slot: .a) else { return false }
+        pendingRestore?.cancel()
+        pendingRestore = nil
+        preset = newPreset
+        return true
     }
 
     /// Give WindowServer a beat to finish attaching the new display(s)

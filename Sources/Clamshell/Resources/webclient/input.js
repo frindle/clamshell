@@ -62,3 +62,43 @@ export function frameAction({ keyframe, waitingForKey, queueSize, hidden, maxQue
   if (queueSize > maxQueue) return 'resync';
   return 'decode';
 }
+
+// ── Ctrl acts as Cmd (Windows / Linux keyboards) ───────────────────────
+// On by default where the OS is Windows or Linux, so Ctrl-C / Ctrl-V / Ctrl-T
+// do what Cmd-C / Cmd-V / Cmd-T do on the Mac.
+export function ctrlAsCmdDefault(nav) {
+  if (!nav) return false;
+  const p = (nav.userAgentData && nav.userAgentData.platform) || nav.platform || '';
+  return /win|linux/i.test(p) && !/android/i.test(p);
+}
+
+// Mac key code to send for a key. With the toggle on, Control sends Command
+// and the Windows key sends Control (left stays left, right stays right), so
+// real Control shortcuts (Ctrl-C in Terminal, Ctrl-A / Ctrl-E) stay reachable.
+const SWAPPED = { ControlLeft: 55, ControlRight: 54, MetaLeft: 59, MetaRight: 62 };
+export function remapKey(code, vk, ctrlAsCmd) {
+  return ctrlAsCmd && code in SWAPPED ? SWAPPED[code] : vk;
+}
+
+// CGEventFlags for the current modifier state (state: {shift, ctrl, alt, meta, caps}).
+// With the toggle on, Ctrl becomes Command and the Windows key becomes Control.
+export function modifierFlags(state, ctrlAsCmd) {
+  let f = 0n;
+  if (state.caps) f |= 0x10000n;
+  if (state.shift) f |= 0x20000n;
+  if (ctrlAsCmd ? state.meta : state.ctrl) f |= 0x40000n;
+  if (state.alt) f |= 0x80000n;
+  if (ctrlAsCmd ? state.ctrl : state.meta) f |= 0x100000n;
+  return f;
+}
+
+// ── Keepalive ──────────────────────────────────────────────────────────
+// The host drops a connection whose sends stall for 15 s (SendPacer), which
+// is about the host's own sends and does not look at the client being quiet.
+// A tunnel, though, can drop a connection with no traffic at all, and a
+// still screen sends no video. So when the client has sent nothing for
+// `idleMs`, it sends a PING (type 0x07, empty); the host echoes it.
+export const KEEPALIVE_IDLE_MS = 20000;
+export function keepaliveDue(now, lastSentAt, idleMs = KEEPALIVE_IDLE_MS) {
+  return now - lastSentAt >= idleMs;
+}
