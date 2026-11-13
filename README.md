@@ -509,6 +509,26 @@ form.
 
 ### Unreleased
 
+### 0.9.21 — 2026-11-13
+- **The browser client is nicer to use: sound, touch, full screen, and no more stuck keys.**
+- Sound: turn it on from the menu (the dot, top right). Off by default.
+- Touch: tap to click, drag to drag, long press to right-click, two fingers to
+  scroll.
+- Keys and mouse buttons are released when you switch away, so Cmd-Tab no
+  longer leaves Cmd held down on the Mac. A drag that leaves the window no
+  longer loses its button-up.
+- Cmd-V in Chrome and Edge pastes what is on this computer's clipboard now,
+  not what was there when the tab was last hidden.
+- The menu opens from the dot only. It used to be an invisible box that
+  swallowed clicks on the right end of the Mac's menu bar. It now has Full
+  screen and shows resolution, frames per second and bitrate.
+- Reconnecting shows a countdown over the last picture, retries at once when
+  the network returns or you come back to the tab, and gives up on a hung
+  connect after 10 seconds.
+- A tab that fell behind skips to a fresh picture instead of replaying the
+  backlog, a hidden tab decodes nothing, and a decoder error no longer
+  freezes the picture until reload.
+
 ### 0.9.20 — 2026-11-13
 - **A port that is busy at startup is retried instead of staying dead.** If
   another copy still holds a port (during an update relaunch, or the
