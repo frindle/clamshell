@@ -35,6 +35,10 @@ cp "${BIN}" "${APP}/Contents/MacOS/Clamshell"
 # Contents/Resources when running from the .app.
 cp -R "${RES_DIR}/Clamshell_Clamshell.bundle" "${APP}/Contents/Resources/"
 cp AppIcon.icns "${APP}/Contents/Resources/"
+# launchd plists for the read-only loginwindow-probe (installed manually by the
+# user; not loaded by the app). Kept out of the SwiftPM resource bundle.
+mkdir -p "${APP}/Contents/Resources/loginwindow-probe"
+cp scripts/loginwindow-probe/*.plist "${APP}/Contents/Resources/loginwindow-probe/"
 
 cat > "${APP}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
