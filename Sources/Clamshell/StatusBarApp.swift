@@ -64,6 +64,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // record anywhere to undo it (see CollapseCoordinator's doc comment).
         CollapseCoordinator.recoverOrphanedMirrors()
 
+        // Leftovers from the last self-update (off the main thread: it can
+        // be a few hundred MB of files).
+        DispatchQueue.global(qos: .utility).async { UpdateInstaller.removeOldCopies() }
+
         // Request notification authorization for collapse failure alerts
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound]
@@ -554,6 +558,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               UpdateInstaller.canInstall,
               coordinator.state == .idle,
               !vncSessionActive, !webSessionActive else { return }
+        // The poller above only sees VNC and browser-VNC sessions. A native
+        // stream viewer (or a streamed window) is a live session too, and
+        // relaunching would drop it; try again on the next update check.
+        let streamInUse = streamFleet?.clientStatus.contains(where: { $0.connected }) == true
+            || windowStreamServer?.isClientConnected == true
+        guard !streamInUse else {
+            clog("update: a stream viewer is connected — waiting to install")
+            return
+        }
         installUpdate()
     }
 
