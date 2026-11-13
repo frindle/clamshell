@@ -509,6 +509,16 @@ form.
 
 ### Unreleased
 
+### 0.9.17 — 2026-11-13
+- **A slow connection no longer corrupts the picture or piles up memory.**
+  When the network falls behind, the host now drops every frame until the next
+  full one instead of sending frames the viewer can't decode, and it caps how
+  much video can wait to be sent. A connection that sends nothing for 15
+  seconds is dropped so the viewer reconnects.
+- Mouse and keyboard now follow the display that is actually being captured
+  when the original one has gone away, and a repeated HELLO no longer starts a
+  second capture.
+
 ### 0.9.16 — 2026-11-13
 - **Unit tests now run on every change.** A `swift test` target covers the
   stream wire format, the message parser (split, joined, unknown and oversized
