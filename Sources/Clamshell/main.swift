@@ -217,12 +217,16 @@ if args.count > 1 {
         var probeLabel = "manual"
         if let i = args.firstIndex(of: "--label"), i + 1 < args.count { probeLabel = args[i + 1] }
         exit(LoginWindowProbe.run(label: probeLabel))
+    case "loginwindow-agent":
+        // Experimental, not installed by anything: serve the stream at the
+        // login window and exit when a user logs in. See LoginWindowAgent.
+        exit(LoginWindowAgent.run())
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe]")
+              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent]")
         exit(64)
     }
 }

@@ -28,9 +28,20 @@ jobs:
       - name: Web client hello test
         run: node tests/test-webclient-hello.js
       - name: Lint probe plists
-        run: plutil -lint scripts/loginwindow-probe/*.plist
+        run: plutil -lint scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist
+      - name: Login-window agent stays off when a user is logged in
+        run: |
+          # In a logged-in session (the CI runner is one) the agent must exit
+          # at once and open no port. The alarm fails the step if it serves.
+          perl -e 'alarm 20; exec @ARGV' .build/debug/Clamshell loginwindow-agent > /tmp/agent.out
+          cat /tmp/agent.out
+          grep -q "nothing to do" /tmp/agent.out
       - name: Package (release build, ad-hoc signed DMG)
         run: ./package.sh 0.0.0
+      - name: Login-window agent plist is not shipped in the app
+        run: |
+          test -d dist/Clamshell.app
+          if find dist/Clamshell.app -name "*loginwindow-agent*" | grep .; then exit 1; fi
       - name: Build iOS app (universal iPad+iPhone, simulator, compile check only)
         run: |
           cd ClamshellViewer
