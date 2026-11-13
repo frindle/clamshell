@@ -155,6 +155,26 @@ System Settings → General → Sharing → Screen Sharing options (browser
 clients speak standard VNC auth, not Apple's). Browser sessions trigger
 the collapse just like native clients.
 
+**LAN TLS (optional):** to serve `/client` over `https://` / `wss://` on the
+LAN (for example with a `*.penndalton.com` wildcard pointed at the Mac), give
+Clamshell a PEM certificate and private key (unencrypted, RSA or EC; the cert
+file may hold the whole chain). Either:
+
+- `defaults write com.frindle.clamshell lanTLSCertPath /path/fullchain.pem` and
+  `defaults write com.frindle.clamshell lanTLSKeyPath /path/privkey.pem`, or
+- a file `~/Library/Application Support/Clamshell/lan-tls.json`:
+  `{"cert": "/path/fullchain.pem", "key": "/path/privkey.pem"}`
+
+Then toggle Web Access. The web page (5901) and the stream bridges
+(5906-5908) switch to TLS together, and the log says "LAN TLS: serving...". If
+the files can't be read or don't match, the log says why and the ports stay
+plain. The keys stay where you put them; Clamshell makes a private keychain
+file next to the config for the loaded identity. The lock-screen
+fallback (`/vnc.html`) is told to dial the TLS websocket on 5902 with
+`encrypt=1`. The native viewer's ports (5903-5905) stay plain. The certificate
+is re-read every 6 hours: when the files change (a renewal) the web listeners
+restart and the log says so; toggling Web Access reloads it at once.
+
 **Remote access:** don't port-forward these ports raw (unencrypted
 WebSocket). Two good options:
 
@@ -508,6 +528,11 @@ form.
 ## Changelog
 
 ### Unreleased
+
+### 0.9.24 — 2026-11-13
+- **The browser client can be served over TLS on the LAN, if you give it a certificate.**
+- Nothing changes until you do: with no certificate configured, every port is
+  plain http/ws exactly as before. See "LAN TLS" under Browser access.
 
 ### 0.9.23 — 2026-11-13
 - **Windows and Linux keyboards work like a Mac's, and idle connections stay up.**
