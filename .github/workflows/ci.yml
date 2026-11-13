@@ -27,6 +27,16 @@ jobs:
           node-version: '20'
       - name: Web client hello test
         run: node tests/test-webclient-hello.js
+      - name: Web client input and audio tests
+        run: node tests/test-webclient-input.js
+      - name: Web client syntax check
+        run: |
+          # No build step for the web client, so a typo would only show up in
+          # the browser. Parse every module here (.mjs = parse as a module).
+          for f in Sources/Clamshell/Resources/webclient/*.js; do
+            cp "$f" "$RUNNER_TEMP/check.mjs"
+            node --check "$RUNNER_TEMP/check.mjs" || { echo "syntax error in $f"; exit 1; }
+          done
       - name: Lint probe plists
         run: plutil -lint scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist
       - name: Lint login-window agent scripts
