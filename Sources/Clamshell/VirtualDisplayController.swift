@@ -3,14 +3,18 @@ import CoreGraphics
 import CGVirtualDisplayShim
 
 /// A resolution the virtual display can take, expressed in points.
-/// The virtual display is created HiDPI (2x), so pixels = points * 2.
+/// The virtual display is created HiDPI (2x) by default, so pixels = points * 2;
+/// `scale` 1 makes a plain display (pixels == points).
 struct DisplayPreset: Equatable {
     let name: String
     let pointsWide: UInt32
     let pointsHigh: UInt32
+    /// 2 = HiDPI (Retina, the default), 1 = a plain display where pixels ==
+    /// points. The browser's Retina toggle picks 1 for slow links.
+    var scale: UInt32 = 2
 
-    var pixelsWide: UInt32 { pointsWide * 2 }
-    var pixelsHigh: UInt32 { pointsHigh * 2 }
+    var pixelsWide: UInt32 { pointsWide * scale }
+    var pixelsHigh: UInt32 { pointsHigh * scale }
 
     /// iPad Air 13" is 1366x1024 points (4:3). Rendering the virtual display
     /// at exactly that shape means the Screen Sharing client fills the iPad
@@ -63,15 +67,18 @@ final class VirtualDisplayController {
     /// caller's back (asyncAfter, never blocking the main thread). Creation
     /// can fail transiently if a display with the same vendor/product/serial
     /// is still registered (quick relaunch after a crash). Main queue only.
-    func create(preset: DisplayPreset, slot: VirtualSlot = .a,
+    /// `resizable` lets the display later change size without being torn down
+    /// (see `reconfigure`): it is created with the largest pixel limit the
+    /// stream will ever ask for instead of exactly the preset's.
+    func create(preset: DisplayPreset, slot: VirtualSlot = .a, resizable: Bool = false,
                 completion: @escaping (CGDirectDisplayID?) -> Void) {
         if displays[slot] != nil { completion(displayID(for: slot)); return }
-        attemptCreate(preset: preset, slot: slot, attempt: 1, completion: completion)
+        attemptCreate(preset: preset, slot: slot, resizable: resizable, attempt: 1, completion: completion)
     }
 
-    private func attemptCreate(preset: DisplayPreset, slot: VirtualSlot, attempt: Int,
+    private func attemptCreate(preset: DisplayPreset, slot: VirtualSlot, resizable: Bool, attempt: Int,
                                completion: @escaping (CGDirectDisplayID?) -> Void) {
-        if let id = createOnce(preset: preset, slot: slot) { completion(id); return }
+        if let id = createOnce(preset: preset, slot: slot, resizable: resizable) { completion(id); return }
         clog("applySettings failed for virtual display \(slot.rawValue) (attempt \(attempt)/8)")
         guard attempt < 8 else {
             clog("virtual display \(slot.rawValue) creation gave up after 8 attempts")
@@ -80,7 +87,7 @@ final class VirtualDisplayController {
             return
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.attemptCreate(preset: preset, slot: slot, attempt: attempt + 1, completion: completion)
+            self?.attemptCreate(preset: preset, slot: slot, resizable: resizable, attempt: attempt + 1, completion: completion)
         }
     }
 
@@ -130,18 +137,15 @@ final class VirtualDisplayController {
     }
 
     /// Single creation attempt. Returns the display ID, or nil on failure.
-    private func createOnce(preset: DisplayPreset, slot: VirtualSlot) -> CGDirectDisplayID? {
+    private func createOnce(preset: DisplayPreset, slot: VirtualSlot, resizable: Bool = false) -> CGDirectDisplayID? {
         let descriptor = CGVirtualDisplayDescriptor()
         descriptor.name = slot == .a ? "Clamshell" : "Clamshell B"
         descriptor.queue = DispatchQueue.main
-        descriptor.maxPixelsWide = preset.pixelsWide
-        descriptor.maxPixelsHigh = preset.pixelsHigh
+        descriptor.maxPixelsWide = resizable ? max(preset.pixelsWide, ClientDisplayRequest.maxWidthPx) : preset.pixelsWide
+        descriptor.maxPixelsHigh = resizable ? max(preset.pixelsHigh, ClientDisplayRequest.maxHeightPx) : preset.pixelsHigh
         // Physical size drives the default UI scale; 100 DPI-ish keeps text
-        // sized sensibly. (25.4 mm per inch / 200 px per inch at 2x.)
-        descriptor.sizeInMillimeters = CGSize(
-            width: Double(preset.pixelsWide) * 25.4 / 200.0,
-            height: Double(preset.pixelsHigh) * 25.4 / 200.0
-        )
+        // sized sensibly (100 points per inch, so 200 px per inch at 2x).
+        descriptor.sizeInMillimeters = Self.sizeInMillimeters(for: preset)
         descriptor.productID = Self.productID
         descriptor.vendorID = Self.vendorID
         descriptor.serialNum = Self.serialNum(for: slot) // must differ or WindowServer treats them as one device
@@ -164,20 +168,47 @@ final class VirtualDisplayController {
         // Descriptor limits and the display mode are both in pixels
         // (maxPixelsWide == mode width == preset.pixelsWide) — verified
         // consistent; points only appear via DisplayPreset's 2x mapping.
-        let settings = CGVirtualDisplaySettings()
-        settings.hiDPI = 1
-        settings.modes = [
-            CGVirtualDisplayMode(width: preset.pixelsWide, height: preset.pixelsHigh, refreshRate: 60),
-        ]
+        let settings = Self.settings(for: preset)
 
         let newDisplay = CGVirtualDisplay(descriptor: descriptor)
         guard newDisplay.apply(settings) else { return nil }
 
         displays[slot] = newDisplay
         let id = CGDirectDisplayID(newDisplay.displayID)
-        clog("virtual display \(slot.rawValue) created: id=\(id) \(preset.name) (\(preset.pointsWide)x\(preset.pointsHigh) @2x)")
+        clog("virtual display \(slot.rawValue) created: id=\(id) \(preset.name) (\(preset.pointsWide)x\(preset.pointsHigh) @\(preset.scale)x)")
         startHiDPIEnforcement(id: id, preset: preset, slot: slot)
         return id
+    }
+
+    private static func settings(for preset: DisplayPreset) -> CGVirtualDisplaySettings {
+        let settings = CGVirtualDisplaySettings()
+        settings.hiDPI = preset.scale == 2 ? 1 : 0
+        settings.modes = [
+            CGVirtualDisplayMode(width: preset.pixelsWide, height: preset.pixelsHigh, refreshRate: 60),
+        ]
+        return settings
+    }
+
+    private static func sizeInMillimeters(for preset: DisplayPreset) -> CGSize {
+        CGSize(width: Double(preset.pointsWide) * 25.4 / 100.0,
+               height: Double(preset.pointsHigh) * 25.4 / 100.0)
+    }
+
+    /// Changes the size of an existing display in place: same display ID, so
+    /// the stream capturing it keeps running and just re-sizes (see
+    /// StreamServer.rebuildForNewSize). Returns false when the display is not
+    /// there or WindowServer refuses the new mode; the caller then falls back
+    /// to destroying and re-creating it. Main queue only.
+    @discardableResult
+    func reconfigure(preset: DisplayPreset, slot: VirtualSlot = .a) -> Bool {
+        guard let display = displays[slot] else { return false }
+        guard display.apply(Self.settings(for: preset)) else {
+            clog("virtual display \(slot.rawValue) refused in-place resize to \(preset.name)")
+            return false
+        }
+        clog("virtual display \(slot.rawValue) resized in place: \(preset.name) (\(preset.pointsWide)x\(preset.pointsHigh) @\(preset.scale)x)")
+        startHiDPIEnforcement(id: CGDirectDisplayID(display.displayID), preset: preset, slot: slot)
+        return true
     }
 
     /// Destroys all virtual displays.

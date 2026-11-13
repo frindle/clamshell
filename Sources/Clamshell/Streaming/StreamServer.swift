@@ -81,7 +81,14 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var connection: NWConnection?
     private var parser: StreamMessageParser?
     private var stream: SCStream?
-    private var encoder: VideoEncoder?
+    /// Read from the capture queue for every frame and replaced on `queue` when
+    /// the stream is resized in place, so access goes through a lock.
+    private let encoderLock = NSLock()
+    private var encoderStorage: VideoEncoder?
+    private var encoder: VideoEncoder? {
+        get { encoderLock.lock(); defer { encoderLock.unlock() }; return encoderStorage }
+        set { encoderLock.lock(); encoderStorage = newValue; encoderLock.unlock() }
+    }
     private var audioEncoder: AudioEncoder?
     private var clipboard: ClipboardBridge?
     private var injector: InputInjector?
@@ -96,6 +103,14 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// the next keyframe resynchronizes the decoder, and reports a stalled
     /// connection (see SendPacer).
     private var pacer = SendPacer()
+
+    /// Geometry of the live capture session (on `queue`), so a change of the
+    /// display's pixel size can be noticed and the session resized in place.
+    private var captureDisplayID: CGDirectDisplayID?
+    private var sessionWidthPx = 0
+    private var sessionHeightPx = 0
+    private var sessionRefresh: Double = 60
+    private var resizing = false
 
     /// A HELLO has already started (or is starting) this connection's capture
     /// session. A repeat HELLO must not start a second one: the first
@@ -301,6 +316,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
         encoder?.invalidate()
         encoder = nil
+        captureDisplayID = nil
+        resizing = false
         audioEncoder = nil
         clipboard?.stop()
         clipboard = nil
@@ -366,26 +383,15 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// Only the primary connection speaks for the client; secondary display
     /// connections would otherwise fight over the geometry.
     func handleClientDisplayInfo(_ payload: Data, at offset: Int) {
-        guard isPrimary, payload.count >= offset + 9 else { return }
-        let w = payload.beUInt32(at: offset), h = payload.beUInt32(at: offset + 4)
-        let secondDisplay = (payload[payload.startIndex + offset + 8] & 1) == 1
-        guard w >= 640, h >= 480 else { return }
-        // Optional trailing Display B size (present only when a second display
-        // is attached) — lets the host size Display B to the real external
-        // monitor instead of the fixed presetB.
-        var secondInfo: (w: UInt32, h: UInt32)?
-        if secondDisplay, payload.count >= offset + 17 {
-            let bw = payload.beUInt32(at: offset + 9), bh = payload.beUInt32(at: offset + 13)
-            if bw >= 640, bh >= 480 { secondInfo = (bw, bh) }
-        }
+        guard isPrimary, let req = ClientDisplayRequest.parse(payload, at: offset) else { return }
         clientAnnounced = true
-        clog("STREAM: client reports \(w)x\(h)px\(secondDisplay ? " + second display\(secondInfo.map { " \($0.w)x\($0.h)px" } ?? "")" : "") — requesting collapse")
+        let second = req.secondDisplay
+            ? " + second display\(req.secondWidthPx.map { " \($0)x\(req.secondHeightPx ?? 0)px" } ?? "")" : ""
+        clog("STREAM: client reports \(req.widthPx)x\(req.heightPx)px\(req.oneX ? " @1x" : "")\(second) — requesting collapse")
+        let info = req.userInfo
         DispatchQueue.main.async {
             Self.pendingRestorePost?.cancel()
             Self.pendingRestorePost = nil
-            var info: [String: String] = ["width": String(w), "height": String(h),
-                                          "external": secondDisplay ? "1" : "0", "source": "stream"]
-            if let s = secondInfo { info["widthB"] = String(s.w); info["heightB"] = String(s.h) }
             Self.postCollapse(info)
         }
     }
@@ -487,30 +493,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 let encoder = try VideoEncoder.makeEncoder(
                     width: Int32(pxWidth), height: Int32(pxHeight), preferred: requestedCodec)
 
-                let config = SCStreamConfiguration()
-                config.width = pxWidth
-                config.height = pxHeight
-                config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(refresh.rounded()))
-                // NV12 full range is the hardware encoder's native input —
-                // no format conversion between capture and encode.
-                config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
-                config.queueDepth = 5
-                // A remoted window shouldn't carry the source Mac's own
-                // cursor into the frame; a whole display should.
-                if case .window = source {
-                    config.showsCursor = false
-                } else {
-                    config.showsCursor = true
-                }
-
                 // Only the primary display carries system audio — one capture,
                 // no separate Core Audio tap. Windows never do (see StreamSource).
                 let audioEncoder = self.isPrimary ? AudioEncoder() : nil
-                if audioEncoder != nil {
-                    config.capturesAudio = true
-                    config.sampleRate = 48000
-                    config.channelCount = 2
-                }
+                let config = self.makeConfiguration(width: pxWidth, height: pxHeight, refresh: refresh,
+                                                    withAudio: audioEncoder != nil)
 
                 let stream = SCStream(filter: filter, configuration: config, delegate: self)
                 try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: self.videoQueue)
@@ -529,10 +516,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                         encoder.invalidate()
                         return
                     }
-                    encoder.onEncodedFrame = { [weak self] keyframe, pts, nalData in
-                        self?.queue.async { self?.sendFrame(keyframe: keyframe, ptsMicros: pts, nalData: nalData) }
-                    }
+                    self.attachFrameHandler(to: encoder)
                     self.encoder = encoder
+                    self.captureDisplayID = capturedDisplayID
+                    self.sessionWidthPx = pxWidth
+                    self.sessionHeightPx = pxHeight
+                    self.sessionRefresh = refresh
                     self.stream = stream
                     if let audioEncoder {
                         audioEncoder.onEncodedPacket = { [weak self] aac in
@@ -577,6 +566,112 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 self.failSession(sessionConn)
             }
         }
+    }
+
+    /// The capture configuration for a session of this pixel size. Shared by
+    /// the first start and an in-place resize (`updateConfiguration` needs the
+    /// whole configuration again, audio settings included).
+    private func makeConfiguration(width: Int, height: Int, refresh: Double, withAudio: Bool) -> SCStreamConfiguration {
+        let config = SCStreamConfiguration()
+        config.width = width
+        config.height = height
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(refresh.rounded()))
+        // NV12 full range is the hardware encoder's native input —
+        // no format conversion between capture and encode.
+        config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        config.queueDepth = 5
+        // A remoted window shouldn't carry the source Mac's own
+        // cursor into the frame; a whole display should.
+        if case .window = source {
+            config.showsCursor = false
+        } else {
+            config.showsCursor = true
+        }
+        if withAudio {
+            config.capturesAudio = true
+            config.sampleRate = 48000
+            config.channelCount = 2
+        }
+        return config
+    }
+
+    private func attachFrameHandler(to encoder: VideoEncoder) {
+        encoder.onEncodedFrame = { [weak self] keyframe, pts, nalData in
+            self?.queue.async { self?.sendFrame(keyframe: keyframe, ptsMicros: pts, nalData: nalData) }
+        }
+    }
+
+    // MARK: - Resize in place (on `queue`)
+
+    /// The virtual display changed size (the browser picked another monitor
+    /// size, or its window was resized). Called by StreamFleet from any queue.
+    /// The mode change can land a moment after the request, so look again
+    /// for a few seconds before giving up.
+    func displaySizeMayHaveChanged() {
+        queue.async { [self] in checkDisplaySize(retriesLeft: 6) }
+    }
+
+    private func checkDisplaySize(retriesLeft: Int) {
+        guard case .display = source, let stream, let oldEncoder = encoder, let did = captureDisplayID,
+              connection != nil, !resizing else { return }
+        let mode = CGDisplayCopyDisplayMode(did)
+        switch SessionResize.decide(sessionWidthPx: sessionWidthPx, sessionHeightPx: sessionHeightPx,
+                                    displayWidthPx: mode?.pixelWidth, displayHeightPx: mode?.pixelHeight) {
+        case .keep:
+            if retriesLeft > 0 {
+                queue.asyncAfter(deadline: .now() + 1) { [weak self] in self?.checkDisplaySize(retriesLeft: retriesLeft - 1) }
+            }
+        case .rebuild(let w, let h):
+            resizing = true
+            let sessionConn = connection
+            let refresh = sessionRefresh
+            let withAudio = isPrimary
+            clog("STREAM: display is now \(w)x\(h) (was \(sessionWidthPx)x\(sessionHeightPx)) — resizing the stream without reconnecting")
+            Task {
+                do {
+                    // New encoder first: if the new size cannot be encoded at all,
+                    // nothing has been touched yet.
+                    let newEncoder = try VideoEncoder.makeEncoder(width: Int32(w), height: Int32(h), preferred: oldEncoder.codec)
+                    try await stream.updateConfiguration(
+                        self.makeConfiguration(width: w, height: h, refresh: refresh, withAudio: withAudio))
+                    self.queue.async {
+                        self.finishResize(stream: stream, sessionConn: sessionConn, oldEncoder: oldEncoder,
+                                          newEncoder: newEncoder, widthPx: w, heightPx: h)
+                    }
+                } catch {
+                    self.queue.async {
+                        guard self.connection === sessionConn else { return }
+                        // Same outcome as before in-place resizing existed: the client
+                        // reconnects and gets a session at the new size.
+                        clog("STREAM: in-place resize failed (\(error)) — dropping the client so it reconnects")
+                        self.teardownSession()
+                    }
+                }
+            }
+        }
+    }
+
+    private func finishResize(stream resizedStream: SCStream, sessionConn: NWConnection?, oldEncoder: VideoEncoder,
+                              newEncoder: VideoEncoder, widthPx: Int, heightPx: Int) {
+        resizing = false
+        guard connection === sessionConn, connection != nil, stream === resizedStream else {
+            newEncoder.invalidate()
+            return
+        }
+        attachFrameHandler(to: newEncoder)
+        newEncoder.setBitrate(bitrate)
+        // Frames the old encoder still has in flight are the wrong size for the
+        // client's new decoder: drop them rather than send them after HELLO_ACK.
+        oldEncoder.onEncodedFrame = nil
+        encoder = newEncoder // its first frame is a keyframe, parameter sets included
+        oldEncoder.invalidate()
+        sessionWidthPx = widthPx
+        sessionHeightPx = heightPx
+        // The client rebuilds its decoder and canvas from a new HELLO_ACK.
+        send(StreamMessage.helloAck(codec: newEncoder.codec, width: UInt32(widthPx), height: UInt32(heightPx),
+                                    hardwareEncoder: newEncoder.isHardware))
+        clog("STREAM: resized in place — \(newEncoder.codec) \(widthPx)x\(heightPx)")
+        checkDisplaySize(retriesLeft: 0) // it may have moved again meanwhile
     }
 
     /// A session failed while starting. Tear down only if the connection that
@@ -696,7 +791,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
               let statusRaw = attachments.first?[.status] as? Int,
               SCFrameStatus(rawValue: statusRaw) == .complete,
               let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
-        encoder?.encode(pixelBuffer, pts: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
+        guard let enc = encoder else { return }
+        // During an in-place resize the capture can deliver frames of the new
+        // size before the new encoder is attached (or the old size just after).
+        // A mismatched buffer cannot be encoded; the next frame is right.
+        guard CVPixelBufferGetWidth(pixelBuffer) == Int(enc.width),
+              CVPixelBufferGetHeight(pixelBuffer) == Int(enc.height) else { return }
+        enc.encode(pixelBuffer, pts: CMSampleBufferGetPresentationTimeStamp(sampleBuffer))
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -746,10 +847,14 @@ final class StreamFleet {
     /// be passed to register and remove, and a live callback holding an
     /// unretained pointer to a deallocated fleet would dangle.
     private let reconfigCallback: CGDisplayReconfigurationCallBack = { _, flags, userInfo in
-        guard let userInfo,
-              flags.contains(.addFlag) || flags.contains(.removeFlag) else { return }
+        guard let userInfo else { return }
         let fleet = Unmanaged<StreamFleet>.fromOpaque(userInfo).takeUnretainedValue()
-        DispatchQueue.main.async { fleet.rebuildSoon() }
+        if flags.contains(.addFlag) || flags.contains(.removeFlag) {
+            DispatchQueue.main.async { fleet.rebuildSoon() }
+        } else if flags.contains(.setModeFlag) || flags.contains(.desktopShapeChangedFlag) {
+            // Same displays, new size: the sessions resize themselves.
+            DispatchQueue.main.async { fleet.displaySizeChanged() }
+        }
     }
     private var callbackRegistered = false
 
@@ -876,6 +981,13 @@ final class StreamFleet {
             }
             clog("STREAM: serving \(servers.count) display(s) on ports \(basePort)–\(basePort + UInt16(max(servers.count, 1) - 1))")
         }
+    }
+
+    /// A display kept its ID but changed pixel size. Each server compares its
+    /// capture session to the display and resizes in place if they differ, so
+    /// the connected client keeps streaming. Safe to call often.
+    func displaySizeChanged() {
+        for s in servers { s.displaySizeMayHaveChanged() }
     }
 
     /// Collapse/restore reconfigures displays several times over ~2s;

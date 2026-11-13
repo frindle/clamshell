@@ -102,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if state == .idle {
                 self.externallyCollapsed = false
                 self.streamCollapsed = false
+                self.coordinator.resizable = false
                 self.restoreSavedPreset() // undo any client-dimension/dual override
             }
             self.updateIcon()
@@ -173,11 +174,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if let w = (note.userInfo?["width"] as? String).flatMap(UInt32.init),
                let h = (note.userInfo?["height"] as? String).flatMap(UInt32.init),
                w >= 640, h >= 480 {
-                // Floor odd client dimensions to even so points * 2 == pixels.
-                let ew = w & ~1, eh = h & ~1
-                preset = DisplayPreset(
-                    name: "Client (\(ew)×\(eh))", pointsWide: ew / 2, pointsHigh: eh / 2
-                )
+                // Odd client dimensions are floored to even so points * scale
+                // == pixels. "scale" 1 is the browser's 1x (non-Retina) choice.
+                preset = ClientDisplayRequest.preset(
+                    name: "Client (\(w & ~1)×\(h & ~1)\((note.userInfo?["scale"] as? String) == "1" ? " @1x" : ""))",
+                    widthPx: w, heightPx: h, scale: note.userInfo?["scale"] as? String)
             }
             let fromStream = (note.userInfo?["source"] as? String) == "stream"
             // A native-stream client also reports whether it has a second
@@ -861,6 +862,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 coordinator.collapse() // no-op that cancels a pending restore
                 return
             }
+            // A stream client that only changed the size (window resized,
+            // another monitor size picked) keeps its stream: resize the
+            // virtual display where it stands. StreamFleet then re-sizes the
+            // capture and encoder (StreamServer.rebuildForNewSize).
+            if fromStream, !dual, !coordinator.dualMode, coordinator.resizeInPlace(to: preset) {
+                externallyCollapsed = true
+                streamCollapsed = true
+                StreamFleet.shared?.displaySizeChanged()
+                return
+            }
             clog("external collapse geometry changed — recollapsing")
             coordinator.restore { [weak self] in
                 self?.applyExternalCollapse(preset: preset, presetB: presetB, dual: dual, fromStream: fromStream)
@@ -868,6 +879,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
         coordinator.preset = preset
+        coordinator.resizable = fromStream
         if let presetB { coordinator.presetB = presetB }
         coordinator.dualMode = dual
         syncDualPresets()
