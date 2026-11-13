@@ -92,10 +92,15 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private let videoQueue = DispatchQueue(label: "clamshell.stream.video")
 
     /// Send backpressure: frames handed to NWConnection but not yet consumed.
-    /// TCP on LAN drains fast; if it backs up, drop delta frames and let the
-    /// next keyframe resynchronize the decoder.
-    private var framesInFlight = 0
-    private let maxFramesInFlight = 8
+    /// TCP on LAN drains fast; if it backs up, the pacer drops frames until
+    /// the next keyframe resynchronizes the decoder, and reports a stalled
+    /// connection (see SendPacer).
+    private var pacer = SendPacer()
+
+    /// A HELLO has already started (or is starting) this connection's capture
+    /// session. A repeat HELLO must not start a second one: the first
+    /// SCStream/encoder would be orphaned and keep running.
+    private var sessionRequested = false
 
     /// This session's client reported display info (and so may have driven a
     /// collapse) — on teardown, schedule the matching restore request.
@@ -211,6 +216,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             teardownSession()
         }
         connection = conn
+        sessionRequested = false
         let parser = StreamMessageParser()
         parser.onMessage = { [weak self] type, payload in
             self?.handle(type: type, payload: payload)
@@ -252,7 +258,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         connection?.cancel()
         connection = nil
         parser = nil
-        framesInFlight = 0
+        pacer.reset()
+        sessionRequested = false
         bitrate = VideoEncoder.minBitrate
         lastCongestionAt = 0
         lastStepAt = 0
@@ -279,6 +286,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             guard payload.count >= 2 else { return }
             let requested = StreamCodec(rawValue: payload[payload.startIndex + 1]) ?? .hevc
             handleClientDisplayInfo(payload, at: 2)
+            guard !sessionRequested else {
+                clog("STREAM: repeat HELLO on a live session — keeping the session, sending a keyframe")
+                encoder?.requestKeyframe()
+                return
+            }
+            sessionRequested = true
             startSession(requestedCodec: requested)
         case .clientDisplays:
             handleClientDisplayInfo(payload, at: 0)
@@ -389,6 +402,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 }
 
                 let (filter, pxWidth, pxHeight, refresh): (SCContentFilter, Int, Int, Double)
+                // The display actually captured. It can differ from the one
+                // this server was created for (see resolveCurrentTargetDisplayID),
+                // and input and cursor reports must use the same one.
+                let capturedDisplayID: CGDirectDisplayID?
                 switch source {
                 case .display(let displayID):
                     let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
@@ -396,14 +413,14 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     // Resolve the current target display ID with fallback logic
                     guard let resolvedDisplayID = self.resolveCurrentTargetDisplayID(content: content, originalDisplayID: displayID) else {
                         clog("STREAM: no suitable display found for capture")
-                        self.queue.async { self.teardownSession() }
+                        self.failSession(sessionConn)
                         return
                     }
                     
                     // Use the resolved display ID to find the actual SCDisplay object
                     guard let scDisplay = content.displays.first(where: { $0.displayID == resolvedDisplayID }) else {
                         clog("STREAM: resolved display \(resolvedDisplayID) not found in shareable content")
-                        self.queue.async { self.teardownSession() }
+                        self.failSession(sessionConn)
                         return
                     }
                     
@@ -415,6 +432,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     pxHeight = mode?.pixelHeight ?? scDisplay.height
                     if let rate = mode?.refreshRate, rate > 0 { refresh = rate } else { refresh = 60 }
                     filter = SCContentFilter(display: scDisplay, excludingWindows: [])
+                    capturedDisplayID = resolvedDisplayID
                 case .window(let windowID):
                     // Window Handoff (PROTOCOL.md): explicit-selection v1, no
                     // AX-based hide/drag-trigger (blocked on this dev Mac —
@@ -423,7 +441,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
                     guard let scWindow = content.windows.first(where: { $0.windowID == windowID }) else {
                         clog("STREAM: window \(windowID) not found (closed, minimized, or off-screen?)")
-                        self.queue.async { self.teardownSession() }
+                        self.failSession(sessionConn)
                         return
                     }
                     // ponytail: points-resolution capture, not the window's
@@ -434,6 +452,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     pxHeight = max(Int(scWindow.frame.height), 1)
                     refresh = 60
                     filter = SCContentFilter(desktopIndependentWindow: scWindow)
+                    capturedDisplayID = nil
                 }
 
                 let encoder = try VideoEncoder.makeEncoder(
@@ -507,7 +526,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                         self.clipboard = clipboard
                     }
                     switch source {
-                    case .display(let displayID): self.injector = InputInjector(displayID: displayID)
+                    case .display(let displayID):
+                        self.injector = InputInjector(displayID: capturedDisplayID ?? displayID)
                     case .window(let windowID): self.injector = InputInjector(windowID: windowID)
                     }
                     self.send(StreamMessage.helloAck(codec: encoder.codec,
@@ -519,14 +539,24 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     // PROTOCOL.md) — a remoted window has no "different
                     // display" to report positions relative to.
                     if case .display(let displayID) = source {
-                        self.startCursorReporting(displayID: displayID)
+                        self.startCursorReporting(displayID: capturedDisplayID ?? displayID)
                     }
                     clog("STREAM: session started — \(encoder.codec) \(pxWidth)x\(pxHeight)@\(Int(refresh.rounded()))\(encoder.isHardware ? "" : " [SOFTWARE ENCODE]")")
                 }
             } catch {
                 clog("STREAM: failed to start capture session: \(error)")
-                self.queue.async { self.teardownSession() }
+                self.failSession(sessionConn)
             }
+        }
+    }
+
+    /// A session failed while starting. Tear down only if the connection that
+    /// asked for it is still the current one — a newer client may have
+    /// replaced it during the awaits, and its session must be left alone.
+    private func failSession(_ sessionConn: NWConnection?) {
+        queue.async { [self] in
+            guard connection === sessionConn else { return }
+            teardownSession()
         }
     }
 
@@ -558,17 +588,26 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     // MARK: - Sending (on `queue`)
 
     private func sendFrame(keyframe: Bool, ptsMicros: UInt64, nalData: Data) {
-        guard connection != nil else { return }
-        if framesInFlight >= maxFramesInFlight && !keyframe {
-            // Network can't keep up: drop the delta and resync on a keyframe.
-            encoder?.requestKeyframe()
-            stepBitrateDown()
+        guard let conn = connection else { return }
+        switch pacer.offer(keyframe: keyframe, now: CFAbsoluteTimeGetCurrent()) {
+        case .stalled:
+            clog("STREAM: nothing sent for \(Int(pacer.stallTimeout))s with \(pacer.inFlight) frames waiting — dropping the stalled connection")
+            teardownSession()
             return
+        case .drop(let requestKeyframe, let congested):
+            // Network can't keep up: drop until a keyframe resyncs the decoder.
+            if requestKeyframe { encoder?.requestKeyframe() }
+            if congested { stepBitrateDown() }
+            return
+        case .send:
+            break
         }
         maybeStepBitrateUp()
-        framesInFlight += 1
         send(StreamMessage.videoFrame(keyframe: keyframe, ptsMicros: ptsMicros, nalData: nalData)) { [weak self] in
-            self?.framesInFlight -= 1
+            // A completion from a connection that has since been replaced
+            // must not count against the new session.
+            guard let self, self.connection === conn else { return }
+            self.pacer.completed(now: CFAbsoluteTimeGetCurrent())
         }
     }
 
