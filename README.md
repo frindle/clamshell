@@ -509,6 +509,15 @@ form.
 
 ### Unreleased
 
+### 0.9.20 — 2026-11-13
+- **A port that is busy at startup is retried instead of staying dead.** If
+  another copy still holds a port (during an update relaunch, or the
+  login-window agent handing over), web access and the stream servers now try
+  again for about 16 seconds. Before, web access said it was on while the port
+  never opened.
+- Adds manual install and uninstall scripts for the login-window agent in
+  `scripts/loginwindow-agent/`. Still off unless you run them.
+
 ### 0.9.19 — 2026-11-13
 - **Groundwork for Clamshell at the login window, switched off.** Adds a
   `loginwindow-agent` subcommand that serves the stream only while nobody is

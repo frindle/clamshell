@@ -29,6 +29,8 @@ jobs:
         run: node tests/test-webclient-hello.js
       - name: Lint probe plists
         run: plutil -lint scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist
+      - name: Lint login-window agent scripts
+        run: bash -n scripts/loginwindow-agent/install.sh && bash -n scripts/loginwindow-agent/uninstall.sh
       - name: Login-window agent stays off when a user is logged in
         run: |
           # In a logged-in session (the CI runner is one) the agent must exit
