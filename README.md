@@ -516,6 +516,8 @@ form.
   screen capture and input work at the login window and on the lock screen.
   It writes counts and brightness only (no images) to `/var/tmp/clamshell-probe`
   and changes nothing for normal use.
+- CI now runs the self-tests, two crash-on-missing-value spots in the stream
+  server are guarded, and an untrusted-input (Accessibility) warning is logged.
 
 ### 0.9.14 — 2026-11-12
 - **The stream fits the browser window.** The web client now sends its real

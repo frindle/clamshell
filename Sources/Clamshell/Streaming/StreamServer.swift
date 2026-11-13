@@ -143,7 +143,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
-        let listener = try NWListener(using: params, on: NWEndpoint.Port(rawValue: port)!)
+        guard let nwPort = NWEndpoint.Port(rawValue: port) else {
+            clog("STREAM: invalid listen port \(port)")
+            throw NWError.posix(.EINVAL)
+        }
+        let listener = try NWListener(using: params, on: nwPort)
         listener.newConnectionHandler = { [weak self] conn in
             self?.queue.async { self?.accept(conn) }
         }
@@ -409,7 +413,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                     let mode = CGDisplayCopyDisplayMode(resolvedDisplayID)
                     pxWidth = mode?.pixelWidth ?? scDisplay.width
                     pxHeight = mode?.pixelHeight ?? scDisplay.height
-                    refresh = (mode?.refreshRate ?? 0) > 0 ? mode!.refreshRate : 60
+                    if let rate = mode?.refreshRate, rate > 0 { refresh = rate } else { refresh = 60 }
                     filter = SCContentFilter(display: scDisplay, excludingWindows: [])
                 case .window(let windowID):
                     // Window Handoff (PROTOCOL.md): explicit-selection v1, no
