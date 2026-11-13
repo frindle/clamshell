@@ -99,14 +99,64 @@ final class WebServer {
     }
 
     func stop() {
+        rebindWork?.cancel()
+        rebindWork = nil
+        rebindAttempts = 0
+        closeListeners()
+        isRunning = false
+        clog("web access OFF")
+    }
+
+    private func closeListeners() {
         for l in httpListeners { l.cancel() }
         httpListeners = []
         for l in wsListeners { l.cancel() }
         wsListeners = []
         for l in streamBridgeListeners { l.cancel() }
         streamBridgeListeners = []
-        isRunning = false
-        clog("web access OFF")
+    }
+
+    // A port that is still held by another process (the login-window agent
+    // on its way out, or the previous instance during an update relaunch)
+    // fails the bind *after* start() returns, on the listener's state
+    // handler. Without this the server sat there "ON" with a dead port.
+    private var rebindWork: DispatchWorkItem?
+    private var rebindAttempts = 0
+    private static let maxRebindAttempts = 8
+
+    private func watch(_ listener: NWListener) {
+        listener.stateUpdateHandler = { [weak self] state in
+            guard case .failed(let error) = state else { return }
+            clog("web access: a listener failed (\(error))")
+            DispatchQueue.main.async { self?.scheduleRebind() }
+        }
+    }
+
+    /// Main queue. Closes every listener, waits for the ports to be released,
+    /// then starts again. Gives up after `maxRebindAttempts` in a row.
+    private func scheduleRebind() {
+        guard isRunning, rebindWork == nil else { return }
+        guard rebindAttempts < Self.maxRebindAttempts else {
+            clog("web access: still can't bind after \(rebindAttempts) tries — giving up (toggle Web Access to retry)")
+            return
+        }
+        rebindAttempts += 1
+        let attempt = rebindAttempts
+        let attemptsSoFar = rebindAttempts
+        closeListeners()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.rebindWork = nil
+            guard self.isRunning else { return }
+            clog("web access: rebinding (try \(attempt) of \(Self.maxRebindAttempts))")
+            self.isRunning = false
+            self.start()
+            // start() calls stop() if it throws, which zeroes the counter;
+            // keep counting so a permanently busy port can't loop forever.
+            self.rebindAttempts = attemptsSoFar
+        }
+        rebindWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
     // MARK: - HTTP static server (noVNC assets)
@@ -131,6 +181,7 @@ final class WebServer {
                 conn.start(queue: self?.queue ?? .global())
                 self?.receiveRequest(conn, buffer: Data())
             }
+            watch(listener)
             listener.start(queue: queue)
         }
         httpListeners = listeners
@@ -524,6 +575,7 @@ final class WebServer {
             listener.newConnectionHandler = { [weak self] ws in
                 self?.bridge(ws)
             }
+            watch(listener)
             listener.start(queue: queue)
         }
         wsListeners = listeners
@@ -605,6 +657,7 @@ final class WebServer {
                 listener.newConnectionHandler = { [weak self] browserWS in
                     self?.streamBridge(browserWS, toPort: targetPort)
                 }
+                watch(listener)
                 listener.start(queue: queue)
             }
             listeners += ls
