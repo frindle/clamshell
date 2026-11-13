@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Watches for an active remote-control session and reports transitions.
 ///
@@ -99,13 +100,43 @@ final class ConnectionMonitor {
     /// Moonlight session is streaming. Connection-refused (Sunshine not
     /// installed/running) returns nil instantly and costs nothing.
     static func sunshineSessionActive() -> Bool {
-        guard let xml = run("/usr/bin/curl", ["-s", "-m", "1", "http://127.0.0.1:47989/serverinfo"]),
+        guard let xml = httpGetLocal(port: 47989, path: "/serverinfo", timeout: 1),
               !xml.isEmpty else { return false }
         if xml.contains("SUNSHINE_SERVER_BUSY") { return true }
         if let m = xml.range(of: "<currentgame>"), let e = xml.range(of: "</currentgame>") {
             return xml[m.upperBound..<e.lowerBound].trimmingCharacters(in: .whitespaces) != "0"
         }
         return false
+    }
+
+    /// A plain HTTP GET to 127.0.0.1 over a POSIX socket, so polling does not
+    /// spawn curl every few seconds. nil when nothing listens (the usual case)
+    /// or the answer takes longer than `timeout` seconds.
+    static func httpGetLocal(port: UInt16, path: String, timeout: TimeInterval) -> String? {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else { return nil }
+        defer { close(fd) }
+        var tv = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - floor(timeout)) * 1_000_000))
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let rc = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard rc == 0 else { return nil } // refused: not installed / not running
+        let req = "GET \(path) HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        guard send(fd, req, req.utf8.count, 0) > 0 else { return nil }
+        var out = Data()
+        var buf = [UInt8](repeating: 0, count: 4096)
+        while out.count < 65536 {
+            let n = recv(fd, &buf, buf.count, 0)
+            if n <= 0 { break }
+            out.append(contentsOf: buf[0..<n])
+        }
+        return String(data: out, encoding: .utf8)
     }
 
     struct Connection {
@@ -147,13 +178,28 @@ final class ConnectionMonitor {
     /// `lsof` on processes named JumpConnect with ESTABLISHED TCP. Refine
     /// against a real Jump install (open TODO).
     static func jumpDesktopSessionActive() -> Bool {
-        guard let output = run("/bin/ps", ["-axo", "comm"]) else { return false }
-        let hasJump = output.contains("JumpConnect") || output.contains("Jump Desktop Connect")
-        guard hasJump else { return false }
+        guard runningProcessNames().contains(where: { $0.contains("JumpConnect") || $0.contains("Jump Desktop Connect") }) else {
+            return false
+        }
         guard let lsof = run("/usr/sbin/lsof", ["-nP", "-iTCP", "-sTCP:ESTABLISHED", "-a", "-c", "JumpConnect"]) else {
             return false
         }
         return lsof.split(separator: "\n").count > 1 // header + at least one socket
+    }
+
+    /// Names of all running processes via libproc, no `ps` spawn.
+    static func runningProcessNames() -> [String] {
+        let count = proc_listallpids(nil, 0)
+        guard count > 0 else { return [] }
+        var pids = [pid_t](repeating: 0, count: Int(count) + 32)
+        let got = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size))
+        guard got > 0 else { return [] }
+        var names: [String] = []
+        var name = [CChar](repeating: 0, count: 256)
+        for pid in pids.prefix(Int(got)) where pid > 0 {
+            if proc_name(pid, &name, UInt32(name.count)) > 0 { names.append(String(cString: name)) }
+        }
+        return names
     }
 
     private static func run(_ path: String, _ args: [String]) -> String? {
