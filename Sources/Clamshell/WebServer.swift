@@ -531,8 +531,12 @@ final class WebServer {
         const A = {w: \(dual.a.pointsWide), h: \(dual.a.pointsHigh)};
         const B = {w: \(dual.b.pointsWide), h: \(dual.b.pointsHigh)};
         const IS_B = \(slot == .b);
+        // https with a port = LAN TLS: the bridge itself speaks wss on wsPort.
+        // https without a port = the tunnel, which routes /websockify.
         const wsUrl = location.protocol === 'https:'
-            ? 'wss://' + location.host + '/websockify'
+            ? (location.port
+                ? 'wss://' + location.hostname + ':\(wsPort)'
+                : 'wss://' + location.host + '/websockify')
             : 'ws://' + location.hostname + ':\(wsPort)';
 
         const screen = document.getElementById('screen');
