@@ -19,6 +19,7 @@ jobs:
         run: |
           .build/debug/Clamshell stream-selftest
           .build/debug/Clamshell hello-collapse-selftest
+          .build/debug/Clamshell encoder-resize-selftest
           .build/debug/Clamshell self-heal-guard-selftest
           .build/debug/Clamshell confirmation-bridge-selftest
           .build/debug/Clamshell confirmation-coordinator-selftest

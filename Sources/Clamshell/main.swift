@@ -106,6 +106,8 @@ if args.count > 1 {
         exit(StreamSelfTest.run() ? 0 : 1)
     case "hello-collapse-selftest":
         exit(HelloCollapseSelfTest.run())
+    case "encoder-resize-selftest":
+        exit(EncoderResizeSelfTest.run())
     case "reboot-readiness":
         // Print the unattended-reboot pre-flight (autorestart / FileVault /
         // Screen Sharing / login item). Same check as the menu item, usable
@@ -224,7 +226,7 @@ if args.count > 1 {
     default:
         print("Unknown command: \(args[1])")
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
-              "hello-collapse-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
+              "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
               "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent]")
         exit(64)

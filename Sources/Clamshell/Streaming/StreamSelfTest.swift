@@ -321,6 +321,71 @@ enum HelloCollapseSelfTest {
             }
         }
 
+        // Case 7: flags bit 1 (plain 1x) reaches the collapse notification as scale=1,
+        // and flags 0 as scale=2 (the HiDPI default, same as before 0.9.22)
+        for (flags, expected) in [(UInt8(2), "1"), (UInt8(0), "2")] {
+            var bytes = Data()
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2560).bigEndian) { Data($0) })
+            bytes.append(contentsOf: withUnsafeBytes(of: UInt32(1440).bigEndian) { Data($0) })
+            bytes.append(flags)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            posts.removeAll()
+            server.handleClientDisplayInfo(bytes, at: 0)
+            spinUntilPost()
+            if posts.count == 1, posts[0]["width"] == "2560", posts[0]["scale"] == expected {
+                print("PASS scale flag \(flags) -> \(expected)")
+            } else {
+                print("FAIL scale flag \(flags): expected scale=\(expected), got \(posts)")
+                failCount += 1
+            }
+        }
+
+        return failCount == 0 ? 0 : 1
+    }
+}
+
+
+/// In-place resize: an encoder built at a new size must start with a keyframe
+/// and produce frames of the new size, which is what StreamServer relies on
+/// when it swaps encoders without dropping the client.
+enum EncoderResizeSelfTest {
+    static func run() -> Int32 {
+        func firstFrame(width: Int32, height: Int32) -> (keyframe: Bool, enc: VideoEncoder)? {
+            guard let enc = try? VideoEncoder.makeEncoder(width: width, height: height) else { return nil }
+            let got = DispatchSemaphore(value: 0)
+            var first: Bool?
+            let lock = NSLock()
+            enc.onEncodedFrame = { keyframe, _, _ in
+                lock.lock(); if first == nil { first = keyframe; got.signal() }; lock.unlock()
+            }
+            var pb: CVPixelBuffer?
+            CVPixelBufferCreate(nil, Int(width), Int(height), kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+                                [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pb)
+            guard let buffer = pb else { return nil }
+            for i in 0..<5 {
+                enc.encode(buffer, pts: CMTime(value: CMTimeValue(i), timescale: 30))
+                if got.wait(timeout: .now() + 0.2) == .success { break }
+            }
+            lock.lock(); defer { lock.unlock() }
+            guard let k = first else { return nil }
+            return (k, enc)
+        }
+
+        var failCount = 0
+        for (w, h) in [(Int32(1280), Int32(720)), (Int32(1920), Int32(1080)), (Int32(1280), Int32(720))] {
+            guard let r = firstFrame(width: w, height: h) else {
+                print("FAIL encoder \(w)x\(h): no frame produced")
+                failCount += 1
+                continue
+            }
+            if r.keyframe, r.enc.width == w, r.enc.height == h {
+                print("PASS encoder \(w)x\(h) starts with a keyframe")
+            } else {
+                print("FAIL encoder \(w)x\(h): keyframe=\(r.keyframe) size=\(r.enc.width)x\(r.enc.height)")
+                failCount += 1
+            }
+            r.enc.invalidate()
+        }
         return failCount == 0 ? 0 : 1
     }
 }
