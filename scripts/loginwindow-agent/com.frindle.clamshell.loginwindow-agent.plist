@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  NOT INSTALLED BY CLAMSHELL. Nothing copies or loads this file; it is here so
+  the login-window agent can be tried by hand once the loginwindow-probe has
+  shown that capture and input work at the login window.
+
+  Runs `Clamshell loginwindow-agent` in the login-window session only. The
+  agent serves the stream while nobody is logged in and exits the moment
+  someone logs in, so the normal app can take the same ports.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.frindle.clamshell.loginwindow-agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/Clamshell.app/Contents/MacOS/Clamshell</string>
+        <string>loginwindow-agent</string>
+    </array>
+    <key>LimitLoadToSessionType</key><string>LoginWindow</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key><false/>
+    </dict>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>StandardOutPath</key><string>/var/tmp/clamshell-loginwindow-agent.log</string>
+    <key>StandardErrorPath</key><string>/var/tmp/clamshell-loginwindow-agent.log</string>
+</dict>
+</plist>
