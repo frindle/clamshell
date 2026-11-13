@@ -509,6 +509,12 @@ form.
 
 ### Unreleased
 
+### 0.9.16 — 2026-11-13
+- **Unit tests now run on every change.** A `swift test` target covers the
+  stream wire format, the message parser (split, joined, unknown and oversized
+  messages), the frame assembler's bad-input handling and the relaunch guard.
+  CI runs it before the self-tests. Nothing changes in the app itself.
+
 ### 0.9.15 — 2026-11-13
 - **A read-only probe for the login window and lock screen.** Adds a
   `loginwindow-probe` subcommand and two launchd plists (in
