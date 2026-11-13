@@ -14,7 +14,9 @@
 
 import { codeToMacVK } from '/client/keymap.js';
 import { helloPayload, attachResizeReporter } from '/client/hello.js';
-import { HeldKeys, reconnectDelay, frameAction } from '/client/input.js';
+import {
+  HeldKeys, reconnectDelay, frameAction, ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue,
+} from '/client/input.js';
 import { AudioPlayer, audioSupported } from '/client/audio.js';
 
 const params = new URLSearchParams(location.search);
@@ -29,7 +31,7 @@ const BRIDGE_PORT = { a: 5906, b: 5907, c: 5908 }[display];
 // Message types (StreamProtocol.swift).
 const T = {
   HELLO: 0x01, HELLO_ACK: 0x02, CLIENT_DISPLAYS: 0x03, STREAM_STATUS: 0x04, HOST_LOCK_STATE: 0x05,
-  VIDEO_FRAME: 0x10, KEYFRAME_REQUEST: 0x11, AUDIO_FRAME: 0x13,
+  PING: 0x07, VIDEO_FRAME: 0x10, KEYFRAME_REQUEST: 0x11, AUDIO_FRAME: 0x13,
   MOUSE_MOVE: 0x20, MOUSE_BUTTON: 0x21, KEY: 0x22, SCROLL: 0x23, CLIPBOARD: 0x30,
 };
 
@@ -232,7 +234,15 @@ window.addEventListener('online', reconnectNow);
 // navigating away / closing the tab is what actually stops it, matching the
 // native client's "retries forever until user disconnects" contract.
 
-function send(data) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(data); }
+let lastSentAt = Date.now();
+function send(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) { ws.send(data); lastSentAt = Date.now(); }
+}
+
+// Keepalive (see input.js keepaliveDue). Old hosts skip the unknown type.
+setInterval(() => {
+  if (ws && ws.readyState === WebSocket.OPEN && keepaliveDue(Date.now(), lastSentAt)) send(frameMsg(T.PING));
+}, 5000);
 
 function sendHello() {
   send(frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio)));
@@ -555,14 +565,19 @@ canvas.addEventListener('wheel', (e) => {
   send(frameMsg(T.SCROLL, concat(f32(e.deltaX * mul), f32(e.deltaY * mul))));
 }, { passive: false });
 
+// "Ctrl acts as Cmd": remembered per browser, on by default on Windows/Linux.
+const CTRL_KEY = 'clamshell.ctrlAsCmd';
+let ctrlAsCmd = ctrlAsCmdDefault(navigator);
+try {
+  const v = window.localStorage.getItem(CTRL_KEY);
+  if (v === '1' || v === '0') ctrlAsCmd = v === '1';
+} catch (e) { /* ignore */ }
+
 function cgFlags(e) {
-  let f = 0n;
-  if (e.getModifierState && e.getModifierState('CapsLock')) f |= 0x10000n;
-  if (e.shiftKey) f |= 0x20000n;
-  if (e.ctrlKey) f |= 0x40000n;
-  if (e.altKey) f |= 0x80000n;
-  if (e.metaKey) f |= 0x100000n;
-  return f;
+  return modifierFlags({
+    caps: !!(e.getModifierState && e.getModifierState('CapsLock')),
+    shift: e.shiftKey, ctrl: e.ctrlKey, alt: e.altKey, meta: e.metaKey,
+  }, ctrlAsCmd);
 }
 
 function sendKey(macVK, down, flags) {
@@ -584,8 +599,8 @@ function releaseInput() {
 window.addEventListener('blur', releaseInput);
 
 canvas.addEventListener('keydown', (e) => {
-  const vk = codeToMacVK[e.code];
-  if (vk === undefined) return;
+  const vk = remapKey(e.code, codeToMacVK[e.code], ctrlAsCmd);
+  if (codeToMacVK[e.code] === undefined) return;
   e.preventDefault();
   maybeResumeSound();
   if (!e.repeat && pasteFromLocal(e, vk)) return;
@@ -593,8 +608,8 @@ canvas.addEventListener('keydown', (e) => {
   sendKey(vk, true, cgFlags(e));
 });
 canvas.addEventListener('keyup', (e) => {
-  const vk = codeToMacVK[e.code];
-  if (vk === undefined) return;
+  const vk = remapKey(e.code, codeToMacVK[e.code], ctrlAsCmd);
+  if (codeToMacVK[e.code] === undefined) return;
   e.preventDefault();
   const flags = cgFlags(e);
   const released = held.release(e.code);
@@ -613,8 +628,10 @@ let lastClipboard = null;
 // prompt. Safari shows a "Paste" bubble on every read and Firefox refuses,
 // so only Chromium gets the read-on-paste path below.
 let canReadClipboard = false;
+// Resolves once the permission state is known, so the first Cmd-V never races it.
+let clipboardPermission = Promise.resolve();
 if (isPrimary && navigator.clipboard && navigator.clipboard.readText && navigator.permissions) {
-  navigator.permissions.query({ name: 'clipboard-read' })
+  clipboardPermission = navigator.permissions.query({ name: 'clipboard-read' })
     .then((p) => { canReadClipboard = p.state !== 'denied'; })
     .catch(() => {});
 }
@@ -623,18 +640,38 @@ if (isPrimary && navigator.clipboard && navigator.clipboard.readText && navigato
 // socket as the keystroke so the host has it before it pastes. Before, the
 // local clipboard only reached the Mac when the tab was hidden, so copying
 // in another window and pasting here pasted something old.
+//
+// The very first read can show Chrome's permission prompt. The prompt takes
+// focus (the blur handler lets go of Cmd on the Mac) and the key must not go
+// out until the read is answered, or a bare "v" is typed. So the whole chord
+// is sent after the read settles, Cmd included, when the read took long
+// enough to have been a prompt.
+let pasteBusy = false;
 function pasteFromLocal(e, vk) {
-  if (!canReadClipboard || e.code !== 'KeyV' || !e.metaKey || e.ctrlKey || e.altKey) return false;
+  if (e.code !== 'KeyV' || !(e.metaKey || (ctrlAsCmd && e.ctrlKey)) || e.altKey || (e.ctrlKey && !ctrlAsCmd)) return false;
+  if (pasteBusy) return true; // a read is pending: swallow, don't type a stray "v"
   const flags = cgFlags(e);
-  navigator.clipboard.readText()
-    .then((t) => {
-      if (t && t !== lastClipboard) {
-        lastClipboard = t;
-        send(frameMsg(T.CLIPBOARD, new TextEncoder().encode(t)));
-      }
+  const cmdVK = 55; // left Command
+  pasteBusy = true;
+  const started = Date.now();
+  clipboardPermission
+    .then(() => {
+      if (!canReadClipboard) return 'skip';
+      return navigator.clipboard.readText().then((t) => {
+        if (t && t !== lastClipboard) {
+          lastClipboard = t;
+          send(frameMsg(T.CLIPBOARD, new TextEncoder().encode(t)));
+        }
+      });
     })
     .catch(() => {})
-    .finally(() => { sendKey(vk, true, flags); sendKey(vk, false, flags); });
+    .finally(() => {
+      pasteBusy = false;
+      const slow = Date.now() - started > 250; // a permission prompt was up
+      if (slow) sendKey(cmdVK, true, flags);
+      sendKey(vk, true, flags); sendKey(vk, false, flags);
+      if (slow) sendKey(cmdVK, false, 0n);
+    });
   return true;
 }
 
@@ -687,6 +724,20 @@ document.addEventListener('visibilitychange', () => {
 // Touch devices have no hover; tapping the dot opens and closes the menu.
 qualityDot.addEventListener('click', () => menu.classList.toggle('open'));
 canvas.addEventListener('pointerdown', () => menu.classList.remove('open'));
+
+// Ctrl acts as Cmd toggle
+{
+  const ctrlBtn = document.getElementById('ctrlBtn');
+  const show = () => { ctrlBtn.textContent = `Ctrl acts as \u2318: ${ctrlAsCmd ? 'on' : 'off'}`; };
+  ctrlBtn.addEventListener('click', () => {
+    releaseInput(); // don't leave the old mapping's modifier held
+    ctrlAsCmd = !ctrlAsCmd;
+    try { window.localStorage.setItem(CTRL_KEY, ctrlAsCmd ? '1' : '0'); } catch (e) { /* ignore */ }
+    show();
+    canvas.focus();
+  });
+  show();
+}
 
 fullscreenBtn.hidden = !document.documentElement.requestFullscreen;
 fullscreenBtn.addEventListener('click', async () => {

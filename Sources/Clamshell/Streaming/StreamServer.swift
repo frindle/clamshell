@@ -324,6 +324,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             startSession(requestedCodec: requested)
         case .clientDisplays:
             handleClientDisplayInfo(payload, at: 0)
+        case .ping:
+            // Keepalive from a client that was otherwise quiet: answer so the
+            // path carries traffic both ways (a still screen sends no video).
+            send(StreamMessage.frame(type: .ping, payload: Data()))
         case .keyframeRequest:
             encoder?.requestKeyframe()
         case .mouseMove:

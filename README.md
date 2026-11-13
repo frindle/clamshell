@@ -509,6 +509,16 @@ form.
 
 ### Unreleased
 
+### 0.9.23 — 2026-11-13
+- **Windows and Linux keyboards work like a Mac's, and idle connections stay up.**
+- New menu toggle "Ctrl acts as ⌘" (on by default on Windows and Linux,
+  remembered per browser): Ctrl-C, Ctrl-V and Ctrl-T become Cmd-C, Cmd-V and
+  Cmd-T on the Mac. Full screen already hands system shortcuts to the Mac in Chrome and Edge.
+- The first paste in Chrome no longer types a stray "v" while the clipboard
+  permission prompt is up; the keys go out after you answer it.
+- The browser sends a small ping after 20 quiet seconds and the Mac answers,
+  so a still screen no longer lets a tunnel quietly drop the connection.
+
 ### 0.9.21 — 2026-11-13
 - **The browser client is nicer to use: sound, touch, full screen, and no more stuck keys.**
 - Sound: turn it on from the menu (the dot, top right). Off by default.
