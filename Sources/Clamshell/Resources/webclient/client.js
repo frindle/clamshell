@@ -85,8 +85,12 @@ const originalLockBannerText = lockBanner.textContent;
 // on both transports -- port 5901 direct-LAN, or same-origin over the
 // Cloudflare Tunnel (README "Browser access"), which routes this hostname to
 // the same WebServer.
+// Over LAN TLS (https on a port, not through the tunnel) noVNC is told where
+// the TLS websocket is: host, port 5902 and encrypt=1, plus autoconnect.
 const vncFallbackURL = location.protocol === 'https:'
-  ? `${location.origin}/vnc.html`
+  ? (location.port
+    ? `${location.origin}/vnc.html?autoconnect=1&host=${encodeURIComponent(location.hostname)}&port=5902&encrypt=1`
+    : `${location.origin}/vnc.html`)
   : `http://${location.hostname}:5901/vnc.html`;
 
 // Display size picker, Retina toggle. In-DOM buttons (a native <select> loses
@@ -216,7 +220,9 @@ function connect() {
     // directly at each display's dedicated bridge port (5906/5907/5908) —
     // the Mac side needs no path parsing since each port is already
     // single-purpose.
-    ? `wss://${location.host}/ws/${display}`
+    // Served over https on a port (LAN TLS, README) rather than through the
+    // tunnel on 443: the bridge ports speak TLS themselves.
+    ? (location.port ? `wss://${location.hostname}:${BRIDGE_PORT}` : `wss://${location.host}/ws/${display}`)
     : `ws://${location.hostname}:${BRIDGE_PORT}`;
   const sock = new WebSocket(wsUrl);
   ws = sock;
