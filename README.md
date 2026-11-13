@@ -529,6 +529,16 @@ form.
 
 ### Unreleased
 
+### 0.9.25 — 2026-11-13
+- **Quieter on the Mac: fewer background processes, fewer keyframes, cheaper logging.**
+- Session detection no longer starts `curl` and `ps` every 2 seconds; it asks
+  Sunshine over a local socket and reads the process list directly. Only the
+  `netstat` check still runs each poll.
+- The stream sends a full keyframe at most every 6 seconds instead of 2. A
+  client that loses a frame still asks for one at once, so recovery is as fast.
+- The log no longer builds a date formatter for every line, and the web server's
+  rebind counter starts fresh after every successful bind.
+
 ### 0.9.24 — 2026-11-13
 - **The browser client can be served over TLS on the LAN, if you give it a certificate.**
 - Nothing changes until you do: with no certificate configured, every port is
