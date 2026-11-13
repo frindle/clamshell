@@ -509,6 +509,14 @@ form.
 
 ### Unreleased
 
+### 0.9.15 — 2026-11-13
+- **A read-only probe for the login window and lock screen.** Adds a
+  `loginwindow-probe` subcommand and two launchd plists (in
+  `Clamshell.app/Contents/Resources/loginwindow-probe/`) for testing whether
+  screen capture and input work at the login window and on the lock screen.
+  It writes counts and brightness only (no images) to `/var/tmp/clamshell-probe`
+  and changes nothing for normal use.
+
 ### 0.9.14 — 2026-11-12
 - **The stream fits the browser window.** The web client now sends its real
   display size in HELLO, so the host sizes the stream to the browser instead
