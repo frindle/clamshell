@@ -1,5 +1,6 @@
 import Foundation
 import CoreGraphics
+import ApplicationServices
 
 // Maps normalized client coordinates (0..1, origin top-left) into the
 // streamed target's global bounds and injects CGEvents. Target is either a
@@ -61,7 +62,15 @@ final class InputInjector {
         return p
     }
 
+    /// Logged once per process (static let initializer runs once), not per event.
+    private static let untrustedLogOnce: Void = {
+        if !AXIsProcessTrusted() {
+            clog("INPUT: WARNING — process is not Accessibility-trusted (AXIsProcessTrusted false); injected events may be ignored.")
+        }
+    }()
+
     func mouseMove(x: Float32, y: Float32) {
+        _ = Self.untrustedLogOnce
         let point = map(x, y)
         let type: CGEventType = leftDown ? .leftMouseDragged
                               : rightDown ? .rightMouseDragged
@@ -72,6 +81,7 @@ final class InputInjector {
     }
 
     func mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32) {
+        _ = Self.untrustedLogOnce
         let point = map(x, y)
         let right = button == 1
         if right { rightDown = down } else { leftDown = down }
@@ -83,6 +93,7 @@ final class InputInjector {
     }
 
     func scroll(dx: Float32, dy: Float32) {
+        _ = Self.untrustedLogOnce
         // Pixel-unit scroll wheel: dy is vertical, dx horizontal. CGEvent's
         // wheel1 is vertical, wheel2 horizontal. Deltas come from the network
         // trust boundary: Int32(NaN/±inf/huge) traps, so clamp non-finite to 0
@@ -102,6 +113,7 @@ final class InputInjector {
     }
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
+        _ = Self.untrustedLogOnce
         guard let event = CGEvent(keyboardEventSource: nil,
                                   virtualKey: CGKeyCode(macKeyCode), keyDown: down) else { return }
         event.flags = CGEventFlags(rawValue: flags)
