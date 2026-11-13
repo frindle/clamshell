@@ -509,6 +509,14 @@ form.
 
 ### Unreleased
 
+### 0.9.19 — 2026-11-13
+- **Groundwork for Clamshell at the login window, switched off.** Adds a
+  `loginwindow-agent` subcommand that serves the stream only while nobody is
+  logged in and exits the moment someone logs in, so the normal app can take
+  the same ports. Nothing installs or starts it: the launchd plist lives in
+  `scripts/loginwindow-agent/` and is not shipped in the app.
+- It waits on the `loginwindow-probe` results before it is worth trying.
+
 ### 0.9.18 — 2026-11-13
 - **Updates are checked harder and can no longer leave the app half-installed.**
   The updater now requires the new build to be signed with this app's own

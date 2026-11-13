@@ -724,10 +724,14 @@ final class StreamFleet {
     }
     private var callbackRegistered = false
 
-    init(basePort: UInt16) {
+    /// `reportLockState: false` keeps HOST_LOCK_STATE at "unlocked" for good —
+    /// for the login-window agent, where the lock screen is what's being
+    /// served and the client must not fall back to VNC.
+    init(basePort: UInt16, reportLockState: Bool = true) {
         self.basePort = basePort
         CGDisplayRegisterReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
         callbackRegistered = true
+        guard reportLockState else { return }
         screenLocked = Self.currentlyLocked() // correct if started while already locked
         observeLockState()
     }
