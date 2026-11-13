@@ -13,7 +13,9 @@
 // on from the menu (browsers only let audio start from a click).
 
 import { codeToMacVK } from '/client/keymap.js';
-import { helloPayload, attachResizeReporter } from '/client/hello.js';
+import {
+  helloPayload, clientDisplaysPayload, attachResizeReporter, loadPrefs, savePrefs, normalizePrefs, parseSize, SIZE_PRESETS, pickCodec,
+} from '/client/hello.js';
 import {
   HeldKeys, reconnectDelay, frameAction, ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue,
 } from '/client/input.js';
@@ -37,7 +39,17 @@ const T = {
 
 // Re-report the window size to the host (CLIENT_DISPLAYS) after resizing stops;
 // the initial size rides in HELLO.
-attachResizeReporter(window, (p) => send(frameMsg(T.CLIENT_DISPLAYS, p)));
+// Monitor-size preference (menu: Display size / Retina), kept per browser.
+function safeStorage() { try { return window.localStorage; } catch (e) { return null; } }
+let displayPrefs = (() => { const st = safeStorage(); return st ? loadPrefs(st) : normalizePrefs(null); })();
+
+// Codec to request: HEVC when this browser can decode it, until an HEVC
+// decoder error makes us fall back to H.264 for the rest of the session.
+let wantCodec = 1;
+let h264Only = false;
+try { h264Only = window.sessionStorage.getItem('clamshell.h264') === '1'; } catch (e) { /* ignore */ }
+
+attachResizeReporter(window, (p) => send(frameMsg(T.CLIENT_DISPLAYS, p)), 250, globalThis, () => displayPrefs);
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
@@ -76,6 +88,66 @@ const originalLockBannerText = lockBanner.textContent;
 const vncFallbackURL = location.protocol === 'https:'
   ? `${location.origin}/vnc.html`
   : `http://${location.hostname}:5901/vnc.html`;
+
+// Display size picker, Retina toggle. In-DOM buttons (a native <select> loses
+// its popup when the hover menu closes); clicks keep the menu open.
+{
+  const panel = document.getElementById('hoverPanel');
+  const sizeBtn = document.getElementById('sizeBtn');
+  const sizeList = document.getElementById('sizeList');
+  const retinaBtn = document.getElementById('retinaBtn');
+  const customRow = document.getElementById('customRow');
+  const customInput = document.getElementById('customInput');
+  const customApply = document.getElementById('customApply');
+  const sizeLabel = () => {
+    const p = displayPrefs;
+    if (p.size === 'custom') return p.custom;
+    return (SIZE_PRESETS.find((x) => x.id === p.size) || SIZE_PRESETS[0]).label;
+  };
+  const refresh = () => {
+    sizeBtn.textContent = `Display size: ${sizeLabel()}`;
+    retinaBtn.textContent = `Retina: ${displayPrefs.retina ? '2\u00d7' : '1\u00d7'}`;
+    customRow.hidden = displayPrefs.size !== 'custom' && !customRow.dataset.editing;
+    for (const b of sizeList.querySelectorAll('button')) b.classList.toggle('on', b.dataset.id === displayPrefs.size);
+  };
+  for (const p of SIZE_PRESETS) {
+    const b = document.createElement('button');
+    b.dataset.id = p.id;
+    b.textContent = p.label;
+    b.addEventListener('click', () => {
+      if (p.id === 'custom') {
+        customRow.dataset.editing = '1';
+        customInput.value = displayPrefs.custom || '';
+        refresh();
+        customInput.focus();
+        return;
+      }
+      delete customRow.dataset.editing;
+      displayPrefs = normalizePrefs({ ...displayPrefs, size: p.id });
+      refresh(); applyDisplayPrefs();
+    });
+    sizeList.appendChild(b);
+  }
+  sizeBtn.addEventListener('click', () => { sizeList.hidden = !sizeList.hidden; });
+  retinaBtn.addEventListener('click', () => {
+    displayPrefs = normalizePrefs({ ...displayPrefs, retina: !displayPrefs.retina });
+    refresh(); applyDisplayPrefs();
+  });
+  const applyCustom = () => {
+    const sz = parseSize(customInput.value);
+    customInput.classList.toggle('bad', !sz);
+    if (!sz) return;
+    delete customRow.dataset.editing;
+    displayPrefs = normalizePrefs({ ...displayPrefs, size: 'custom', custom: `${sz.w}x${sz.h}` });
+    refresh(); applyDisplayPrefs();
+  };
+  customApply.addEventListener('click', applyCustom);
+  customInput.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Enter') applyCustom(); });
+  // Keep the menu open while it is being used.
+  panel.addEventListener('click', () => menu.classList.add('open'));
+  document.addEventListener('pointerdown', (e) => { if (!menu.contains(e.target)) menu.classList.remove('open'); });
+  refresh();
+}
 
 // Populate the hover menu with the other two displays.
 {
@@ -245,7 +317,30 @@ setInterval(() => {
 }, 5000);
 
 function sendHello() {
-  send(frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio)));
+  send(frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio,
+    { prefs: displayPrefs, codec: wantCodec })));
+}
+
+// Re-send the size right away (menu choice changed). The host resizes in place.
+function applyDisplayPrefs() {
+  const st = safeStorage();
+  if (st) savePrefs(st, displayPrefs);
+  send(frameMsg(T.CLIENT_DISPLAYS, clientDisplaysPayload(
+    window.innerWidth, window.innerHeight, window.devicePixelRatio, displayPrefs)));
+}
+
+// HEVC decoder failed mid-stream: reconnect asking for H.264, and stick with
+// it until the tab is closed.
+function fallBackToH264(reason) {
+  if (wantCodec === 1) return false;
+  console.warn('[Clamshell] HEVC decode failed, reconnecting with H.264:', reason);
+  wantCodec = 1;
+  h264Only = true;
+  try { window.sessionStorage.setItem('clamshell.h264', '1'); } catch (e) { /* ignore */ }
+  decoder = null;
+  showStatus('Switching to H.264…');
+  if (ws) { try { ws.close(); } catch (e) { /* ignore */ } }
+  return true;
 }
 
 // MARK: - HELLO_ACK / video decode setup
@@ -268,7 +363,7 @@ async function handle(type, payload) {
       canvas.height = videoH;
       swBanner.classList.toggle('show', !hardware);
       decoder = null; // rebuilt from the next keyframe's parameter sets
-      waitingForKey = false;
+      waitingForKey = true; // delta frames before that keyframe are skipped
       pendingCodecByte = codecByte;
       break;
     }
@@ -386,12 +481,14 @@ async function onVideoFrame(payload) {
         error: (e) => {
           console.error('[Clamshell] decoder error', e);
           if (decoder === dec) decoder = null;
+          if (isHEVC && fallBackToH264(e)) return;
           requestKeyframe();
         },
       });
       dec.configure({ codec, codedWidth: videoW, codedHeight: videoH, optimizeForLatency: true });
       decoder = dec;
     } catch (e) {
+      if (isHEVC && fallBackToH264(e)) return;
       decoderFailed = true;
       const name = isHEVC ? 'HEVC' : 'H.264';
       errBanner.textContent = `This browser can't decode ${name} (${e.message || e}) — try Chrome (chrome://flags → enable HEVC) or Safari.`;
@@ -805,4 +902,5 @@ setInterval(() => {
   qualityDot.title = statsEl.textContent;
 }, 1000);
 
-connect();
+// Decide the codec before the first HELLO (isConfigSupported is async).
+pickCodec(globalThis.VideoDecoder, h264Only).then((c) => { wantCodec = c; }, () => {}).finally(() => connect());
