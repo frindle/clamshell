@@ -534,6 +534,26 @@ form.
 - Nothing changes until you do: with no certificate configured, every port is
   plain http/ws exactly as before. See "LAN TLS" under Browser access.
 
+### 0.9.23 — 2026-11-13
+- **Windows and Linux keyboards work like a Mac's, and idle connections stay up.**
+- New menu toggle "Ctrl acts as ⌘" (on by default on Windows and Linux,
+  remembered per browser): Ctrl-C, Ctrl-V and Ctrl-T become Cmd-C, Cmd-V and
+  Cmd-T on the Mac, and the Windows key sends Control so Ctrl-C in Terminal still works. Full screen already hands system shortcuts to the Mac in Chrome and Edge.
+- The first paste in Chrome no longer types a stray "v" while the clipboard
+  permission prompt is up; the keys go out after you answer it.
+- The browser sends a small ping after 20 quiet seconds and the Mac answers,
+  so a still screen no longer lets a tunnel quietly drop the connection.
+
+### 0.9.22 — 2026-11-13
+- **The browser client can pick the Mac's monitor size, and resizing no longer reconnects.**
+- Menu (the dot): Display size (Fit window, 1920x1080, 2560x1440, 3440x1440,
+  5120x1440 or your own WxH) and Retina 2x/1x (1x for slow links). Your choice
+  is remembered in this browser.
+- Changing the size, or resizing the window, now resizes the stream in place
+  instead of dropping and reconnecting. If that ever fails it reconnects as before.
+- Browsers that can decode HEVC get HEVC; if it fails mid-stream the client
+  reconnects with H.264 and sticks with it until the tab is closed.
+
 ### 0.9.21 — 2026-11-13
 - **The browser client is nicer to use: sound, touch, full screen, and no more stuck keys.**
 - Sound: turn it on from the menu (the dot, top right). Off by default.

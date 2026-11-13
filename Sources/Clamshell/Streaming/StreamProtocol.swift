@@ -11,6 +11,7 @@ enum StreamMessageType: UInt8 {
     case streamStatus = 0x04   // host -> client: live status (current bitrate)
     case hostLockState = 0x05  // host -> client: screen locked/unlocked (1 byte bool)
     case cursorPos = 0x06      // host -> client: remote cursor position (see "Cursor-follow auto-pan")
+    case ping = 0x07           // both directions: empty keepalive; the host echoes the client's
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
