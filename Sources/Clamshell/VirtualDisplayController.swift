@@ -46,6 +46,10 @@ final class VirtualDisplayController {
     static func serialNum(for slot: VirtualSlot) -> UInt32 { slot == .a ? 1 : 2 }
 
     private var displays: [VirtualSlot: CGVirtualDisplay] = [:]
+    /// Largest mode (pixels) each display was created to accept. A display
+    /// made for a fixed preset (menu collapse) cannot be re-moded beyond it,
+    /// whatever `apply` reports, so `reconfigure` checks this first.
+    private var maxPixels: [VirtualSlot: (w: UInt32, h: UInt32)] = [:]
 
     /// Per-slot timers that re-assert the HiDPI mode for a few seconds after
     /// creation (macOS may async-restore a stale saved mode).
@@ -159,6 +163,7 @@ final class VirtualDisplayController {
                 guard let self, self.displays[slot] != nil else { return }
                 clog("virtual display \(slot.rawValue) terminated unexpectedly by the system")
                 self.displays[slot] = nil
+                self.maxPixels[slot] = nil
                 self.hiDPITimers[slot]?.invalidate()
                 self.hiDPITimers[slot] = nil
                 self.onUnexpectedTermination?(slot)
@@ -174,6 +179,7 @@ final class VirtualDisplayController {
         guard newDisplay.apply(settings) else { return nil }
 
         displays[slot] = newDisplay
+        maxPixels[slot] = (descriptor.maxPixelsWide, descriptor.maxPixelsHigh)
         let id = CGDirectDisplayID(newDisplay.displayID)
         clog("virtual display \(slot.rawValue) created: id=\(id) \(preset.name) (\(preset.pointsWide)x\(preset.pointsHigh) @\(preset.scale)x)")
         startHiDPIEnforcement(id: id, preset: preset, slot: slot)
@@ -196,12 +202,16 @@ final class VirtualDisplayController {
 
     /// Changes the size of an existing display in place: same display ID, so
     /// the stream capturing it keeps running and just re-sizes (see
-    /// StreamServer.rebuildForNewSize). Returns false when the display is not
+    /// StreamServer.displaySizeMayHaveChanged). Returns false when the display is not
     /// there or WindowServer refuses the new mode; the caller then falls back
     /// to destroying and re-creating it. Main queue only.
     @discardableResult
     func reconfigure(preset: DisplayPreset, slot: VirtualSlot = .a) -> Bool {
         guard let display = displays[slot] else { return false }
+        guard let cap = maxPixels[slot], preset.pixelsWide <= cap.w, preset.pixelsHigh <= cap.h else {
+            clog("virtual display \(slot.rawValue) was created for a fixed size; \(preset.name) needs a re-create")
+            return false
+        }
         guard display.apply(Self.settings(for: preset)) else {
             clog("virtual display \(slot.rawValue) refused in-place resize to \(preset.name)")
             return false
@@ -218,6 +228,7 @@ final class VirtualDisplayController {
         }
         for timer in hiDPITimers.values { timer.invalidate() }
         hiDPITimers = [:]
+        maxPixels = [:]
         displays = [:] // releasing the instances removes the displays
     }
 

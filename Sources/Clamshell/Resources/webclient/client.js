@@ -353,7 +353,7 @@ async function handle(type, payload) {
       canvas.height = videoH;
       swBanner.classList.toggle('show', !hardware);
       decoder = null; // rebuilt from the next keyframe's parameter sets
-      waitingForKey = false;
+      waitingForKey = true; // delta frames before that keyframe are skipped
       pendingCodecByte = codecByte;
       break;
     }
