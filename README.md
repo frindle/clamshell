@@ -509,6 +509,15 @@ form.
 
 ### Unreleased
 
+### 0.9.18 — 2026-11-13
+- **Updates are checked harder and can no longer leave the app half-installed.**
+  The updater now requires the new build to be signed with this app's own
+  certificate (not just one with the same name), copies it next to the
+  installed app and checks that copy before swapping, and cleans up the old
+  copy at the next launch.
+- An automatic update now waits while a stream viewer is connected, and a
+  failed download or GitHub rate limit is reported as such.
+
 ### 0.9.17 — 2026-11-13
 - **A slow connection no longer corrupts the picture or piles up memory.**
   When the network falls behind, the host now drops every frame until the next
