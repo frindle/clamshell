@@ -18,19 +18,23 @@ enum UpdateInstaller {
         guard canInstall else { return fail("not running from an .app bundle") }
 
         let api = URL(string: "https://api.github.com/repos/frindle/clamshell/releases/latest")!
-        URLSession.shared.dataTask(with: api) { data, _, _ in
-            guard let data,
-                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let assets = json["assets"] as? [[String: Any]],
-                  let dmgURLString = assets.compactMap({ $0["browser_download_url"] as? String })
-                      .first(where: { $0.hasSuffix(".dmg") }),
-                  let dmgURL = URL(string: dmgURLString) else {
+        URLSession.shared.dataTask(with: api) { data, response, _ in
+            // A rate-limited or failed API call returns JSON too; say which.
+            if let status = (response as? HTTPURLResponse)?.statusCode, status != 200 {
+                return fail("release lookup returned HTTP \(status)")
+            }
+            guard let data, let dmgURL = dmgAssetURL(fromReleaseJSON: data) else {
                 return fail("could not resolve latest DMG asset")
             }
-            clog("update: downloading \(dmgURLString)")
-            URLSession.shared.downloadTask(with: dmgURL) { tmpFile, _, error in
+            clog("update: downloading \(dmgURL.absoluteString)")
+            URLSession.shared.downloadTask(with: dmgURL) { tmpFile, response, error in
                 guard let tmpFile, error == nil else {
                     return fail("download failed: \(error.map(String.init(describing:)) ?? "?")")
+                }
+                // Without this an error page would be saved and fail later as
+                // an unmountable DMG.
+                if let status = (response as? HTTPURLResponse)?.statusCode, status != 200 {
+                    return fail("download returned HTTP \(status)")
                 }
                 do {
                     try performSwap(dmgAt: tmpFile)
@@ -39,6 +43,42 @@ enum UpdateInstaller {
                 }
             }.resume()
         }.resume()
+    }
+
+    /// The first `.dmg` asset of a GitHub release, https only.
+    static func dmgAssetURL(fromReleaseJSON data: Data) -> URL? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let assets = json["assets"] as? [[String: Any]],
+              let string = assets.compactMap({ $0["browser_download_url"] as? String })
+                  .first(where: { $0.hasSuffix(".dmg") }),
+              let url = URL(string: string), url.scheme == "https" else { return nil }
+        return url
+    }
+
+    /// Old bundles a previous update moved aside (the running app can't
+    /// delete itself). Called at launch.
+    static func removeOldCopies() {
+        let tmp = NSTemporaryDirectory()
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: tmp)) ?? []
+        for name in names where name.hasPrefix("clamshell-old-") && name.hasSuffix(".app") {
+            try? FileManager.default.removeItem(atPath: tmp + name)
+        }
+        // A staged copy left by an update that was interrupted before the swap.
+        let parent = (Bundle.main.bundlePath as NSString).deletingLastPathComponent
+        guard canInstall else { return }
+        let staged = (try? FileManager.default.contentsOfDirectory(atPath: parent)) ?? []
+        for name in staged where name.hasPrefix(stagingPrefix) && name.hasSuffix(".app") {
+            try? FileManager.default.removeItem(atPath: parent + "/" + name)
+        }
+    }
+
+    private static let stagingPrefix = ".Clamshell-update-"
+
+    /// Full check of a bundle before it is trusted: the signature verifies,
+    /// and it is the same signing identity as the running app.
+    private static func verified(_ app: String) -> Bool {
+        shell("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]) == 0
+            && CodeIdentity.sameIdentity(current: Bundle.main.bundlePath, candidate: app)
     }
 
     private struct UpdateError: Error, CustomStringConvertible {
@@ -71,16 +111,45 @@ enum UpdateInstaller {
               currentID == newID else {
             throw UpdateError("signing identity mismatch or ad-hoc build (running: \(signingAuthority(Bundle.main.bundlePath) ?? "ad-hoc"), update: \(signingAuthority(newApp) ?? "ad-hoc")) — update manually")
         }
+        // The name alone isn't proof: any certificate can be called that.
+        // Require the update to satisfy this app's designated requirement,
+        // which pins the certificate itself and is what the privacy grants
+        // (Screen Recording, Accessibility) are keyed on.
+        guard CodeIdentity.sameIdentity(current: Bundle.main.bundlePath, candidate: newApp) else {
+            let want = CodeIdentity.designatedRequirement(at: Bundle.main.bundlePath).map(CodeIdentity.text) ?? "none"
+            throw UpdateError("update is not signed by this app's certificate (need: \(want)) — update manually")
+        }
 
+        // Copy next to the installed app first and check that copy, so a
+        // failed or interrupted copy never touches the working install. The
+        // swap itself is then two renames.
         let dest = Bundle.main.bundlePath
+        let parent = (dest as NSString).deletingLastPathComponent
+        let staging = parent + "/" + stagingPrefix + UUID().uuidString + ".app"
+        guard shell("/usr/bin/ditto", [newApp, staging]) == 0 else {
+            try? FileManager.default.removeItem(atPath: staging)
+            throw UpdateError("copy failed — the installed app was not changed")
+        }
+        guard verified(staging) else {
+            try? FileManager.default.removeItem(atPath: staging)
+            throw UpdateError("the copied update failed its signature check — the installed app was not changed")
+        }
         let graveyard = NSTemporaryDirectory() + "clamshell-old-\(UUID().uuidString).app"
-        try FileManager.default.moveItem(atPath: dest, toPath: graveyard)
-        guard shell("/usr/bin/ditto", [newApp, dest]) == 0 else {
+        do {
+            try FileManager.default.moveItem(atPath: dest, toPath: graveyard)
+        } catch {
+            try? FileManager.default.removeItem(atPath: staging)
+            throw UpdateError("could not move the installed app aside (\(error.localizedDescription)) — the installed app was not changed")
+        }
+        do {
+            try FileManager.default.moveItem(atPath: staging, toPath: dest)
+        } catch {
             // Roll back so we don't leave no app at all.
             try? FileManager.default.moveItem(atPath: graveyard, toPath: dest)
-            throw UpdateError("copy failed — rolled back")
+            try? FileManager.default.removeItem(atPath: staging)
+            throw UpdateError("could not move the update into place (\(error.localizedDescription)) — rolled back")
         }
-        clog("update installed, relaunching")
+        clog("update installed and verified, relaunching")
 
         DispatchQueue.main.async {
             let relaunch = Process()
