@@ -71,8 +71,12 @@ const originalLockBannerText = lockBanner.textContent;
 // on both transports -- port 5901 direct-LAN, or same-origin over the
 // Cloudflare Tunnel (README "Browser access"), which routes this hostname to
 // the same WebServer.
+// Over LAN TLS (https on a port, not through the tunnel) noVNC is told where
+// the TLS websocket is: host, port 5902 and encrypt=1, plus autoconnect.
 const vncFallbackURL = location.protocol === 'https:'
-  ? `${location.origin}/vnc.html`
+  ? (location.port
+    ? `${location.origin}/vnc.html?autoconnect=1&host=${encodeURIComponent(location.hostname)}&port=5902&encrypt=1`
+    : `${location.origin}/vnc.html`)
   : `http://${location.hostname}:5901/vnc.html`;
 
 // Populate the hover menu with the other two displays.

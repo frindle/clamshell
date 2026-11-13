@@ -52,21 +52,43 @@ enum LANTLS {
     /// The loaded identity, or nil when TLS is not configured or could not be
     /// loaded (logged, and the listeners stay plain so the app keeps working).
     private(set) static var identity: SecIdentity?
-    private static var loadedFor: Paths?
+
+    /// What the loaded identity (or the failed attempt) was made from: the
+    /// configured paths plus the files' modification times. A renewed
+    /// certificate (the wildcard renews about every 60 days) changes the mtime.
+    struct Stamp: Equatable {
+        let paths: Paths?
+        let certModified: Date?
+        let keyModified: Date?
+    }
+    private static var loadedStamp: Stamp?
+
+    static func currentStamp() -> Stamp {
+        guard let p = configuredPaths() else { return Stamp(paths: nil, certModified: nil, keyModified: nil) }
+        func mtime(_ path: String) -> Date? {
+            (try? FileManager.default.attributesOfItem(atPath: path))?[.modificationDate] as? Date
+        }
+        return Stamp(paths: p, certModified: mtime(p.cert), keyModified: mtime(p.key))
+    }
+
+    /// True when the configuration or the files changed since the last load.
+    static func needsReload() -> Bool { currentStamp() != loadedStamp }
 
     /// Call before building listeners. Cheap when nothing is configured.
     static func reload() {
-        guard let p = configuredPaths() else {
-            identity = nil; loadedFor = nil
+        let stamp = currentStamp()
+        guard let p = stamp.paths else {
+            identity = nil; loadedStamp = stamp
             return
         }
-        if p == loadedFor, identity != nil { return }
+        // A failed attempt is remembered by its stamp too, so a broken file
+        // is retried when it changes, not on every call.
+        loadedStamp = stamp
         do {
             identity = try loadIdentity(cert: p.cert, key: p.key)
-            loadedFor = p
             clog("LAN TLS: serving the browser listeners over TLS with \(p.cert)")
         } catch {
-            identity = nil; loadedFor = nil
+            identity = nil
             clog("LAN TLS: configured but not usable (\(error)) — staying on plain ws/http")
         }
     }
@@ -125,6 +147,19 @@ enum LANTLS {
         let opts: [String: Any] = [kSecImportExportPassphrase as String: pass,
                                    kSecImportExportKeychain as String: keychain]
         let ist = SecPKCS12Import(blob as CFData, opts as CFDictionary, &items)
+        // SecKeychainCreate may put the new keychain on the user's search list.
+        // Take it (and any leftover from an earlier run) off again: the
+        // identity keeps its own reference to the key.
+        var listRef: CFArray?
+        if SecKeychainCopySearchList(&listRef) == errSecSuccess, let list = listRef as? [SecKeychain] {
+            func path(_ k: SecKeychain) -> String? {
+                var len: UInt32 = 1024
+                var buf = [CChar](repeating: 0, count: Int(len))
+                return SecKeychainGetPath(k, &len, &buf) == errSecSuccess ? String(cString: buf) : nil
+            }
+            let kept = list.filter { path($0) != kcPath }
+            if kept.count != list.count { SecKeychainSetSearchList(kept as CFArray) }
+        }
         guard ist == errSecSuccess, let arr = items as? [[String: Any]],
               let first = arr.first, let id = first[kSecImportItemIdentity as String] else {
             throw LoadError(description: "PKCS#12 import failed (\(ist))")

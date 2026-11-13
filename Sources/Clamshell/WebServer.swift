@@ -86,6 +86,7 @@ final class WebServer {
     func start() {
         guard !isRunning else { return }
         LANTLS.reload() // inert unless a cert and key are configured (README "LAN TLS")
+        startTLSWatch()
         do {
             try startHTTP()
             try startWS()
@@ -99,7 +100,23 @@ final class WebServer {
         }
     }
 
+    /// Every 6 hours, reload the TLS identity if the certificate or key file
+    /// changed (a renewed wildcard) or the TLS config appeared or went away,
+    /// by restarting the listeners. Main queue.
+    private var tlsWatch: Timer?
+    private func startTLSWatch() {
+        tlsWatch?.invalidate()
+        tlsWatch = Timer.scheduledTimer(withTimeInterval: 6 * 3600, repeats: true) { [weak self] _ in
+            guard let self, self.isRunning, LANTLS.needsReload() else { return }
+            clog("LAN TLS: certificate or configuration changed — restarting the web listeners")
+            self.stop()
+            self.start()
+        }
+    }
+
     func stop() {
+        tlsWatch?.invalidate()
+        tlsWatch = nil
         rebindWork?.cancel()
         rebindWork = nil
         rebindAttempts = 0

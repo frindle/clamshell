@@ -169,9 +169,11 @@ Then toggle Web Access. The web page (5901) and the stream bridges
 (5906-5908) switch to TLS together, and the log says "LAN TLS: serving...". If
 the files can't be read or don't match, the log says why and the ports stay
 plain. The keys stay where you put them; Clamshell makes a private keychain
-file next to the config for the loaded identity. The noVNC fallback
-(`/vnc.html`) and the native viewer's ports (5903-5905) are not covered; they
-stay plain.
+file next to the config for the loaded identity. The lock-screen
+fallback (`/vnc.html`) is told to dial the TLS websocket on 5902 with
+`encrypt=1`. The native viewer's ports (5903-5905) stay plain. The certificate
+is re-read every 6 hours: when the files change (a renewal) the web listeners
+restart and the log says so; toggling Web Access reloads it at once.
 
 **Remote access:** don't port-forward these ports raw (unencrypted
 WebSocket). Two good options:
