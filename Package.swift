@@ -28,5 +28,13 @@ let package = Package(
             ],
             resources: [.copy("Resources/novnc"), .copy("Resources/webclient")]
         ),
+        // Unit tests for the pure logic (wire format, parsers, guards). Run
+        // with `swift test`; anything needing capture, input or hardware
+        // stays in the `*-selftest` subcommands.
+        .testTarget(
+            name: "ClamshellTests",
+            dependencies: ["Clamshell"],
+            path: "tests/ClamshellTests"
+        ),
     ]
 )
