@@ -156,12 +156,39 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         listener.newConnectionHandler = { [weak self] conn in
             self?.queue.async { self?.accept(conn) }
         }
-        listener.stateUpdateHandler = { state in
+        listener.stateUpdateHandler = { [weak self, weak listener] state in
             clog("STREAM: listener \(state)")
+            if case .failed = state { self?.listenerFailed(listener) }
         }
         listener.start(queue: queue)
         self.listener = listener
         clog("STREAM: listening on port \(port) for \(source)")
+    }
+
+    // The bind happens after start() returns, so "port still in use" (the
+    // login-window agent on its way out, or the previous instance during an
+    // update relaunch) only shows up as a failed listener. Try again a few
+    // times instead of leaving the port dead until the next topology change.
+    private var stopped = false
+    private var listenRetries = 0
+    private static let maxListenRetries = 8
+
+    /// On `queue` (listener state handlers are delivered there).
+    private func listenerFailed(_ failed: NWListener?) {
+        guard !stopped, let failed, failed === listener else { return }
+        failed.cancel()
+        listener = nil
+        guard listenRetries < Self.maxListenRetries else {
+            clog("STREAM: port \(port) still unavailable after \(listenRetries) tries — giving up")
+            return
+        }
+        listenRetries += 1
+        let attempt = listenRetries
+        queue.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.stopped, self.listener == nil else { return }
+            clog("STREAM: retrying listen on port \(self.port) (try \(attempt) of \(Self.maxListenRetries))")
+            do { try self.start() } catch { clog("STREAM: retry on port \(self.port) failed: \(error)") }
+        }
     }
 
     /// `completion` fires only once the listener has actually released its
@@ -174,6 +201,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// in an infinite loop.
     func stop(completion: @escaping () -> Void = {}) {
         queue.async { [self] in
+            stopped = true
             teardownSession()
             if let l = listener {
                 l.stateUpdateHandler = { state in
@@ -216,6 +244,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             teardownSession()
         }
         connection = conn
+        listenRetries = 0 // a client got through, so the port is ours
         sessionRequested = false
         let parser = StreamMessageParser()
         parser.onMessage = { [weak self] type, payload in
