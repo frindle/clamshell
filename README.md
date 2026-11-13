@@ -509,6 +509,16 @@ form.
 
 ### Unreleased
 
+### 0.9.25 — 2026-11-13
+- **Quieter on the Mac: fewer background processes, fewer keyframes, cheaper logging.**
+- Session detection no longer starts `curl` and `ps` every 2 seconds; it asks
+  Sunshine over a local socket and reads the process list directly. Only the
+  `netstat` check still runs each poll.
+- The stream sends a full keyframe at most every 6 seconds instead of 2. A
+  client that loses a frame still asks for one at once, so recovery is as fast.
+- The log no longer builds a date formatter for every line, and the web server's
+  rebind counter starts fresh after every successful bind.
+
 ### 0.9.21 — 2026-11-13
 - **The browser client is nicer to use: sound, touch, full screen, and no more stuck keys.**
 - Sound: turn it on from the menu (the dot, top right). Off by default.

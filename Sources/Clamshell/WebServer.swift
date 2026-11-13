@@ -108,6 +108,7 @@ final class WebServer {
     }
 
     private func closeListeners() {
+        readyListeners = 0
         for l in httpListeners { l.cancel() }
         httpListeners = []
         for l in wsListeners { l.cancel() }
@@ -124,11 +125,28 @@ final class WebServer {
     private var rebindAttempts = 0
     private static let maxRebindAttempts = 8
 
+    private var readyListeners = 0 // main queue
+
     private func watch(_ listener: NWListener) {
         listener.stateUpdateHandler = { [weak self] state in
-            guard case .failed(let error) = state else { return }
-            clog("web access: a listener failed (\(error))")
-            DispatchQueue.main.async { self?.scheduleRebind() }
+            switch state {
+            case .ready:
+                // Once every listener is bound, the earlier failures are history:
+                // reset the counter so a later, unrelated failure gets a full
+                // set of retries. Counting all of them stops a listener that
+                // keeps failing from being reset by its healthy siblings.
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.readyListeners += 1
+                    let total = self.httpListeners.count + self.wsListeners.count + self.streamBridgeListeners.count
+                    if self.readyListeners >= total, self.rebindWork == nil { self.rebindAttempts = 0 }
+                }
+            case .failed(let error):
+                clog("web access: a listener failed (\(error))")
+                DispatchQueue.main.async { self?.scheduleRebind() }
+            default:
+                break
+            }
         }
     }
 
