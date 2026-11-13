@@ -648,7 +648,10 @@ if (isPrimary && navigator.clipboard && navigator.clipboard.readText && navigato
 // enough to have been a prompt.
 let pasteBusy = false;
 function pasteFromLocal(e, vk) {
-  if (e.code !== 'KeyV' || !(e.metaKey || (ctrlAsCmd && e.ctrlKey)) || e.altKey || (e.ctrlKey && !ctrlAsCmd)) return false;
+  // The key that means Command here: Ctrl when swapped, else the Meta key.
+  const cmdDown = ctrlAsCmd ? e.ctrlKey : e.metaKey;
+  const otherDown = ctrlAsCmd ? e.metaKey : e.ctrlKey;
+  if (e.code !== 'KeyV' || !cmdDown || otherDown || e.altKey) return false;
   if (pasteBusy) return true; // a read is pending: swallow, don't type a stray "v"
   const flags = cgFlags(e);
   const cmdVK = 55; // left Command

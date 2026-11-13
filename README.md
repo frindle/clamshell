@@ -513,7 +513,7 @@ form.
 - **Windows and Linux keyboards work like a Mac's, and idle connections stay up.**
 - New menu toggle "Ctrl acts as ⌘" (on by default on Windows and Linux,
   remembered per browser): Ctrl-C, Ctrl-V and Ctrl-T become Cmd-C, Cmd-V and
-  Cmd-T on the Mac. Full screen already hands system shortcuts to the Mac in Chrome and Edge.
+  Cmd-T on the Mac, and the Windows key sends Control so Ctrl-C in Terminal still works. Full screen already hands system shortcuts to the Mac in Chrome and Edge.
 - The first paste in Chrome no longer types a stray "v" while the clipboard
   permission prompt is up; the keys go out after you answer it.
 - The browser sends a small ping after 20 quiet seconds and the Mac answers,
