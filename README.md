@@ -519,6 +519,16 @@ form.
 - The browser sends a small ping after 20 quiet seconds and the Mac answers,
   so a still screen no longer lets a tunnel quietly drop the connection.
 
+### 0.9.22 — 2026-11-13
+- **The browser client can pick the Mac's monitor size, and resizing no longer reconnects.**
+- Menu (the dot): Display size (Fit window, 1920x1080, 2560x1440, 3440x1440,
+  5120x1440 or your own WxH) and Retina 2x/1x (1x for slow links). Your choice
+  is remembered in this browser.
+- Changing the size, or resizing the window, now resizes the stream in place
+  instead of dropping and reconnecting. If that ever fails it reconnects as before.
+- Browsers that can decode HEVC get HEVC; if it fails mid-stream the client
+  reconnects with H.264 and sticks with it until the tab is closed.
+
 ### 0.9.21 — 2026-11-13
 - **The browser client is nicer to use: sound, touch, full screen, and no more stuck keys.**
 - Sound: turn it on from the menu (the dot, top right). Off by default.

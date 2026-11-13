@@ -119,3 +119,8 @@ test('keepaliveDue fires after the idle window and not before', () => {
   assert.strictEqual(keepaliveDue(1000 + KEEPALIVE_IDLE_MS - 1, 1000), false);
   assert.strictEqual(keepaliveDue(1000 + KEEPALIVE_IDLE_MS, 1000), true);
 });
+
+test('after a new HELLO_ACK (waitingForKey) deltas are skipped and the keyframe decodes', () => {
+  assert.strictEqual(frameAction({ keyframe: false, waitingForKey: true, queueSize: 0, hidden: false }), 'skip');
+  assert.strictEqual(frameAction({ keyframe: true, waitingForKey: true, queueSize: 0, hidden: false }), 'decode');
+});
