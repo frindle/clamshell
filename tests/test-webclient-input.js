@@ -82,3 +82,36 @@ test('AAC config is AAC-LC, 48 kHz, stereo', () => {
 test('audioSupported is false without WebCodecs (node)', () => {
   assert.strictEqual(audioSupported(), false);
 });
+
+// ── Ctrl acts as Cmd, keepalive ────────────────────────────────────────
+import { ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue, KEEPALIVE_IDLE_MS } from '../Sources/Clamshell/Resources/webclient/input.js';
+
+test('ctrlAsCmdDefault: on for Windows and Linux, off for Mac and Android', () => {
+  assert.strictEqual(ctrlAsCmdDefault({ platform: 'Win32' }), true);
+  assert.strictEqual(ctrlAsCmdDefault({ platform: 'Linux x86_64' }), true);
+  assert.strictEqual(ctrlAsCmdDefault({ platform: 'MacIntel' }), false);
+  assert.strictEqual(ctrlAsCmdDefault({ platform: 'Linux armv8l', userAgentData: { platform: 'Android' } }), false);
+  assert.strictEqual(ctrlAsCmdDefault({ userAgentData: { platform: 'Windows' }, platform: '' }), true);
+  assert.strictEqual(ctrlAsCmdDefault(undefined), false);
+});
+
+test('remapKey sends Command for Control only when the toggle is on', () => {
+  assert.strictEqual(remapKey('ControlLeft', 59, true), 55);
+  assert.strictEqual(remapKey('ControlRight', 62, true), 54);
+  assert.strictEqual(remapKey('ControlLeft', 59, false), 59);
+  assert.strictEqual(remapKey('KeyC', 8, true), 8);
+});
+
+test('modifierFlags turns Ctrl and Win into Command when the toggle is on', () => {
+  assert.strictEqual(modifierFlags({ ctrl: true }, true), 0x100000n);
+  assert.strictEqual(modifierFlags({ ctrl: true }, false), 0x40000n);
+  assert.strictEqual(modifierFlags({ meta: true }, true), 0x100000n);
+  assert.strictEqual(modifierFlags({ ctrl: true, meta: true, shift: true }, true), 0x120000n);
+  assert.strictEqual(modifierFlags({ shift: true, alt: true, caps: true }, false), 0x10000n | 0x20000n | 0x80000n);
+});
+
+test('keepaliveDue fires after the idle window and not before', () => {
+  assert.strictEqual(keepaliveDue(1000, 1000), false);
+  assert.strictEqual(keepaliveDue(1000 + KEEPALIVE_IDLE_MS - 1, 1000), false);
+  assert.strictEqual(keepaliveDue(1000 + KEEPALIVE_IDLE_MS, 1000), true);
+});
