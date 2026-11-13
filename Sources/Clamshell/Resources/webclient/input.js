@@ -73,22 +73,22 @@ export function ctrlAsCmdDefault(nav) {
 }
 
 // Mac key code to send for a key. With the toggle on, Control sends Command
-// (left stays left, right stays right).
-const MAC_COMMAND = { ControlLeft: 55, ControlRight: 54 };
+// and the Windows key sends Control (left stays left, right stays right), so
+// real Control shortcuts (Ctrl-C in Terminal, Ctrl-A / Ctrl-E) stay reachable.
+const SWAPPED = { ControlLeft: 55, ControlRight: 54, MetaLeft: 59, MetaRight: 62 };
 export function remapKey(code, vk, ctrlAsCmd) {
-  return ctrlAsCmd && code in MAC_COMMAND ? MAC_COMMAND[code] : vk;
+  return ctrlAsCmd && code in SWAPPED ? SWAPPED[code] : vk;
 }
 
 // CGEventFlags for the current modifier state (state: {shift, ctrl, alt, meta, caps}).
-// With the toggle on, Ctrl and the Windows key both become Command, and the
-// Mac never sees Control.
+// With the toggle on, Ctrl becomes Command and the Windows key becomes Control.
 export function modifierFlags(state, ctrlAsCmd) {
   let f = 0n;
   if (state.caps) f |= 0x10000n;
   if (state.shift) f |= 0x20000n;
-  if (state.ctrl && !ctrlAsCmd) f |= 0x40000n;
+  if (ctrlAsCmd ? state.meta : state.ctrl) f |= 0x40000n;
   if (state.alt) f |= 0x80000n;
-  if (state.meta || (state.ctrl && ctrlAsCmd)) f |= 0x100000n;
+  if (ctrlAsCmd ? state.ctrl : state.meta) f |= 0x100000n;
   return f;
 }
 

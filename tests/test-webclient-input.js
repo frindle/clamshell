@@ -99,14 +99,18 @@ test('remapKey sends Command for Control only when the toggle is on', () => {
   assert.strictEqual(remapKey('ControlLeft', 59, true), 55);
   assert.strictEqual(remapKey('ControlRight', 62, true), 54);
   assert.strictEqual(remapKey('ControlLeft', 59, false), 59);
+  assert.strictEqual(remapKey('MetaLeft', 55, true), 59);
+  assert.strictEqual(remapKey('MetaRight', 54, true), 62);
+  assert.strictEqual(remapKey('MetaLeft', 55, false), 55);
   assert.strictEqual(remapKey('KeyC', 8, true), 8);
 });
 
-test('modifierFlags turns Ctrl and Win into Command when the toggle is on', () => {
+test('modifierFlags swaps Ctrl and Win (Command and Control) when the toggle is on', () => {
   assert.strictEqual(modifierFlags({ ctrl: true }, true), 0x100000n);
   assert.strictEqual(modifierFlags({ ctrl: true }, false), 0x40000n);
-  assert.strictEqual(modifierFlags({ meta: true }, true), 0x100000n);
-  assert.strictEqual(modifierFlags({ ctrl: true, meta: true, shift: true }, true), 0x120000n);
+  assert.strictEqual(modifierFlags({ meta: true }, true), 0x40000n);
+  assert.strictEqual(modifierFlags({ meta: true }, false), 0x100000n);
+  assert.strictEqual(modifierFlags({ ctrl: true, meta: true, shift: true }, true), 0x160000n);
   assert.strictEqual(modifierFlags({ shift: true, alt: true, caps: true }, false), 0x10000n | 0x20000n | 0x80000n);
 });
 
