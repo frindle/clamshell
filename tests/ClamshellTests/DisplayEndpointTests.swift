@@ -14,8 +14,9 @@ final class DisplayEndpointTests: XCTestCase {
     func testHostLabelRule() {
         XCTAssertEqual(b("wss://mac-a.example.com"), "wss://mac-b.example.com")
         XCTAssertEqual(b("wss://mac-a.example.com/stream"), "wss://mac-b.example.com/stream")
-        XCTAssertEqual(b("ws://studio-a.local:5903"), "ws://studio-b.local:5903")
-        XCTAssertEqual(b("studio-a.local"), "ws://studio-b.local:5903")
+        // A port (explicit or default) decides: the name is not rewritten.
+        XCTAssertEqual(b("ws://studio-a.local:5903"), "ws://studio-a.local:5904")
+        XCTAssertEqual(b("studio-a.local"), "ws://studio-a.local:5904")
         // Only the first label counts, and only a "-a" suffix.
         XCTAssertEqual(b("ws://mac.a-a.example.com:5903"), "ws://mac.a-a.example.com:5904")
         XCTAssertEqual(b("ws://data.example.com:5903"), "ws://data.example.com:5904")
