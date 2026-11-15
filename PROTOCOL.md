@@ -72,9 +72,13 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x24 | INPUT_MOUSE_RELATIVE | client → host | dx(Float32 BE), dy(Float32 BE) — pointer movement in points, for a captured pointer. Only to a host that advertises `relativeMouse` |
 | 0x25 | INPUT_TEXT       | client → host | UTF-8 text to type as-is (dictation, input-method text, emoji), at most 16 KB. Only to a host that advertises `textInput` |
 | 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
+| 0x58 | FILE_OFFER       | both          | UTF-8 JSON — one file the sender wants to transfer; see "File transfer" |
+| 0x59 | FILE_ANSWER      | both          | id(4 BE), status(1) |
+| 0x5A | FILE_DATA        | both          | id(4 BE), then the next bytes of the file, at most 64 KB |
+| 0x5B | FILE_END         | both          | id(4 BE), status(1) |
 
 Reserved, not specified yet: 0x40–0x49 (Window Handoff v2, below), 0x50–0x53
-(devices attached to the client), 0x58–0x5B (file transfer).
+(devices attached to the client).
 
 Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
 host picks what its hardware encoder actually supports (HEVC preferred on
@@ -544,6 +548,7 @@ that sent no challenge has every bit 0.
 | 2 | `textInput` | host accepts INPUT_TEXT |
 | 3 | `extraButtons` | host accepts mouse buttons 2–4 |
 | 4 | `deviceApproval` | host: trusted devices may approve others. Client: can show the approval prompt |
+| 5 | `fileTransfer` | both: can send and receive files — see "File transfer" |
 
 Unassigned bits are sent as 0 and ignored on receipt.
 
@@ -601,6 +606,63 @@ and one whose `id` matches a saved host must present that host's saved key.
 
 Off the LAN there is nothing to browse, so a client reaches a host through an
 address saved from an earlier HOST_INFO, or one typed in once.
+
+## File transfer (FILE_OFFER / FILE_ANSWER / FILE_DATA / FILE_END)
+
+*Status: specified here, not implemented yet.*
+
+Either side can send the other a file. This is how something on a drive
+plugged into the client reaches the host: the client's file picker can open
+it, so the client can send it. All four messages travel only inside SECURE and
+only when both sides set capability bit 5. A session without the handshake
+never transfers files.
+
+```
+sender   → receiver   FILE_OFFER    {"id":7,"name":"scan.pdf","size":1048576,"modified":1794000000}
+receiver → sender     FILE_ANSWER   id, status
+sender   → receiver   FILE_DATA     id, bytes      repeated, in order
+sender   → receiver   FILE_END      id, 0          every byte sent
+receiver → sender     FILE_END      id, 0          stored
+```
+
+- `id` is chosen by the sender (below 2^32) and is unique among the transfers
+  it has open on this connection. The two directions number separately.
+- `name` is a file name, at most 255 bytes of UTF-8. `size` is the exact
+  length in bytes. `modified` (seconds since 1970) is optional.
+- FILE_ANSWER status: 0 accept, 1 declined, 2 too large or no room, 3 too many
+  transfers open, 4 transfers are turned off.
+- FILE_DATA carries the next bytes of the file, at most 64 KB per message.
+  There is no offset: messages arrive in order. The sender hands the network
+  one FILE_DATA at a time and lets waiting input and video go first, so a
+  large file never holds them up by more than one message. On a slow link it
+  uses smaller pieces.
+- FILE_END status: 0 complete (from the sender: every byte was sent; from the
+  receiver: the file is stored), 1 cancelled, 2 failed. Either side may send 1
+  or 2 at any time; the transfer is then over and the receiver discards what
+  it has. FILE_DATA for a transfer that is no longer open is ignored.
+- Closing the connection ends every transfer on it. Nothing resumes in this
+  version.
+
+**Receiver rules.** They matter most on the host, where the sender is a remote
+device.
+
+- The name is never used as a path. The receiver keeps only its last
+  component, drops control characters, path separators and leading dots, uses
+  `file` if nothing is left, and never overwrites: a name already taken gets
+  ` 2`, ` 3`, … before its extension.
+- The host stores received files in one folder (`~/Downloads/Clamshell` by
+  default). It writes each file under a temporary name and renames it only
+  after the sender's FILE_END 0, with exactly `size` bytes received. More
+  bytes than `size`, or a FILE_END 0 after fewer, fails the transfer and
+  removes the partial file.
+- The host marks a received file as downloaded (the quarantine attribute on
+  macOS, the zone identifier on Windows), so the system's usual checks apply
+  when someone opens it. The host never opens or runs a received file.
+- At most 4 transfers are open per connection. An offer larger than the free
+  space, less a reserve, is answered with status 2. A transfer that receives
+  nothing for 60 s fails.
+- A client that receives a file asks the user where to save it before it
+  answers 0.
 
 ## Future (not in v1)
 
