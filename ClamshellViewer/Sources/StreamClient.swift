@@ -392,6 +392,11 @@ final class StreamClient: ObservableObject {
     func sendMouseButton(button: UInt8, down: Bool, x: Float, y: Float) {
         send(StreamMessage.mouseButton(button: button, down: down, x: x, y: y))
     }
+    /// Captured-pointer movement in points; only to a host with `relativeMouse`.
+    func sendMouseRelative(dx: Float, dy: Float) {
+        guard hostCapabilities.contains(.relativeMouse) else { return }
+        send(StreamMessage.mouseRelative(dx: dx, dy: dy))
+    }
     func sendScroll(dx: Float, dy: Float) { send(StreamMessage.scroll(dx: dx, dy: dy)) }
     func sendKey(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         send(StreamMessage.key(macKeyCode: macKeyCode, down: down, flags: flags))

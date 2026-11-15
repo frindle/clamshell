@@ -145,6 +145,7 @@ final class Connection: ObservableObject {
 
     func disconnect() {
         connectedHost = nil
+        PointerLock.shared.set(false, client: nil)
         primary.disconnect()
         external.disconnect()
     }
@@ -352,6 +353,7 @@ struct ContentView: View {
     @State private var windowPixelSize: CGSize?
     private var client: StreamClient { showingDisplayB ? externalClient : primaryClient }
     @StateObject private var store = MachineStore()
+    @ObservedObject private var pointerLock = PointerLock.shared
     @StateObject private var nearby = NearbyHostBrowser()
     @State private var resolvingNearby: String?
     @AppStorage("hostAddress") private var host = ""
@@ -460,6 +462,21 @@ struct ContentView: View {
                         }
                         .padding(.top, 8)
                     }
+                    .overlay(alignment: .bottom) {
+                        // Always visible while locked: the way out, usable by touch.
+                        if pointerLock.isLocked {
+                            Button {
+                                pointerLock.set(false, client: nil)
+                            } label: {
+                                Label("Pointer locked. Tap to release", systemImage: "lock.fill")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14).padding(.vertical, 8)
+                                    .background(.black.opacity(0.75), in: Capsule())
+                            }
+                            .padding(.bottom, 12)
+                        }
+                    }
                     .overlay(alignment: .topTrailing) {
                         ZStack(alignment: .topTrailing) {
                             // Always-present, invisible hover/tap catcher —
@@ -491,6 +508,16 @@ struct ContentView: View {
                                     } label: {
                                         Label(showingDisplayB ? "Extend" : "Mirror",
                                               systemImage: showingDisplayB ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                                if client.hostCapabilities.contains(.relativeMouse) {
+                                    Button {
+                                        pointerLock.set(!pointerLock.isLocked, client: client)
+                                    } label: {
+                                        Label(pointerLock.isLocked ? "Unlock pointer" : "Lock pointer",
+                                              systemImage: pointerLock.isLocked ? "cursorarrow.slash" : "cursorarrow.motionlines")
                                             .font(.subheadline)
                                             .foregroundStyle(.white.opacity(0.7))
                                     }
