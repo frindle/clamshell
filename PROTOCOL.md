@@ -327,7 +327,8 @@ the host or from a device that is already trusted.
   in upper case, grouped in fours: `AB12-CD34-EF56-7890`. A host's id and
   fingerprint come from its identity key the same way.
 - Names are for display and prove nothing. Both sides drop control characters
-  before showing one.
+  and invisible formatting characters (the bidirectional overrides, for
+  example) before showing one.
 
 ### Handshake
 
@@ -412,15 +413,20 @@ After any status other than 0 or 1 the host closes the connection.
 - The host checks the version, that both client keys are valid curve points,
   and the signature, then looks the device id up: trusted → `accepted`,
   denied → `denied`, unknown → added to the waiting list → `pending`.
-- At most 8 connections wait for approval at once and at most 16 devices are
-  on the waiting list; more get `busy`. At most 10 new devices are listed per
-  minute. A waiting device nobody approves is dropped after 24 hours.
+- At most 8 connections wait for approval at once; more get `busy`. At most 16
+  devices are on the waiting list. When it is full, a new device takes the
+  place of the oldest waiting device that has no open connection, and gets
+  `busy` only if there is none, so stale entries cannot keep a real device
+  from asking. At most 10 new devices are listed per minute; the rest get
+  `busy`. A waiting device nobody approves is dropped after 24 hours.
 - Approval while the device's connection is still open sends `accepted` on
   that connection, so the session starts without a reconnect.
 
 **Client rules**
 
-- The client waits for AUTH_CHALLENGE before sending anything.
+- The client waits for AUTH_CHALLENGE before sending anything. It checks the
+  version and that both host keys are valid curve points; a challenge that
+  fails either check is a failed connection.
 - It keeps the host identity key from the first handshake that ends in a
   verified `accepted` (trust on first use) together with that host's saved
   addresses. From then on, for that host:
@@ -432,7 +438,10 @@ After any status other than 0 or 1 the host closes the connection.
 - For a host it has no key for, no challenge within 2 s means a host older
   than 0.12 (which sends nothing until HELLO). The client may then send HELLO
   in the clear and carry on as before 0.12, with every capability bit taken
-  as 0.
+  as 0, and it shows the session as unverified. If a challenge arrives after
+  the client has sent HELLO (a slow link, not an old host), the client closes
+  the connection and connects again, this time waiting up to 10 s for the
+  challenge.
 - Every AUTH_RESULT's signature is checked against the `hostIdentity` from the
   challenge. A result that does not verify is treated as a failed connection,
   whatever its status says.
