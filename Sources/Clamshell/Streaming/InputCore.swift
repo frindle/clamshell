@@ -15,6 +15,8 @@ enum InputEvent: Equatable {
     /// set for relative moves. `clickCount` is meaningful on down/up.
     case mouse(MouseAction, button: Int, point: CGPoint, clickCount: Int, delta: CGVector?)
     case key(code: UInt16, down: Bool, flags: UInt64)
+    /// Pixel-unit wheel deltas, already clamped and inverted if configured.
+    case scroll(dx: Int32, dy: Int32)
     /// At most 20 UTF-16 units, never splitting a surrogate pair.
     case text(String)
 }
@@ -37,7 +39,17 @@ final class InputCore {
     private var heldButtons: [Int] = []          // press order
     private var heldClickCount: [Int: Int] = [:]
     private var heldKeys: [UInt16] = []
-    private var lastPoint = CGPoint.zero
+    private var lastPoint = CGPoint.zero { didSet { expectedCursor = lastPoint } }
+    /// Where the cursor will be once queued moves are posted. While the input
+    /// queue has a backlog the real cursor lags behind it, so relative moves
+    /// and at-cursor presses start from here instead.
+    private var expectedCursor: CGPoint?
+    var isBacklogged: () -> Bool = { false }
+
+    private func currentCursor() -> CGPoint {
+        if isBacklogged(), let e = expectedCursor { return e }
+        return cursorProvider()
+    }
     private var lastPress: (button: Int, time: TimeInterval, point: CGPoint, count: Int)?
 
     init(boundsProvider: @escaping () -> CGRect,
@@ -85,8 +97,18 @@ final class InputCore {
 
     func mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32) -> [InputEvent] {
         guard x.isFinite, y.isFinite, Int(button) <= Self.maxButton else { return [] }
-        let b = Int(button)
-        let point = map(x, y)
+        return buttonEvent(Int(button), down: down, point: map(x, y))
+    }
+
+    /// A press or release where the host cursor is now (captured pointer).
+    func mouseButtonAtCursor(button: UInt8, down: Bool) -> [InputEvent] {
+        guard Int(button) <= Self.maxButton else { return [] }
+        let point = currentCursor()
+        lastPoint = point
+        return buttonEvent(Int(button), down: down, point: point)
+    }
+
+    private func buttonEvent(_ b: Int, down: Bool, point: CGPoint) -> [InputEvent] {
         if down {
             let now = clock()
             var count = 1
@@ -112,7 +134,7 @@ final class InputCore {
         let limit = Self.maxRelativeDelta
         let ddx = min(max(Double(dx), -limit), limit)
         let ddy = min(max(Double(dy), -limit), limit)
-        let cursor = cursorProvider()
+        let cursor = currentCursor()
         var p = CGPoint(x: cursor.x + CGFloat(ddx), y: cursor.y + CGFloat(ddy))
         let displays = displaysProvider().filter { $0.width > 0 && $0.height > 0 }
         if !displays.contains(where: { Self.contains($0, p) }) {
@@ -139,6 +161,9 @@ final class InputCore {
 
     // MARK: keyboard
 
+    /// Only the modifier bits (16-23) of the network flags are applied.
+    static let modifierFlagMask: UInt64 = 0x00FF_0000
+
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) -> [InputEvent] {
         guard macKeyCode <= 0xFF else { return [] }
         if down {
@@ -146,7 +171,18 @@ final class InputCore {
         } else {
             heldKeys.removeAll { $0 == macKeyCode }
         }
-        return [.key(code: macKeyCode, down: down, flags: flags)]
+        return [.key(code: macKeyCode, down: down, flags: flags & Self.modifierFlagMask)]
+    }
+
+    /// Wheel deltas come from the network: non-finite becomes 0 and the
+    /// magnitude is capped before the Int32 conversion (which traps on NaN,
+    /// infinities and huge values). `invert` flips both axes. Nothing to post
+    /// when both come out 0.
+    func scroll(dx: Float32, dy: Float32, invert: Bool) -> [InputEvent] {
+        func sane(_ v: Float32) -> Int32 { v.isFinite ? Int32(min(max(v, -10000), 10000)) : 0 }
+        let sign: Float32 = invert ? -1 : 1
+        let x = sane(dx * sign), y = sane(dy * sign)
+        return (x == 0 && y == 0) ? [] : [.scroll(dx: x, dy: y)]
     }
 
     /// Unicode text -> typing events. Returns [] for oversize or invalid UTF-8.

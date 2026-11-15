@@ -21,6 +21,45 @@ final class InputCoreTests: XCTestCase {
         events.compactMap { if case let .text(s) = $0 { return s } else { return nil } }
     }
 
+    func testKeyFlagsKeepOnlyModifierBits() {
+        let c = makeCore()
+        XCTAssertEqual(c.key(macKeyCode: 0, down: true, flags: 0xFFFF_FFFF_FFFF_FFFF),
+                       [.key(code: 0, down: true, flags: 0x00FF_0000)])
+        XCTAssertEqual(c.key(macKeyCode: 0, down: false, flags: 0x10_0000 | 0x1),
+                       [.key(code: 0, down: false, flags: 0x10_0000)])
+    }
+
+    func testKeyCodeAboveFFDropped() {
+        let c = makeCore()
+        XCTAssertEqual(c.key(macKeyCode: 0x100, down: true, flags: 0), [])
+        XCTAssertEqual(c.heldKeyCount, 0)
+    }
+
+    func testScrollClampAndInvert() {
+        let c = makeCore()
+        XCTAssertEqual(c.scroll(dx: 3.9, dy: -4.2, invert: false), [.scroll(dx: 3, dy: -4)])
+        XCTAssertEqual(c.scroll(dx: 3, dy: -4, invert: true), [.scroll(dx: -3, dy: 4)])
+        XCTAssertEqual(c.scroll(dx: .nan, dy: 5, invert: false), [.scroll(dx: 0, dy: 5)])
+        XCTAssertEqual(c.scroll(dx: .infinity, dy: -.infinity, invert: false), [])
+        XCTAssertEqual(c.scroll(dx: 1e30, dy: -1e30, invert: false), [.scroll(dx: 10000, dy: -10000)])
+        XCTAssertEqual(c.scroll(dx: 0, dy: 0, invert: false), [])
+    }
+
+    func testButtonAtCursorUsesCursorAndCountsClicks() {
+        let c = makeCore()
+        let p = cursor
+        XCTAssertEqual(c.mouseButtonAtCursor(button: 0, down: true),
+                       [.mouse(.down, button: 0, point: p, clickCount: 1, delta: nil)])
+        XCTAssertEqual(c.heldButtonCount, 1)
+        XCTAssertEqual(c.mouseButtonAtCursor(button: 0, down: false),
+                       [.mouse(.up, button: 0, point: p, clickCount: 1, delta: nil)])
+        now += 0.1
+        XCTAssertEqual(c.mouseButtonAtCursor(button: 0, down: true),
+                       [.mouse(.down, button: 0, point: p, clickCount: 2, delta: nil)])
+        XCTAssertEqual(c.mouseButtonAtCursor(button: 5, down: true), [])
+        XCTAssertEqual(c.mouseButtonAtCursor(button: 4, down: true).count, 1)
+    }
+
     func testNonFiniteDropped() {
         let c = makeCore()
         XCTAssertTrue(c.mouseMove(x: .nan, y: 0.5).isEmpty)
