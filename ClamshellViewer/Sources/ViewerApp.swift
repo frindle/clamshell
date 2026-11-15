@@ -469,7 +469,29 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            // One size reader per window, on the full-window background (safe
+            // areas ignored, so its bounds equal the video view's). It lives
+            // here, not in the streaming branch, so the measured size is known
+            // before connecting and rides the first HELLO. While idle the
+            // report is only stored.
             Color.black.ignoresSafeArea()
+                .background(
+                    WindowSizeReader { size, isDeviceScreen in
+                        guard !isPhoneIdiom else { return }
+                        windowPixelSize = size
+                        if showingDisplayB {
+                            connection.updateDisplayBSize(size)
+                        } else if isDeviceScreen || windowCount.count <= 1 {
+                            // The only window is authoritative on whichever
+                            // screen it sits (e.g. dragged to an external
+                            // display under Stage Manager).
+                            connection.updatePrimarySize(size)
+                        }
+                        // else: a second window mirroring Display A on a
+                        // non-device screen (Extend not toggled here) — let
+                        // it aspect-fit locally, don't fight over A's size.
+                    }
+                )
             if targetType == .rdp, rdpSession.status != .idle {
                 RDPStreamView(session: rdpSession, onClose: { rdpSession.disconnect() })
             } else if case .streaming = client.status, client.hostLocked {
@@ -485,22 +507,6 @@ struct ContentView: View {
             } else if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
-                    .background(
-                        WindowSizeReader { size, isDeviceScreen in
-                            windowPixelSize = size
-                            if showingDisplayB {
-                                connection.updateDisplayBSize(size)
-                            } else if isDeviceScreen || windowCount.count <= 1 {
-                                // The only window is authoritative on whichever
-                                // screen it sits (e.g. dragged to an external
-                                // display under Stage Manager).
-                                connection.updatePrimarySize(size)
-                            }
-                            // else: a second window mirroring Display A on a
-                            // non-device screen (Extend not toggled here) — let
-                            // it aspect-fit locally, don't fight over A's size.
-                        }
-                    )
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
                             if client.softwareEncoding { SoftwareEncodingBanner() }
