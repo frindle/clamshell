@@ -1,0 +1,710 @@
+{
+  "about": "Reference vectors for PROTOCOL.md \"File transfer\". All byte values are hex. \"payload\" is the message payload and \"frame\" the whole inner message ([type][4-byte length][payload]) before SECURE wraps it. JSON payloads have no fixed byte form, so the offer entries are checks of the reading, not of bytes: \"valid\" says whether a receiver may accept the offer and \"offer\" what it reads from it; an offer that is not valid is declined with status 1 when \"answerable\" (its id is then given) and ignored otherwise. \"names\" gives the file name a receiver stores for an offered name, and \"freeNames\" the name used when some are taken (\"taken\" stands for what the file system reports; these cases compare exactly). \"sequences\" follow one accepted incoming transfer: each step is a message from the sender, \"reply\" what the receiver sends back (absent: nothing) and \"state\" where the transfer stands afterwards.",
+  "version": 1,
+  "messageTypes": {
+    "FILE_OFFER": 88,
+    "FILE_ANSWER": 89,
+    "FILE_DATA": 90,
+    "FILE_END": 91
+  },
+  "maxNameBytes": 255,
+  "maxDataBytes": 65536,
+  "offerExample": {
+    "json": "{\"id\":7,\"name\":\"scan.pdf\",\"size\":1048576,\"modified\":1794000000}",
+    "frame": "580000003f7b226964223a372c226e616d65223a227363616e2e706466222c2273697a65223a313034383537362c226d6f646966696564223a313739343030303030307d"
+  },
+  "answer": [
+    {
+      "id": 7,
+      "status": 0,
+      "meaning": "accept",
+      "payload": "0000000700",
+      "frame": "59000000050000000700"
+    },
+    {
+      "id": 7,
+      "status": 1,
+      "meaning": "declined",
+      "payload": "0000000701",
+      "frame": "59000000050000000701"
+    },
+    {
+      "id": 7,
+      "status": 2,
+      "meaning": "too large or no room",
+      "payload": "0000000702",
+      "frame": "59000000050000000702"
+    },
+    {
+      "id": 7,
+      "status": 3,
+      "meaning": "too many transfers open",
+      "payload": "0000000703",
+      "frame": "59000000050000000703"
+    },
+    {
+      "id": 4294967295,
+      "status": 4,
+      "meaning": "transfers are turned off",
+      "payload": "ffffffff04",
+      "frame": "5900000005ffffffff04"
+    }
+  ],
+  "data": [
+    {
+      "name": "five bytes",
+      "id": 7,
+      "bytes": "68656c6c6f",
+      "payload": "0000000768656c6c6f",
+      "frame": "5a000000090000000768656c6c6f"
+    },
+    {
+      "name": "one byte, largest id",
+      "id": 4294967295,
+      "bytes": "00",
+      "payload": "ffffffff00",
+      "frame": "5a00000005ffffffff00"
+    },
+    {
+      "name": "no bytes",
+      "id": 7,
+      "bytes": "",
+      "payload": "00000007",
+      "frame": "5a0000000400000007",
+      "note": "ignored by the receiver"
+    }
+  ],
+  "dataSize": [
+    {
+      "name": "largest piece",
+      "id": 7,
+      "repeatByte": "00",
+      "count": 65536,
+      "payloadLength": 65540,
+      "note": "64 KB of file bytes after the 4-byte id"
+    },
+    {
+      "name": "one byte over",
+      "id": 7,
+      "repeatByte": "00",
+      "count": 65537,
+      "valid": false,
+      "note": "a piece over 64 KB fails the transfer"
+    }
+  ],
+  "end": [
+    {
+      "id": 7,
+      "status": 0,
+      "meaning": "complete",
+      "payload": "0000000700",
+      "frame": "5b000000050000000700"
+    },
+    {
+      "id": 7,
+      "status": 1,
+      "meaning": "cancelled",
+      "payload": "0000000701",
+      "frame": "5b000000050000000701"
+    },
+    {
+      "id": 7,
+      "status": 2,
+      "meaning": "failed",
+      "payload": "0000000702",
+      "frame": "5b000000050000000702"
+    }
+  ],
+  "offers": [
+    {
+      "name": "documented example",
+      "json": "{\"id\":7,\"name\":\"scan.pdf\",\"size\":1048576,\"modified\":1794000000}",
+      "valid": true,
+      "offer": {
+        "id": 7,
+        "name": "scan.pdf",
+        "size": 1048576,
+        "modified": 1794000000
+      }
+    },
+    {
+      "name": "no modified time",
+      "json": "{\"id\":1,\"name\":\"notes.txt\",\"size\":12}",
+      "valid": true,
+      "offer": {
+        "id": 1,
+        "name": "notes.txt",
+        "size": 12
+      }
+    },
+    {
+      "name": "empty file",
+      "json": "{\"id\":2,\"name\":\"empty\",\"size\":0}",
+      "valid": true,
+      "offer": {
+        "id": 2,
+        "name": "empty",
+        "size": 0
+      }
+    },
+    {
+      "name": "largest id",
+      "json": "{\"id\":4294967295,\"name\":\"a\",\"size\":1}",
+      "valid": true,
+      "offer": {
+        "id": 4294967295,
+        "name": "a",
+        "size": 1
+      }
+    },
+    {
+      "name": "largest size",
+      "json": "{\"id\":3,\"name\":\"a\",\"size\":9007199254740991}",
+      "valid": true,
+      "offer": {
+        "id": 3,
+        "name": "a",
+        "size": 9007199254740991
+      }
+    },
+    {
+      "name": "unknown field",
+      "json": "{\"id\":4,\"name\":\"a.txt\",\"size\":3,\"mime\":\"text/plain\"}",
+      "valid": true,
+      "offer": {
+        "id": 4,
+        "name": "a.txt",
+        "size": 3
+      },
+      "note": "fields a receiver does not know are skipped"
+    },
+    {
+      "name": "name of exactly 255 bytes",
+      "json": "{\"id\":5,\"name\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt\",\"size\":1}",
+      "valid": true,
+      "offer": {
+        "id": 5,
+        "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt",
+        "size": 1
+      }
+    },
+    {
+      "name": "empty name",
+      "json": "{\"id\":6,\"name\":\"\",\"size\":1}",
+      "valid": true,
+      "offer": {
+        "id": 6,
+        "name": "",
+        "size": 1
+      },
+      "note": "readable: the stored name becomes \"file\""
+    },
+    {
+      "name": "modified is not a number",
+      "json": "{\"id\":8,\"name\":\"a\",\"size\":1,\"modified\":\"yesterday\"}",
+      "valid": true,
+      "offer": {
+        "id": 8,
+        "name": "a",
+        "size": 1
+      },
+      "note": "the offer stands; the time is left out"
+    },
+    {
+      "name": "name of 256 bytes",
+      "json": "{\"id\":9,\"name\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.txt\",\"size\":1}",
+      "valid": false,
+      "answerable": true,
+      "id": 9,
+      "note": "declined: status 1"
+    },
+    {
+      "name": "two-byte characters over the limit",
+      "json": "{\"id\":10,\"name\":\"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé\",\"size\":1}",
+      "valid": false,
+      "answerable": true,
+      "id": 10,
+      "note": "128 characters but 256 bytes: declined"
+    },
+    {
+      "name": "no name",
+      "json": "{\"id\":11,\"size\":1}",
+      "valid": false,
+      "answerable": true,
+      "id": 11,
+      "note": "declined: status 1"
+    },
+    {
+      "name": "name is a number",
+      "json": "{\"id\":12,\"name\":5,\"size\":1}",
+      "valid": false,
+      "answerable": true,
+      "id": 12,
+      "note": "declined: status 1"
+    },
+    {
+      "name": "no size",
+      "json": "{\"id\":13,\"name\":\"a\"}",
+      "valid": false,
+      "answerable": true,
+      "id": 13,
+      "note": "declined: status 1"
+    },
+    {
+      "name": "negative size",
+      "json": "{\"id\":14,\"name\":\"a\",\"size\":-1}",
+      "valid": false,
+      "answerable": true,
+      "id": 14,
+      "note": "declined: status 1"
+    },
+    {
+      "name": "fractional size",
+      "json": "{\"id\":15,\"name\":\"a\",\"size\":1.5}",
+      "valid": false,
+      "answerable": true,
+      "id": 15,
+      "note": "declined: status 1"
+    },
+    {
+      "name": "size as text",
+      "json": "{\"id\":16,\"name\":\"a\",\"size\":\"12\"}",
+      "valid": false,
+      "answerable": true,
+      "id": 16,
+      "note": "declined: status 1"
+    },
+    {
+      "name": "no id",
+      "json": "{\"name\":\"a\",\"size\":1}",
+      "valid": false,
+      "answerable": false,
+      "note": "nothing to answer: ignored"
+    },
+    {
+      "name": "negative id",
+      "json": "{\"id\":-1,\"name\":\"a\",\"size\":1}",
+      "valid": false,
+      "answerable": false,
+      "note": "ignored"
+    },
+    {
+      "name": "id of 2^32",
+      "json": "{\"id\":4294967296,\"name\":\"a\",\"size\":1}",
+      "valid": false,
+      "answerable": false,
+      "note": "ignored"
+    },
+    {
+      "name": "id as text",
+      "json": "{\"id\":\"7\",\"name\":\"a\",\"size\":1}",
+      "valid": false,
+      "answerable": false,
+      "note": "ignored"
+    },
+    {
+      "name": "fractional id",
+      "json": "{\"id\":7.5,\"name\":\"a\",\"size\":1}",
+      "valid": false,
+      "answerable": false,
+      "note": "ignored"
+    },
+    {
+      "name": "an array",
+      "json": "[7,\"a\",1]",
+      "valid": false,
+      "answerable": false,
+      "note": "ignored"
+    },
+    {
+      "name": "not JSON",
+      "json": "id=7",
+      "valid": false,
+      "answerable": false,
+      "note": "ignored"
+    },
+    {
+      "name": "empty payload",
+      "json": "",
+      "valid": false,
+      "answerable": false,
+      "note": "ignored"
+    }
+  ],
+  "names": [
+    {
+      "name": "scan.pdf",
+      "stored": "scan.pdf"
+    },
+    {
+      "name": "Holiday photo 12.jpeg",
+      "stored": "Holiday photo 12.jpeg"
+    },
+    {
+      "name": "résumé 📄.pdf",
+      "stored": "résumé 📄.pdf",
+      "note": "other characters are kept as they are"
+    },
+    {
+      "name": "../../etc/passwd",
+      "stored": "passwd",
+      "note": "only the last component is kept"
+    },
+    {
+      "name": "..\\..\\Windows\\win.ini",
+      "stored": "win.ini"
+    },
+    {
+      "name": "/etc/passwd",
+      "stored": "passwd"
+    },
+    {
+      "name": "C:\\Users\\me\\Desktop\\notes.txt",
+      "stored": "notes.txt"
+    },
+    {
+      "name": "a/b\\c/d.txt",
+      "stored": "d.txt",
+      "note": "both separators count"
+    },
+    {
+      "name": "folder/",
+      "stored": "file",
+      "note": "nothing after the last separator"
+    },
+    {
+      "name": "C:evil.txt",
+      "stored": "Cevil.txt",
+      "note": "a colon is removed"
+    },
+    {
+      "name": "report.txt:hidden",
+      "stored": "report.txthidden",
+      "note": "so a name cannot address an alternate data stream"
+    },
+    {
+      "name": ".bashrc",
+      "stored": "bashrc",
+      "note": "no leading dot: a received file is never hidden"
+    },
+    {
+      "name": "...hidden",
+      "stored": "hidden"
+    },
+    {
+      "name": " . .profile",
+      "stored": "profile",
+      "note": "dots and spaces at the start go together"
+    },
+    {
+      "name": "..",
+      "stored": "file"
+    },
+    {
+      "name": ".",
+      "stored": "file"
+    },
+    {
+      "name": "",
+      "stored": "file"
+    },
+    {
+      "name": "   ",
+      "stored": "file"
+    },
+    {
+      "name": "  padded.txt  ",
+      "stored": "padded.txt"
+    },
+    {
+      "name": "line\nbreak\t.txt",
+      "stored": "linebreak.txt",
+      "note": "control characters are removed"
+    },
+    {
+      "name": "nul\u0000byte.txt",
+      "stored": "nulbyte.txt"
+    },
+    {
+      "name": "bell\u0007delnel.txt",
+      "stored": "belldelnel.txt"
+    },
+    {
+      "name": "\u0001.hidden",
+      "stored": "hidden",
+      "note": "a dot that leads once the control character is gone is removed too"
+    },
+    {
+      "name": "archive.tar.gz",
+      "stored": "archive.tar.gz"
+    },
+    {
+      "name": "trailing.dot.",
+      "stored": "trailing.dot."
+    },
+    {
+      "name": "~/.ssh/authorized_keys",
+      "stored": "authorized_keys"
+    }
+  ],
+  "freeNames": [
+    {
+      "name": "scan.pdf",
+      "taken": [],
+      "stored": "scan.pdf"
+    },
+    {
+      "name": "scan.pdf",
+      "taken": [
+        "other.pdf"
+      ],
+      "stored": "scan.pdf"
+    },
+    {
+      "name": "scan.pdf",
+      "taken": [
+        "scan.pdf"
+      ],
+      "stored": "scan 2.pdf"
+    },
+    {
+      "name": "scan.pdf",
+      "taken": [
+        "scan.pdf",
+        "scan 2.pdf",
+        "scan 3.pdf"
+      ],
+      "stored": "scan 4.pdf"
+    },
+    {
+      "name": "scan.pdf",
+      "taken": [
+        "scan.pdf",
+        "scan 3.pdf"
+      ],
+      "stored": "scan 2.pdf",
+      "note": "the first free number is used"
+    },
+    {
+      "name": "README",
+      "taken": [
+        "README"
+      ],
+      "stored": "README 2",
+      "note": "no extension"
+    },
+    {
+      "name": "archive.tar.gz",
+      "taken": [
+        "archive.tar.gz"
+      ],
+      "stored": "archive.tar 2.gz",
+      "note": "only the last extension moves"
+    },
+    {
+      "name": "notes.",
+      "taken": [
+        "notes."
+      ],
+      "stored": "notes. 2",
+      "note": "a trailing dot is not an extension"
+    },
+    {
+      "name": "file",
+      "taken": [
+        "file",
+        "file 2"
+      ],
+      "stored": "file 3"
+    },
+    {
+      "name": "scan 2.pdf",
+      "taken": [
+        "scan 2.pdf"
+      ],
+      "stored": "scan 2 2.pdf",
+      "note": "a number already in the name is left alone"
+    }
+  ],
+  "sequences": [
+    {
+      "name": "whole file in two pieces",
+      "id": 7,
+      "size": 5,
+      "steps": [
+        {
+          "kind": "data",
+          "bytes": "68656c",
+          "frame": "5a000000070000000768656c",
+          "state": "open"
+        },
+        {
+          "kind": "data",
+          "bytes": "6c6f",
+          "frame": "5a00000006000000076c6f",
+          "state": "open"
+        },
+        {
+          "kind": "end",
+          "status": 0,
+          "frame": "5b000000050000000700",
+          "reply": "5b000000050000000700",
+          "state": "stored"
+        }
+      ],
+      "note": "stored, and the receiver says so"
+    },
+    {
+      "name": "empty file",
+      "id": 7,
+      "size": 0,
+      "steps": [
+        {
+          "kind": "end",
+          "status": 0,
+          "frame": "5b000000050000000700",
+          "reply": "5b000000050000000700",
+          "state": "stored"
+        }
+      ]
+    },
+    {
+      "name": "an empty piece changes nothing",
+      "id": 7,
+      "size": 5,
+      "steps": [
+        {
+          "kind": "data",
+          "bytes": "68656c6c6f",
+          "frame": "5a000000090000000768656c6c6f",
+          "state": "open"
+        },
+        {
+          "kind": "data",
+          "bytes": "",
+          "frame": "5a0000000400000007",
+          "state": "open"
+        },
+        {
+          "kind": "end",
+          "status": 0,
+          "frame": "5b000000050000000700",
+          "reply": "5b000000050000000700",
+          "state": "stored"
+        }
+      ]
+    },
+    {
+      "name": "more bytes than offered",
+      "id": 7,
+      "size": 5,
+      "steps": [
+        {
+          "kind": "data",
+          "bytes": "68656c6c6f21",
+          "frame": "5a0000000a0000000768656c6c6f21",
+          "reply": "5b000000050000000702",
+          "state": "failed"
+        },
+        {
+          "kind": "data",
+          "bytes": "78",
+          "frame": "5a000000050000000778",
+          "state": "failed"
+        },
+        {
+          "kind": "end",
+          "status": 0,
+          "frame": "5b000000050000000700",
+          "state": "failed"
+        }
+      ],
+      "note": "fails at the first byte too many; what follows is ignored"
+    },
+    {
+      "name": "ended early",
+      "id": 7,
+      "size": 5,
+      "steps": [
+        {
+          "kind": "data",
+          "bytes": "68656c",
+          "frame": "5a000000070000000768656c",
+          "state": "open"
+        },
+        {
+          "kind": "end",
+          "status": 0,
+          "frame": "5b000000050000000700",
+          "reply": "5b000000050000000702",
+          "state": "failed"
+        }
+      ],
+      "note": "FILE_END 0 after fewer bytes than offered fails the transfer"
+    },
+    {
+      "name": "cancelled by the sender",
+      "id": 7,
+      "size": 5,
+      "steps": [
+        {
+          "kind": "data",
+          "bytes": "68656c",
+          "frame": "5a000000070000000768656c",
+          "state": "open"
+        },
+        {
+          "kind": "end",
+          "status": 1,
+          "frame": "5b000000050000000701",
+          "state": "cancelled"
+        },
+        {
+          "kind": "data",
+          "bytes": "6c6f",
+          "frame": "5a00000006000000076c6f",
+          "state": "cancelled"
+        },
+        {
+          "kind": "end",
+          "status": 0,
+          "frame": "5b000000050000000700",
+          "state": "cancelled"
+        }
+      ],
+      "note": "nothing is kept and nothing is answered"
+    },
+    {
+      "name": "failed at the sender",
+      "id": 7,
+      "size": 5,
+      "steps": [
+        {
+          "kind": "data",
+          "bytes": "68656c",
+          "frame": "5a000000070000000768656c",
+          "state": "open"
+        },
+        {
+          "kind": "end",
+          "status": 2,
+          "frame": "5b000000050000000702",
+          "state": "failed"
+        }
+      ]
+    },
+    {
+      "name": "cancelled before any byte",
+      "id": 7,
+      "size": 5,
+      "steps": [
+        {
+          "kind": "end",
+          "status": 1,
+          "frame": "5b000000050000000701",
+          "state": "cancelled"
+        }
+      ]
+    }
+  ]
+}
