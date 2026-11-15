@@ -352,6 +352,8 @@ struct ContentView: View {
     @State private var windowPixelSize: CGSize?
     private var client: StreamClient { showingDisplayB ? externalClient : primaryClient }
     @StateObject private var store = MachineStore()
+    @StateObject private var nearby = NearbyHostBrowser()
+    @State private var resolvingNearby: String?
     @AppStorage("hostAddress") private var host = ""
     @State private var machineName = ""
     @AppStorage("nerdMode") private var nerdMode = false
@@ -585,6 +587,29 @@ struct ContentView: View {
                 // no more page-wide toggle gating one or the other.
                 SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
 
+                if !nearby.hosts.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Nearby").font(.footnote).foregroundStyle(.gray)
+                        ForEach(nearby.hosts) { h in
+                            Button {
+                                connectNearby(h)
+                            } label: {
+                                HStack {
+                                    Image(systemName: "desktopcomputer")
+                                    Text(h.name)
+                                    Spacer()
+                                    if resolvingNearby == h.id { ProgressView().tint(.white) }
+                                }
+                                .foregroundStyle(.white)
+                                .padding(10)
+                                .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .frame(maxWidth: 420, alignment: .leading)
+                }
+
                 RDPConnectForm(store: rdpStore, onConnect: { rdpHost, port, username, password, domain in
                     let size = UIScreen.main.nativeBounds.size
                     rdpSession.connect(host: rdpHost, port: port, username: username, password: password,
@@ -657,6 +682,19 @@ struct ContentView: View {
                 }
             }
             .padding()
+        }
+        .onAppear { nearby.start() }
+        .onDisappear { nearby.stop() }
+    }
+
+    /// Tapping a nearby host resolves it to ws://<address>:<port> and connects.
+    private func connectNearby(_ h: NearbyHostBrowser.Host) {
+        resolvingNearby = h.id
+        nearby.resolve(h) { url in
+            resolvingNearby = nil
+            guard let url else { return }
+            host = url
+            connection.connect(host: url)
         }
     }
 }
