@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ApplicationServices
+import AppKit
 
 // Maps normalized client coordinates (0..1, origin top-left) into the
 // streamed target's global bounds and injects CGEvents. Target is either a
@@ -8,13 +9,40 @@ import ApplicationServices
 // re-queried live since the window can move — see the window init).
 
 final class InputInjector {
-    private let boundsProvider: () -> CGRect
-    private var leftDown = false
-    private var rightDown = false
-    private var lastPoint = CGPoint.zero
+    private let core: InputCore
+    /// Every injected event goes through this queue and is posted from its
+    /// serial queue in arrival order; the injector posts nothing directly.
+    private let queue: InputQueue
+
+    private static func makeQueue() -> InputQueue {
+        InputQueue(cursor: { CGEvent(source: nil)?.location ?? .zero },
+                   onFirstDrop: { clog("INPUT: backlog full; dropping new input events (logged once per session).") },
+                   sink: { InputInjector.post($0) })
+    }
+
+    private static func makeCore(_ bounds: @escaping () -> CGRect, queue: InputQueue) -> InputCore {
+        let core = InputCore(
+            boundsProvider: bounds,
+            displaysProvider: { activeDisplayBounds() },
+            cursorProvider: { CGEvent(source: nil)?.location ?? .zero },
+            clock: { ProcessInfo.processInfo.systemUptime },
+            doubleClickInterval: { NSEvent.doubleClickInterval })
+        core.isBacklogged = { [unowned queue] in queue.isBacklogged }
+        return core
+    }
+
+    private static func activeDisplayBounds() -> [CGRect] {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        guard count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &ids, &count)
+        return ids.prefix(Int(count)).map { CGDisplayBounds($0) }
+    }
 
     init(displayID: CGDirectDisplayID) {
-        self.boundsProvider = { CGDisplayBounds(displayID) } // global desktop coords, points
+        queue = Self.makeQueue()
+        core = Self.makeCore({ CGDisplayBounds(displayID) }, queue: queue) // global desktop coords, points
         Self.warnIfNoAccessibilityPermission()
     }
 
@@ -24,8 +52,15 @@ final class InputInjector {
     /// AX hide/move (see WindowHandoff/WindowHideSelfTest.swift), so the
     /// window stays wherever the user leaves it while streamed.
     init(windowID: UInt32) {
-        self.boundsProvider = { Self.liveWindowBounds(windowID) ?? .zero }
+        queue = Self.makeQueue()
+        core = Self.makeCore({ Self.liveWindowBounds(windowID) ?? .zero }, queue: queue)
         Self.warnIfNoAccessibilityPermission()
+    }
+
+    /// For tests: a core and queue the caller built, with a recording sink.
+    init(core: InputCore, queue: InputQueue) {
+        self.core = core
+        self.queue = queue
     }
 
     private static func warnIfNoAccessibilityPermission() {
@@ -47,21 +82,6 @@ final class InputInjector {
         return rect
     }
 
-    private func map(_ x: Float32, _ y: Float32) -> CGPoint {
-        let bounds = boundsProvider()
-        // Trust boundary: a network-supplied event landing at (0,0) — the
-        // Apple menu — because the window closed/moved mid-lookup would be a
-        // real hazard, not just a cosmetic glitch. Re-inject at the last
-        // known-good point instead of trusting a zeroed bounds rect.
-        guard bounds.width > 0, bounds.height > 0 else { return lastPoint }
-        let p = CGPoint(
-            x: bounds.origin.x + CGFloat(min(max(x, 0), 1)) * bounds.width,
-            y: bounds.origin.y + CGFloat(min(max(y, 0), 1)) * bounds.height
-        )
-        lastPoint = p
-        return p
-    }
-
     /// Logged once per process (static let initializer runs once), not per event.
     private static let untrustedLogOnce: Void = {
         if !AXIsProcessTrusted() {
@@ -71,52 +91,107 @@ final class InputInjector {
 
     func mouseMove(x: Float32, y: Float32) {
         _ = Self.untrustedLogOnce
-        let point = map(x, y)
-        let type: CGEventType = leftDown ? .leftMouseDragged
-                              : rightDown ? .rightMouseDragged
-                              : .mouseMoved
-        let button: CGMouseButton = rightDown ? .right : .left
-        CGEvent(mouseEventSource: nil, mouseType: type,
-                mouseCursorPosition: point, mouseButton: button)?.post(tap: .cghidEventTap)
+        guard queue.hasRoom() else { return }
+        queue.enqueue(core.mouseMove(x: x, y: y))
     }
 
     func mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32) {
         _ = Self.untrustedLogOnce
-        let point = map(x, y)
-        let right = button == 1
-        if right { rightDown = down } else { leftDown = down }
-        let type: CGEventType = right ? (down ? .rightMouseDown : .rightMouseUp)
-                                      : (down ? .leftMouseDown : .leftMouseUp)
-        CGEvent(mouseEventSource: nil, mouseType: type,
-                mouseCursorPosition: point,
-                mouseButton: right ? .right : .left)?.post(tap: .cghidEventTap)
+        // Ask for room before InputCore sees a press, so a dropped down never
+        // becomes "held" there. Over the bound only the release of a button
+        // InputCore has as held gets through.
+        if !queue.hasRoom() && (down || !core.isButtonHeld(Int(button))) { return }
+        queue.enqueue(core.mouseButton(button: button, down: down, x: x, y: y))
+    }
+
+    func mouseButtonAtCursor(button: UInt8, down: Bool) {
+        _ = Self.untrustedLogOnce
+        if !queue.hasRoom() && (down || !core.isButtonHeld(Int(button))) { return }
+        queue.enqueue(core.mouseButtonAtCursor(button: button, down: down))
+    }
+
+    func mouseRelative(dx: Float32, dy: Float32) {
+        _ = Self.untrustedLogOnce
+        guard queue.hasRoom() else { return }
+        queue.enqueue(core.mouseRelative(dx: dx, dy: dy))
+    }
+
+    func text(_ payload: Data) {
+        _ = Self.untrustedLogOnce
+        guard queue.hasRoom(textBytes: payload.count) else { return }
+        let events = core.text(payload)
+        queue.enqueue(events, textBytes: payload.count)
+    }
+
+    /// End of session: abandons everything waiting, releases what was actually
+    /// posted as down, and posts nothing more.
+    func releaseAll() {
+        _ = core.releaseAll() // clear InputCore's held state
+        queue.releaseAll()
     }
 
     func scroll(dx: Float32, dy: Float32) {
         _ = Self.untrustedLogOnce
-        // Pixel-unit scroll wheel: dy is vertical, dx horizontal. CGEvent's
-        // wheel1 is vertical, wheel2 horizontal. Deltas come from the network
-        // trust boundary: Int32(NaN/±inf/huge) traps, so clamp non-finite to 0
-        // and cap magnitude before the conversion.
-        //
-        // Injected directly at .cghidEventTap (as low-level as a synthetic
-        // event can go), which system scroll-direction utilities like Scroll
-        // Reverser don't reliably intercept/invert the same way they do real
-        // hardware scroll input -- confirmed live, not guessed. Rather than
-        // depend on third-party tap interop that may silently vary by
-        // version/tool, Clamshell owns inversion itself.
-        func sane(_ v: Float32) -> Int32 { v.isFinite ? Int32(min(max(v, -10000), 10000)) : 0 }
+        // Clamping and Clamshell's own inversion live in InputCore.scroll:
+        // injected at .cghidEventTap, scroll-direction utilities don't reliably
+        // invert synthetic events the way they do hardware scrolling.
+        guard queue.hasRoom() else { return }
         let invert = UserDefaults.standard.bool(forKey: "invertScroll")
-        let sign: Float32 = invert ? -1 : 1
-        CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
-                wheel1: sane(dy * sign), wheel2: sane(dx * sign), wheel3: 0)?.post(tap: .cghidEventTap)
+        queue.enqueue(core.scroll(dx: dx, dy: dy, invert: invert))
     }
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         _ = Self.untrustedLogOnce
-        guard let event = CGEvent(keyboardEventSource: nil,
-                                  virtualKey: CGKeyCode(macKeyCode), keyDown: down) else { return }
-        event.flags = CGEventFlags(rawValue: flags)
-        event.post(tap: .cghidEventTap)
+        if !queue.hasRoom() && (down || !core.isKeyHeld(macKeyCode)) { return }
+        queue.enqueue(core.key(macKeyCode: macKeyCode, down: down, flags: flags))
+    }
+
+    // MARK: - CGEvent layer
+
+    private static func post(_ event: InputEvent) {
+        switch event {
+        case let .mouse(action, button, point, clickCount, delta):
+            let type: CGEventType
+            switch (action, button) {
+            case (.move, _): type = .mouseMoved
+            case (.down, 0): type = .leftMouseDown
+            case (.down, 1): type = .rightMouseDown
+            case (.down, _): type = .otherMouseDown
+            case (.up, 0): type = .leftMouseUp
+            case (.up, 1): type = .rightMouseUp
+            case (.up, _): type = .otherMouseUp
+            case (.drag, 0): type = .leftMouseDragged
+            case (.drag, 1): type = .rightMouseDragged
+            case (.drag, _): type = .otherMouseDragged
+            }
+            let cgButton = CGMouseButton(rawValue: UInt32(button)) ?? .left
+            guard let ev = CGEvent(mouseEventSource: nil, mouseType: type,
+                                   mouseCursorPosition: point, mouseButton: cgButton) else { return }
+            if button > 1 { ev.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button)) }
+            if action != .move { ev.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount)) }
+            if let d = delta {
+                ev.setIntegerValueField(.mouseEventDeltaX, value: Int64(d.dx.rounded()))
+                ev.setIntegerValueField(.mouseEventDeltaY, value: Int64(d.dy.rounded()))
+            }
+            ev.post(tap: .cghidEventTap)
+        case let .scroll(dx, dy):
+            // Pixel-unit wheel: wheel1 is vertical, wheel2 horizontal.
+            CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 2,
+                    wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
+        case let .key(code, down, flags):
+            guard let ev = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: down) else { return }
+            ev.flags = CGEventFlags(rawValue: flags)
+            ev.post(tap: .cghidEventTap)
+        case let .text(chunk):
+            let units = Array(chunk.utf16)
+            for down in [true, false] {
+                guard let ev = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
+                // A modifier the user holds on the host must not turn typed
+                // text into shortcuts.
+                ev.flags = []
+                ev.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                ev.post(tap: .cghidEventTap)
+            }
+        }
     }
 }

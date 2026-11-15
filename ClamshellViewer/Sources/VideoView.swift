@@ -16,7 +16,7 @@ func describeScreen(_ screen: UIScreen) -> String {
     return "\(Int(b.width))x\(Int(b.height))pt @\(screen.scale)x (native \(Int(n.width))x\(Int(n.height))px, maxFPS \(screen.maximumFramesPerSecond))"
 }
 
-final class VideoUIView: UIView {
+final class VideoUIView: UIView, UIKeyInput {
     override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
     var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
 
@@ -33,6 +33,9 @@ final class VideoUIView: UIView {
         isMultipleTouchEnabled = true
         backgroundColor = .black
         guard interactive else { return }
+        // No shortcut bar above the (hidden) software keyboard.
+        inputAssistantItem.leadingBarButtonGroups = []
+        inputAssistantItem.trailingBarButtonGroups = []
 
         // Trackpad / mouse hover drives the pointer position without a button.
         let hover = UIHoverGestureRecognizer(target: self, action: #selector(onHover))
@@ -59,8 +62,34 @@ final class VideoUIView: UIView {
     }
 
     @objc private func onHover(_ g: UIHoverGestureRecognizer) {
-        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        // While the pointer is locked it is frozen: its position means nothing.
+        guard !PointerLock.shared.isLocked,
+              let (x, y) = normalized(g.location(in: self)) else { return }
         client?.sendMouseMove(x: x, y: y)
+    }
+
+    /// The button number sent on down, reused for the matching up.
+    private var downButton: UInt8 = 0
+    /// How the down was sent; its up goes the same way, even if the pointer
+    /// lock ended in between.
+    private var downAtCursor = false
+    /// Where an absolute down was sent, used if the up lands off the video.
+    private var downPoint: (Float, Float) = (0, 0)
+
+    /// True for a mouse or trackpad click while the pointer is locked: it is
+    /// applied where the host cursor is, not where the frozen pointer is.
+    private func isLockedPointer(_ t: UITouch) -> Bool {
+        PointerLock.shared.isLocked && t.type == .indirectPointer
+            && (client?.hostCapabilities.contains(.relativeMouse) ?? false)
+    }
+
+    private func sendUp() {
+        leftDown = false
+        if downAtCursor {
+            client?.sendMouseButtonAtCursor(button: downButton, down: false)
+        } else {
+            client?.sendMouseButton(button: downButton, down: false, x: downPoint.0, y: downPoint.1)
+        }
     }
 
     private var lastScroll: CGPoint = .zero
@@ -71,6 +100,34 @@ final class VideoUIView: UIView {
         let dy = Float(t.y - lastScroll.y)
         lastScroll = t
         if dx != 0 || dy != 0 { client?.sendScroll(dx: dx, dy: dy) }
+    }
+
+    // MARK: text with no key code
+    // Dictation, the emoji picker and input methods deliver characters, not
+    // key presses. They arrive here as UIKeyInput and go to the host as
+    // INPUT_TEXT when it advertises `textInput`; otherwise they are ignored
+    // (as before, when this view took no text input at all). Mapped hardware
+    // keys never reach insertText: pressesBegan consumes them.
+    //
+    // An empty input view keeps the software keyboard from covering the stream.
+    private let noKeyboard = UIView(frame: .zero)
+    override var inputView: UIView? { noKeyboard }
+    var autocorrectionType: UITextAutocorrectionType = .no
+    var autocapitalizationType: UITextAutocapitalizationType = .none
+    var spellCheckingType: UITextSpellCheckingType = .no
+    var smartQuotesType: UITextSmartQuotesType = .no
+    var smartDashesType: UITextSmartDashesType = .no
+    var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
+
+    var hasText: Bool { true }
+    func insertText(_ text: String) {
+        guard interactive else { return }
+        client?.sendText(text)
+    }
+    func deleteBackward() {
+        guard interactive, let client else { return }
+        client.sendKey(macKeyCode: 51, down: true, flags: 0)
+        client.sendKey(macKeyCode: 51, down: false, flags: 0)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
@@ -121,34 +178,47 @@ final class VideoUIView: UIView {
             // two-finger gesture — otherwise a subsequent touchesMoved would
             // drag with the left button and the eventual tap would fire a
             // right-click on top of an unreleased left one.
-            if leftDown, let t = touches.first ?? event?.allTouches?.first,
-               let (x, y) = normalized(t.location(in: self)) {
-                leftDown = false
-                client?.sendMouseButton(button: 0, down: false, x: x, y: y)
-            }
+            // Release exactly what was sent, the way it was sent.
+            if leftDown { sendUp() }
             return
         }
-        guard let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
-        // A real mouse's right button reports as .secondary in the buttonMask;
+        guard let t = touches.first else { return }
+        // A real mouse's buttons report in the buttonMask (secondary = right);
         // finger touches have no buttonMask, so this is a no-op for touch.
-        let right = event?.buttonMask.contains(.secondary) ?? false
+        // Middle/back/forward are sent only to a host with extraButtons.
+        let extra = client?.hostCapabilities.contains(.extraButtons) ?? false
+        let button = PointerButtons.button(forMask: event?.buttonMask.rawValue ?? 0, extraButtons: extra)
+        if isLockedPointer(t) {
+            // Locked mouse or trackpad: never send an absolute position.
+            guard client?.sendMouseButtonAtCursor(button: button, down: true) == true else { return }
+            downAtCursor = true
+        } else {
+            // Finger, Pencil, or an unlocked pointer: as always.
+            guard let (x, y) = normalized(t.location(in: self)) else { return }
+            downAtCursor = false
+            downPoint = (x, y)
+            client?.sendMouseButton(button: button, down: true, x: x, y: y)
+        }
+        downButton = button
         leftDown = true
-        client?.sendMouseButton(button: right ? 1 : 0, down: true, x: x, y: y)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        // Only a locked pointer's frozen position means nothing; a finger
+        // drags as usual.
+        guard leftDown, !downAtCursor, let t = touches.first,
+              !(PointerLock.shared.isLocked && t.type == .indirectPointer),
+              let (x, y) = normalized(t.location(in: self)) else { return }
+        downPoint = (x, y)
         client?.sendMouseMove(x: x, y: y)
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
-        leftDown = false
-        let right = event?.buttonMask.contains(.secondary) ?? false
-        client?.sendMouseButton(button: right ? 1 : 0, down: false, x: x, y: y)
+        guard leftDown else { return }
+        if !downAtCursor, let t = touches.first, let p = normalized(t.location(in: self)) { downPoint = p }
+        sendUp()
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
-        leftDown = false
-        client?.sendMouseButton(button: 0, down: false, x: x, y: y)
+        guard leftDown else { return }
+        sendUp()
     }
 
     /// Finger-only right-click: two-finger tap sends button-1 down+up at the

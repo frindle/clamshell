@@ -145,6 +145,7 @@ final class Connection: ObservableObject {
 
     func disconnect() {
         connectedHost = nil
+        PointerLock.shared.set(false, client: nil)
         primary.disconnect()
         external.disconnect()
     }
@@ -226,8 +227,8 @@ final class Connection: ObservableObject {
             let parts = host.split(separator: "|", maxSplits: 1)
             return parts.count == 2 ? String(parts[1]) : nil
         }
-        if host.contains("://") { return nil } // tunnel URL, can't derive port
-        return "ws://\(host):\(streamDefaultPort + 1)"
+        // Derived from A: /ws/a -> /ws/b, then a "-a" host label -> "-b", then port + 1.
+        return DisplayEndpoint.displayB(fromA: host)
     }
 }
 
@@ -248,11 +249,18 @@ struct WindowSizeReader: UIViewRepresentable {
     /// triggered another layout pass that reported again. Only the device's
     /// own screen should ever drive Display A's size; a window mirroring A
     /// on any other screen just aspect-fits locally.
+    /// Changes when the situation around the window changes without a resize
+    /// (the number of open windows). A change forgets the last size and
+    /// reports again, so the routing closure gets to re-decide: a window whose
+    /// earlier report was ignored (a second window mirroring A) is not stuck
+    /// silent after the other window closes.
+    var epoch: Int = 0
     var onChange: (CGSize, Bool) -> Void
 
     func makeUIView(context: Context) -> UIView {
         let view = SizeReaderView()
         view.onChange = onChange
+        view.epoch = epoch
         return view
     }
     // Without this, the closure captured in makeUIView (and everything it
@@ -260,21 +268,51 @@ struct WindowSizeReader: UIViewRepresentable {
     // freeze at the window's first layout pass, before the user ever taps
     // the toggle — misrouting size reports permanently.
     func updateUIView(_ uiView: UIView, context: Context) {
-        (uiView as? SizeReaderView)?.onChange = onChange
+        guard let view = uiView as? SizeReaderView else { return }
+        view.onChange = onChange
+        view.epoch = epoch
     }
 
     private final class SizeReaderView: UIView {
         var onChange: ((CGSize, Bool) -> Void)?
         private var lastSize: CGSize?
+        var epoch = 0 {
+            didSet {
+                guard epoch != oldValue else { return }
+                lastSize = nil
+                report()
+            }
+        }
         override func didMoveToWindow() { super.didMoveToWindow(); report() }
         override func layoutSubviews() { super.layoutSubviews(); report() }
+        // A move between screens with equal point size but a different scale
+        // changes the pixel size without any layout pass.
+        override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+            super.traitCollectionDidChange(previous)
+            if previous?.displayScale != traitCollection.displayScale {
+                lastSize = nil
+                report()
+            }
+        }
         // Measures THIS VIEW's own rendered area, not the screen's full
         // nativeBounds — real bug hit 2026-07-31: the video only fills the
         // window's own bounds, but iPadOS reserves some space on an external
         // display that the window doesn't actually cover even fullscreen, so
         // reporting the raw screen size made the Mac size Display B larger
         // than what the video actually renders into, causing black bars.
+        //
+        // Debounced: a live window resize fires layout continuously, and each
+        // report makes the host rebuild its display, so only the size the
+        // window settles at (no change for `debounce`) is reported.
+        private let debounce: TimeInterval = 0.3
+        private var pending: DispatchWorkItem?
         private func report() {
+            pending?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.reportNow() }
+            pending = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
+        }
+        private func reportNow() {
             guard let screen = window?.screen, bounds.width > 0, bounds.height > 0 else { return }
             let scale = screen.scale
             let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
@@ -319,6 +357,51 @@ final class WindowCount: ObservableObject {
 
 // MARK: - UI
 
+/// Compact bar for key combinations iPadOS keeps for itself. The modifier
+/// chips are sticky for one use: tap Shift, then a shortcut, and the shortcut
+/// goes out with Shift added.
+struct ShortcutBar: View {
+    @ObservedObject var client: StreamClient
+    @State private var sticky = StickyModifiers()
+
+    private let chips: [(String, ShortcutModifiers)] = [
+        ("Cmd", .command), ("Opt", .option), ("Ctrl", .control), ("Shift", .shift),
+    ]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(chips, id: \.0) { chip in
+                    let on = sticky.active.contains(chip.1)
+                    Button(chip.0) { sticky.toggle(chip.1) }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(on ? Color.accentColor : Color.white.opacity(0.2), in: Capsule())
+                }
+                Divider().frame(height: 18)
+                ForEach(Shortcut.presets, id: \.title) { shortcut in
+                    Button(shortcut.title) {
+                        let extra = sticky.consume()
+                        for k in ShortcutKeys.strokes(shortcut, extra: extra) {
+                            client.sendKey(macKeyCode: k.code, down: k.down, flags: k.flags)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.white.opacity(0.2), in: Capsule())
+                }
+            }
+            .padding(.horizontal, 10)
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.75), in: Capsule())
+        .frame(maxWidth: 640)
+        .padding(.horizontal, 12)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject private var connection = Connection.shared
     @ObservedObject private var windowCount = WindowCount.shared
@@ -340,6 +423,10 @@ struct ContentView: View {
     @State private var windowPixelSize: CGSize?
     private var client: StreamClient { showingDisplayB ? externalClient : primaryClient }
     @StateObject private var store = MachineStore()
+    @ObservedObject private var pointerLock = PointerLock.shared
+    @StateObject private var nearby = NearbyHostBrowser()
+    @State private var resolvingNearby: String?
+    @State private var showShortcuts = false
     @AppStorage("hostAddress") private var host = ""
     @State private var machineName = ""
     @AppStorage("nerdMode") private var nerdMode = false
@@ -407,7 +494,29 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
+            // One size reader per window, on the full-window background (safe
+            // areas ignored, so its bounds equal the video view's). It lives
+            // here, not in the streaming branch, so the measured size is known
+            // before connecting and rides the first HELLO. While idle the
+            // report is only stored.
             Color.black.ignoresSafeArea()
+                .background(
+                    WindowSizeReader(epoch: windowCount.count) { size, isDeviceScreen in
+                        guard !isPhoneIdiom else { return }
+                        windowPixelSize = size
+                        if showingDisplayB {
+                            connection.updateDisplayBSize(size)
+                        } else if isDeviceScreen || windowCount.count <= 1 {
+                            // The only window is authoritative on whichever
+                            // screen it sits (e.g. dragged to an external
+                            // display under Stage Manager).
+                            connection.updatePrimarySize(size)
+                        }
+                        // else: a second window mirroring Display A on a
+                        // non-device screen (Extend not toggled here) — let
+                        // it aspect-fit locally, don't fight over A's size.
+                    }
+                )
             if targetType == .rdp, rdpSession.status != .idle {
                 RDPStreamView(session: rdpSession, onClose: { rdpSession.disconnect() })
             } else if case .streaming = client.status, client.hostLocked {
@@ -423,25 +532,40 @@ struct ContentView: View {
             } else if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
-                    .background(
-                        WindowSizeReader { size, isDeviceScreen in
-                            windowPixelSize = size
-                            if showingDisplayB {
-                                connection.updateDisplayBSize(size)
-                            } else if isDeviceScreen {
-                                connection.updatePrimarySize(size)
-                            }
-                            // else: mirroring Display A on a non-device
-                            // screen (Extend not toggled here) — let it
-                            // aspect-fit locally, don't fight over A's size.
-                        }
-                    )
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
                             if client.softwareEncoding { SoftwareEncodingBanner() }
                             QualityIndicator(client: client)
                         }
                         .padding(.top, 8)
+                    }
+                    .overlay(alignment: .bottom) {
+                        VStack(spacing: 8) {
+                        if showShortcuts {
+                            ShortcutBar(client: client)
+                        }
+                        if let notice = pointerLock.notice {
+                            Text(notice)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+                                .background(.black.opacity(0.75), in: Capsule())
+                        }
+                        // Always visible while locked: the way out, usable by touch.
+                        if pointerLock.isLocked {
+                            Button {
+                                pointerLock.set(false, client: nil)
+                            } label: {
+                                Label("Pointer locked. Tap to release", systemImage: "lock.fill")
+                                    .font(.footnote.weight(.semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 14).padding(.vertical, 8)
+                                    .background(.black.opacity(0.75), in: Capsule())
+                            }
+                        }
+                        }
+                        .padding(.bottom, 12)
                     }
                     .overlay(alignment: .topTrailing) {
                         ZStack(alignment: .topTrailing) {
@@ -474,6 +598,23 @@ struct ContentView: View {
                                     } label: {
                                         Label(showingDisplayB ? "Extend" : "Mirror",
                                               systemImage: showingDisplayB ? "rectangle.on.rectangle.fill" : "rectangle.on.rectangle")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                                Button {
+                                    showShortcuts.toggle()
+                                } label: {
+                                    Label(showShortcuts ? "Hide keys" : "Keys", systemImage: "command")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.white.opacity(0.7))
+                                }
+                                if client.hostCapabilities.contains(.relativeMouse) {
+                                    Button {
+                                        pointerLock.set(!pointerLock.isLocked, client: client)
+                                    } label: {
+                                        Label(pointerLock.isLocked ? "Unlock pointer" : "Lock pointer",
+                                              systemImage: pointerLock.isLocked ? "cursorarrow.slash" : "cursorarrow.motionlines")
                                             .font(.subheadline)
                                             .foregroundStyle(.white.opacity(0.7))
                                     }
@@ -570,6 +711,29 @@ struct ContentView: View {
                 // no more page-wide toggle gating one or the other.
                 SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
 
+                if !nearby.hosts.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Nearby").font(.footnote).foregroundStyle(.gray)
+                        ForEach(nearby.hosts) { h in
+                            Button {
+                                connectNearby(h)
+                            } label: {
+                                HStack {
+                                    Image(systemName: "desktopcomputer")
+                                    Text(h.name)
+                                    Spacer()
+                                    if resolvingNearby == h.id { ProgressView().tint(.white) }
+                                }
+                                .foregroundStyle(.white)
+                                .padding(10)
+                                .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .frame(maxWidth: 420, alignment: .leading)
+                }
+
                 RDPConnectForm(store: rdpStore, onConnect: { rdpHost, port, username, password, domain in
                     let size = UIScreen.main.nativeBounds.size
                     rdpSession.connect(host: rdpHost, port: port, username: username, password: password,
@@ -642,6 +806,19 @@ struct ContentView: View {
                 }
             }
             .padding()
+        }
+        .onAppear { nearby.start() }
+        .onDisappear { nearby.stop() }
+    }
+
+    /// Tapping a nearby host resolves it to ws://<address>:<port> and connects.
+    private func connectNearby(_ h: NearbyHostBrowser.Host) {
+        resolvingNearby = h.id
+        nearby.resolve(h) { url in
+            resolvingNearby = nil
+            guard let url else { return }
+            host = url
+            connection.connect(host: url)
         }
     }
 }
