@@ -62,7 +62,7 @@ final class StreamClient: ObservableObject {
     /// Called with received clipboard text (main thread).
     var onClipboard: ((String) -> Void)?
 
-    /// What the current socket's HELLO carried, and whether HELLO_ACK is still
+    /// What the host last heard on this socket (HELLO, then CLIENT_DISPLAYS), and whether HELLO_ACK is still
     /// pending. Main thread only.
     private var helloReport: DisplayReport?
     private var awaitingHelloAck = false
@@ -217,11 +217,15 @@ final class StreamClient: ObservableObject {
         if let secondPixelSize { reportedSecondPixelSize = secondPixelSize }
         reportsSecondDisplay = secondDisplay
         guard task != nil, !awaitingHelloAck else { return }
+        // Re-evaluations that change nothing the host cares about (same size
+        // after a window closed, say) must not make it rebuild its display.
+        guard DisplayReport.differs(sent: helloReport, now: currentDisplayReport) else { return }
         sendDisplayUpdate()
     }
 
     private func sendDisplayUpdate() {
         guard let info = displayInfoPayload else { return }
+        helloReport = currentDisplayReport // from here on: what the host last heard
         clogViewer("reporting display update: \(Int(info.widthPx))x\(Int(info.heightPx))px, second display \(info.secondDisplay)")
         send(StreamMessage.clientDisplays(widthPx: info.widthPx, heightPx: info.heightPx,
                                           secondDisplay: info.secondDisplay, secondSize: secondSizePayload))
