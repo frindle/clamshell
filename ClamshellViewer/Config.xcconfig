@@ -1,0 +1,6 @@
+// Build settings shared by every configuration of the ClamshellViewer target.
+//
+// To run on your own device, copy Signing.example.xcconfig to Signing.xcconfig
+// (git-ignored) and put your Apple development team there. When that file is
+// absent, as in CI, the build uses no team and still compiles.
+#include? "Signing.xcconfig"

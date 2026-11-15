@@ -4,6 +4,7 @@
 !ClamshellViewer/ClamshellViewer.xcodeproj
 xcuserdata/
 ClamshellViewer/build/
+ClamshellViewer/Signing.xcconfig
 TODO.md
 AI_CONTEXT.md
 dist/
