@@ -1,0 +1,267 @@
+{
+  "about": "Reference vectors for PROTOCOL.md \"Peripherals attached to the client\". All byte values are hex. \"payload\" is the message payload and \"frame\" the whole inner message ([type][4-byte length][payload]) before SECURE wraps it. An encoder must produce these bytes from these values and a decoder these values from these bytes. JSON payloads have no fixed byte form, so the attach entry is an example, not a byte check.",
+  "version": 1,
+  "messageTypes": {
+    "PERIPHERAL_ATTACH": 80,
+    "PERIPHERAL_STATUS": 81,
+    "PERIPHERAL_DETACH": 82,
+    "PERIPHERAL_INPUT": 83,
+    "PERIPHERAL_OUTPUT": 84
+  },
+  "attachExample": {
+    "json": "{\"id\":1,\"kind\":\"gamepad\",\"name\":\"DualSense Wireless Controller\",\"rumble\":true}",
+    "frame": "500000004e7b226964223a312c226b696e64223a2267616d65706164222c226e616d65223a224475616c53656e736520576972656c65737320436f6e74726f6c6c6572222c2272756d626c65223a747275657d"
+  },
+  "detach": {
+    "id": 1,
+    "payload": "00000001",
+    "frame": "520000000400000001"
+  },
+  "status": [
+    {
+      "id": 1,
+      "status": 0,
+      "meaning": "attached",
+      "payload": "0000000100",
+      "frame": "51000000050000000100"
+    },
+    {
+      "id": 1,
+      "status": 1,
+      "meaning": "attached as keys and pointer",
+      "payload": "0000000101",
+      "frame": "51000000050000000101"
+    },
+    {
+      "id": 2,
+      "status": 2,
+      "meaning": "this host does not accept this kind",
+      "payload": "0000000202",
+      "frame": "51000000050000000202"
+    },
+    {
+      "id": 9,
+      "status": 3,
+      "meaning": "too many peripherals",
+      "payload": "0000000903",
+      "frame": "51000000050000000903"
+    },
+    {
+      "id": 1,
+      "status": 4,
+      "meaning": "peripherals are turned off",
+      "payload": "0000000104",
+      "frame": "51000000050000000104"
+    },
+    {
+      "id": 1,
+      "status": 5,
+      "meaning": "removed",
+      "payload": "0000000105",
+      "frame": "51000000050000000105"
+    }
+  ],
+  "gamepad": [
+    {
+      "name": "at rest",
+      "id": 1,
+      "buttons": [],
+      "leftTrigger": 0,
+      "rightTrigger": 0,
+      "leftX": 0,
+      "leftY": 0,
+      "rightX": 0,
+      "rightY": 0,
+      "buttonBits": 0,
+      "payload": "000000010000000000000000000000000000",
+      "frame": "5300000012000000010000000000000000000000000000"
+    },
+    {
+      "name": "documented example",
+      "id": 1,
+      "buttons": [
+        0,
+        14
+      ],
+      "leftTrigger": 0,
+      "rightTrigger": 128,
+      "leftX": 32767,
+      "leftY": 0,
+      "rightX": 0,
+      "rightY": 0,
+      "buttonBits": 16385,
+      "payload": "000000010000400100807fff000000000000",
+      "frame": "5300000012000000010000400100807fff000000000000",
+      "note": "bottom face button and d-pad left held, right trigger half pressed, left stick fully right"
+    },
+    {
+      "name": "every assigned button",
+      "id": 1,
+      "buttons": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "leftTrigger": 255,
+      "rightTrigger": 255,
+      "leftX": 0,
+      "leftY": 0,
+      "rightX": 0,
+      "rightY": 0,
+      "buttonBits": 130879,
+      "payload": "000000010001ff3fffff0000000000000000",
+      "frame": "5300000012000000010001ff3fffff0000000000000000",
+      "note": "bits 6 and 7 stay 0: the triggers travel as values"
+    },
+    {
+      "name": "stick extremes and the largest id",
+      "id": 4294967295,
+      "buttons": [],
+      "leftTrigger": 0,
+      "rightTrigger": 0,
+      "leftX": -32767,
+      "leftY": 32767,
+      "rightX": 32767,
+      "rightY": -32767,
+      "buttonBits": 0,
+      "payload": "ffffffff00000000000080017fff7fff8001",
+      "frame": "5300000012ffffffff00000000000080017fff7fff8001",
+      "note": "left stick fully left and down, right stick fully right and up (positive Y is down)"
+    },
+    {
+      "name": "single values",
+      "id": 7,
+      "buttons": [
+        16
+      ],
+      "leftTrigger": 1,
+      "rightTrigger": 0,
+      "leftX": 0,
+      "leftY": -1,
+      "rightX": 1,
+      "rightY": 0,
+      "buttonBits": 65536,
+      "payload": "000000070001000001000000ffff00010000",
+      "frame": "5300000012000000070001000001000000ffff00010000",
+      "note": "Home held; the smallest non-zero trigger and stick values"
+    }
+  ],
+  "gamepadDecodeOnly": [
+    {
+      "name": "longer report",
+      "payload": "000000010000400100807fff000000000000aabbcc",
+      "decodesAs": "documented example",
+      "note": "extra bytes after the 18th are ignored"
+    },
+    {
+      "name": "short report",
+      "payload": "000000010000400100807fff0000000000",
+      "valid": false,
+      "note": "fewer than 18 bytes: ignored, the state does not change"
+    }
+  ],
+  "rumble": [
+    {
+      "name": "strong burst",
+      "id": 1,
+      "strong": 255,
+      "weak": 64,
+      "durationMs": 250,
+      "payload": "00000001ff4000fa",
+      "frame": "540000000800000001ff4000fa"
+    },
+    {
+      "name": "stop",
+      "id": 1,
+      "strong": 0,
+      "weak": 0,
+      "durationMs": 0,
+      "payload": "0000000100000000",
+      "frame": "54000000080000000100000000",
+      "note": "0, 0 stops at once"
+    },
+    {
+      "name": "longest duration field",
+      "id": 1,
+      "strong": 128,
+      "weak": 128,
+      "durationMs": 65535,
+      "payload": "000000018080ffff",
+      "frame": "5400000008000000018080ffff",
+      "note": "the client still stops after 5 s"
+    }
+  ],
+  "midi": [
+    {
+      "name": "note on then note off",
+      "id": 2,
+      "midi": "903c64803c00",
+      "valid": true,
+      "payload": "00000002903c64803c00",
+      "frame": "530000000a00000002903c64803c00",
+      "note": "middle C on channel 1"
+    },
+    {
+      "name": "system exclusive",
+      "id": 2,
+      "midi": "f07e7f0601f7",
+      "valid": true,
+      "payload": "00000002f07e7f0601f7",
+      "frame": "530000000a00000002f07e7f0601f7",
+      "note": "identity request, whole in one report"
+    },
+    {
+      "name": "timing clock",
+      "id": 2,
+      "midi": "f8",
+      "valid": true,
+      "payload": "00000002f8",
+      "frame": "530000000500000002f8",
+      "note": "a one-byte message"
+    },
+    {
+      "name": "running status",
+      "id": 2,
+      "midi": "903c643e64",
+      "valid": false,
+      "payload": "00000002903c643e64",
+      "note": "the second note has no status byte: the report is dropped"
+    },
+    {
+      "name": "cut short",
+      "id": 2,
+      "midi": "903c",
+      "valid": false,
+      "payload": "00000002903c",
+      "note": "a note-on missing its velocity: the report is dropped"
+    },
+    {
+      "name": "unfinished system exclusive",
+      "id": 2,
+      "midi": "f07e7f",
+      "valid": false,
+      "payload": "00000002f07e7f",
+      "note": "no closing F7 in the same report: dropped"
+    },
+    {
+      "name": "empty",
+      "id": 2,
+      "midi": "",
+      "valid": false,
+      "payload": "00000002",
+      "note": "no MIDI bytes after the id: dropped"
+    }
+  ]
+}
