@@ -78,9 +78,14 @@ final class InputQueue {
         let releaseOnly = events.allSatisfy(Self.isRelease)
         lock.lock()
         if closed { lock.unlock(); return false }
+        // A text batch is checked on its bytes and on whether the backlog is
+        // already full, not on its own event count: a valid 16 KB INPUT_TEXT
+        // can expand to more events than the bound and must still go through.
+        let overBound = textBytes > 0
+            ? pendingEvents >= Self.maxBacklogEvents
+            : pendingEvents + events.count > Self.maxBacklogEvents
         if !releaseOnly,
-           pendingEvents + events.count > Self.maxBacklogEvents
-            || pendingTextBytes + textBytes > Self.maxBacklogTextBytes {
+           overBound || pendingTextBytes + textBytes > Self.maxBacklogTextBytes {
             let first = !loggedDrop
             loggedDrop = true
             lock.unlock()

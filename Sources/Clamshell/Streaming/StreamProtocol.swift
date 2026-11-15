@@ -220,6 +220,53 @@ enum StreamMessage {
     }
 }
 
+// MARK: - Input message decoding
+
+/// The client-to-host input messages (0x20-0x26), decoded from their payloads.
+/// Pure: only the length checks and field reads live here. What a host does
+/// with the values (clamping, dropping non-finite numbers) is up to the caller.
+enum InputMessage {
+    case mouseMove(x: Float32, y: Float32)
+    case mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32)
+    case key(macKeyCode: UInt16, down: Bool, flags: UInt64)
+    case scroll(dx: Float32, dy: Float32)
+    case mouseRelative(dx: Float32, dy: Float32)
+    case mouseButtonAtCursor(button: UInt8, down: Bool)
+    case text(Data)
+
+    /// Nil for a payload shorter than its layout needs and for any other
+    /// message type. Extra trailing bytes are skipped.
+    static func decode(type: StreamMessageType, payload: Data) -> InputMessage? {
+        let s = payload.startIndex
+        switch type {
+        case .mouseMove:
+            guard payload.count >= 8 else { return nil }
+            return .mouseMove(x: payload.beFloat32(at: 0), y: payload.beFloat32(at: 4))
+        case .mouseButton:
+            guard payload.count >= 10 else { return nil }
+            return .mouseButton(button: payload[s], down: payload[s + 1] == 1,
+                                x: payload.beFloat32(at: 2), y: payload.beFloat32(at: 6))
+        case .key:
+            guard payload.count >= 11 else { return nil }
+            return .key(macKeyCode: payload.beUInt16(at: 0), down: payload[s + 2] == 1,
+                        flags: payload.beUInt64(at: 3))
+        case .scroll:
+            guard payload.count >= 8 else { return nil }
+            return .scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseRelative:
+            guard payload.count >= 8 else { return nil }
+            return .mouseRelative(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseButtonAtCursor:
+            guard payload.count >= 2 else { return nil }
+            return .mouseButtonAtCursor(button: payload[s], down: payload[s + 1] == 1)
+        case .text:
+            return .text(payload)
+        default:
+            return nil
+        }
+    }
+}
+
 // MARK: - Incremental parser
 
 /// Feed raw bytes from the socket; emits complete (type, payload) messages.

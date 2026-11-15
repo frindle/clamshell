@@ -57,6 +57,12 @@ final class InputInjector {
         Self.warnIfNoAccessibilityPermission()
     }
 
+    /// For tests: a core and queue the caller built, with a recording sink.
+    init(core: InputCore, queue: InputQueue) {
+        self.core = core
+        self.queue = queue
+    }
+
     private static func warnIfNoAccessibilityPermission() {
         // CGEventPost silently no-ops without Accessibility permission — the
         // stream would look healthy while every click/key vanishes. Say so.
@@ -92,14 +98,15 @@ final class InputInjector {
     func mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32) {
         _ = Self.untrustedLogOnce
         // Ask for room before InputCore sees a press, so a dropped down never
-        // becomes "held" there. Releases are always accepted.
-        if down && !queue.hasRoom() { return }
+        // becomes "held" there. Over the bound only the release of a button
+        // InputCore has as held gets through.
+        if !queue.hasRoom() && (down || !core.isButtonHeld(Int(button))) { return }
         queue.enqueue(core.mouseButton(button: button, down: down, x: x, y: y))
     }
 
     func mouseButtonAtCursor(button: UInt8, down: Bool) {
         _ = Self.untrustedLogOnce
-        if down && !queue.hasRoom() { return }
+        if !queue.hasRoom() && (down || !core.isButtonHeld(Int(button))) { return }
         queue.enqueue(core.mouseButtonAtCursor(button: button, down: down))
     }
 
@@ -135,7 +142,7 @@ final class InputInjector {
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         _ = Self.untrustedLogOnce
-        if down && !queue.hasRoom() { return }
+        if !queue.hasRoom() && (down || !core.isKeyHeld(macKeyCode)) { return }
         queue.enqueue(core.key(macKeyCode: macKeyCode, down: down, flags: flags))
     }
 
@@ -179,6 +186,9 @@ final class InputInjector {
             let units = Array(chunk.utf16)
             for down in [true, false] {
                 guard let ev = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
+                // A modifier the user holds on the host must not turn typed
+                // text into shortcuts.
+                ev.flags = []
                 ev.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
                 ev.post(tap: .cghidEventTap)
             }
