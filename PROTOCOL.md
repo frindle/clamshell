@@ -71,6 +71,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x23 | INPUT_SCROLL     | client → host | dx(Float32 BE), dy(Float32 BE) — pixel wheel deltas |
 | 0x24 | INPUT_MOUSE_RELATIVE | client → host | dx(Float32 BE), dy(Float32 BE) — pointer movement in points, for a captured pointer. Only to a host that advertises `relativeMouse` |
 | 0x25 | INPUT_TEXT       | client → host | UTF-8 text to type as-is (dictation, input-method text, emoji), at most 16 KB. Only to a host that advertises `textInput` |
+| 0x26 | INPUT_MOUSE_BUTTON_AT_CURSOR | client → host | button(1: as INPUT_MOUSE_BUTTON), down(1: 0/1) — a press or release where the host cursor is now, for a captured pointer. Only to a host that advertises `relativeMouse` |
 | 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
 | 0x50 | PERIPHERAL_ATTACH | client → host | UTF-8 JSON — one peripheral the client offers; see "Peripherals attached to the client" |
 | 0x51 | PERIPHERAL_STATUS | host → client | id(4 BE), status(1) |
@@ -188,6 +189,24 @@ From host 0.12 (each gated by a capability bit, see "Capabilities"):
   the cursor is on. While a button is held the move is posted as a drag, like
   an absolute move. Clients use it when they capture the pointer (pointer
   lock), where there is no absolute position to send.
+- **INPUT_MOUSE_BUTTON_AT_CURSOR** presses or releases a button where the host
+  cursor is now, without moving it. Button numbers and click counts work as
+  for INPUT_MOUSE_BUTTON. A client that has captured the pointer sends this
+  for every button event and never an absolute INPUT_MOUSE_BUTTON: it has no
+  position of its own, and the last CURSOR_POS it saw can be behind the moves
+  it has already sent, so an absolute press would pull the cursor back.
+  Example, left button down: `26 00000002 00 01`.
+- **Input is applied in the order it arrived.** Mouse, scroll, key and text
+  events from one connection are posted one after another in arrival order,
+  also while a long INPUT_TEXT is still being typed: a click sent after text
+  lands after that text, and a modifier key sent before a click is down
+  before the click.
+- **Only the modifier bits of cgEventFlags are used.** The host keeps bits
+  16–23 (caps lock, shift, control, option, command, numeric pad, help, fn)
+  and ignores every other bit.
+- **The backlog is bounded.** When more input is waiting than the host is
+  willing to hold, it drops new events, but never the release of a key or
+  button it has already taken as down.
 - **INPUT_TEXT** types the text through keyboard events that carry the
   characters themselves, in pieces of at most 20 UTF-16 units; a line feed
   becomes the Return key and a tab the Tab key. It is for text that has no
@@ -195,7 +214,9 @@ From host 0.12 (each gated by a capability bit, see "Capabilities"):
 - **Held input is released when the session ends.** The host tracks which
   buttons and keys a client has down and posts the matching "up" events when
   the connection drops or another client takes over, so a lost connection
-  cannot leave a key or a drag stuck on the Mac.
+  cannot leave a key or a drag stuck on the Mac. Text and other input still
+  waiting at that moment is abandoned, so the host does not keep typing for
+  a client that has gone.
 
 ## Encoder contract (host)
 
