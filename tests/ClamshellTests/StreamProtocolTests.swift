@@ -211,4 +211,55 @@ final class StreamProtocolTests: XCTestCase {
         d.appendBE(UInt32(64 << 20))
         XCTAssertFalse(parse(d).corrupt)
     }
+
+    // MARK: remote-ready additions
+
+    func testNewMessageTypeValues() {
+        let expected: [(StreamMessageType, UInt8)] = [
+            (.authChallenge, 0x08), (.authResponse, 0x09), (.authResult, 0x0A), (.hostInfo, 0x0B),
+            (.clientInfo, 0x0C), (.devicePending, 0x0D), (.deviceDecision, 0x0E), (.secure, 0x0F),
+            (.mouseRelative, 0x24), (.text, 0x25)]
+        for (t, v) in expected { XCTAssertEqual(t.rawValue, v) }
+    }
+
+    func testMouseRelativeRoundTrip() {
+        let r = parse(StreamMessage.mouseRelative(dx: -3.5, dy: 12))
+        XCTAssertEqual(r.messages.count, 1)
+        XCTAssertEqual(r.messages[0].0, .mouseRelative)
+        XCTAssertEqual(r.messages[0].1.beFloat32(at: 0), -3.5)
+        XCTAssertEqual(r.messages[0].1.beFloat32(at: 4), 12)
+    }
+
+    func testTextRoundTrip() {
+        let s = "héllo 😀\n"
+        let r = parse(StreamMessage.text(s), chunk: 3)
+        XCTAssertEqual(r.messages.count, 1)
+        XCTAssertEqual(r.messages[0].0, .text)
+        XCTAssertEqual(String(data: r.messages[0].1, encoding: .utf8), s)
+    }
+
+    func testCapabilityBits() {
+        XCTAssertEqual(StreamCapabilities.approvalRequired.rawValue, 1)
+        XCTAssertEqual(StreamCapabilities.relativeMouse.rawValue, 2)
+        XCTAssertEqual(StreamCapabilities.textInput.rawValue, 4)
+        XCTAssertEqual(StreamCapabilities.extraButtons.rawValue, 8)
+        XCTAssertEqual(StreamCapabilities.deviceApproval.rawValue, 16)
+        let c: StreamCapabilities = [.textInput, .extraButtons]
+        XCTAssertEqual(c.rawValue, 12)
+        XCTAssertTrue(c.contains(.textInput))
+        XCTAssertFalse(c.contains(.relativeMouse))
+        XCTAssertEqual(StreamCapabilities(rawValue: 0xFFFF_FFFF).intersection([.relativeMouse]), .relativeMouse)
+    }
+
+    func testParserCapIsSettable() {
+        XCTAssertEqual(StreamMessageParser.defaultMaxPayload, 64 << 20)
+        let parser = StreamMessageParser(maxPayload: 16)
+        var got: [StreamMessageType] = []
+        parser.onMessage = { t, _ in got.append(t) }
+        parser.feed(StreamMessage.clipboard(text: String(repeating: "a", count: 16)))
+        XCTAssertFalse(parser.corrupt)
+        XCTAssertEqual(got, [.clipboard])
+        parser.feed(StreamMessage.clipboard(text: String(repeating: "a", count: 17)))
+        XCTAssertTrue(parser.corrupt)
+    }
 }

@@ -1,6 +1,7 @@
 import Foundation
 import CoreGraphics
 import ApplicationServices
+import AppKit
 
 // Maps normalized client coordinates (0..1, origin top-left) into the
 // streamed target's global bounds and injects CGEvents. Target is either a
@@ -8,13 +9,34 @@ import ApplicationServices
 // re-queried live since the window can move — see the window init).
 
 final class InputInjector {
-    private let boundsProvider: () -> CGRect
-    private var leftDown = false
-    private var rightDown = false
-    private var lastPoint = CGPoint.zero
+    private let core: InputCore
+    /// Text is typed from its own serial queue so a long paste cannot stall
+    /// the server queue (which also sends video). `textGeneration` lets a
+    /// session end abandon whatever is left.
+    private let textQueue = DispatchQueue(label: "clamshell.input.text")
+    private let genLock = NSLock()
+    private var textGeneration = 0
+
+    private static func makeCore(_ bounds: @escaping () -> CGRect) -> InputCore {
+        InputCore(
+            boundsProvider: bounds,
+            displaysProvider: { activeDisplayBounds() },
+            cursorProvider: { CGEvent(source: nil)?.location ?? .zero },
+            clock: { ProcessInfo.processInfo.systemUptime },
+            doubleClickInterval: { NSEvent.doubleClickInterval })
+    }
+
+    private static func activeDisplayBounds() -> [CGRect] {
+        var count: UInt32 = 0
+        CGGetActiveDisplayList(0, nil, &count)
+        guard count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        CGGetActiveDisplayList(count, &ids, &count)
+        return ids.prefix(Int(count)).map { CGDisplayBounds($0) }
+    }
 
     init(displayID: CGDirectDisplayID) {
-        self.boundsProvider = { CGDisplayBounds(displayID) } // global desktop coords, points
+        core = Self.makeCore { CGDisplayBounds(displayID) } // global desktop coords, points
         Self.warnIfNoAccessibilityPermission()
     }
 
@@ -24,7 +46,7 @@ final class InputInjector {
     /// AX hide/move (see WindowHandoff/WindowHideSelfTest.swift), so the
     /// window stays wherever the user leaves it while streamed.
     init(windowID: UInt32) {
-        self.boundsProvider = { Self.liveWindowBounds(windowID) ?? .zero }
+        core = Self.makeCore { Self.liveWindowBounds(windowID) ?? .zero }
         Self.warnIfNoAccessibilityPermission()
     }
 
@@ -47,21 +69,6 @@ final class InputInjector {
         return rect
     }
 
-    private func map(_ x: Float32, _ y: Float32) -> CGPoint {
-        let bounds = boundsProvider()
-        // Trust boundary: a network-supplied event landing at (0,0) — the
-        // Apple menu — because the window closed/moved mid-lookup would be a
-        // real hazard, not just a cosmetic glitch. Re-inject at the last
-        // known-good point instead of trusting a zeroed bounds rect.
-        guard bounds.width > 0, bounds.height > 0 else { return lastPoint }
-        let p = CGPoint(
-            x: bounds.origin.x + CGFloat(min(max(x, 0), 1)) * bounds.width,
-            y: bounds.origin.y + CGFloat(min(max(y, 0), 1)) * bounds.height
-        )
-        lastPoint = p
-        return p
-    }
-
     /// Logged once per process (static let initializer runs once), not per event.
     private static let untrustedLogOnce: Void = {
         if !AXIsProcessTrusted() {
@@ -71,25 +78,39 @@ final class InputInjector {
 
     func mouseMove(x: Float32, y: Float32) {
         _ = Self.untrustedLogOnce
-        let point = map(x, y)
-        let type: CGEventType = leftDown ? .leftMouseDragged
-                              : rightDown ? .rightMouseDragged
-                              : .mouseMoved
-        let button: CGMouseButton = rightDown ? .right : .left
-        CGEvent(mouseEventSource: nil, mouseType: type,
-                mouseCursorPosition: point, mouseButton: button)?.post(tap: .cghidEventTap)
+        post(core.mouseMove(x: x, y: y))
     }
 
     func mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32) {
         _ = Self.untrustedLogOnce
-        let point = map(x, y)
-        let right = button == 1
-        if right { rightDown = down } else { leftDown = down }
-        let type: CGEventType = right ? (down ? .rightMouseDown : .rightMouseUp)
-                                      : (down ? .leftMouseDown : .leftMouseUp)
-        CGEvent(mouseEventSource: nil, mouseType: type,
-                mouseCursorPosition: point,
-                mouseButton: right ? .right : .left)?.post(tap: .cghidEventTap)
+        post(core.mouseButton(button: button, down: down, x: x, y: y))
+    }
+
+    func mouseRelative(dx: Float32, dy: Float32) {
+        _ = Self.untrustedLogOnce
+        post(core.mouseRelative(dx: dx, dy: dy))
+    }
+
+    func text(_ payload: Data) {
+        _ = Self.untrustedLogOnce
+        let events = core.text(payload)
+        guard !events.isEmpty else { return }
+        genLock.lock(); let gen = textGeneration; genLock.unlock()
+        textQueue.async { [weak self] in
+            for e in events {
+                guard let self else { return }
+                self.genLock.lock(); let current = self.textGeneration; self.genLock.unlock()
+                if current != gen { return } // session ended: abandon the rest
+                Self.post(e)
+                usleep(1000)
+            }
+        }
+    }
+
+    /// Posts "up" for every held button and key and abandons pending text.
+    func releaseAll() {
+        genLock.lock(); textGeneration += 1; genLock.unlock()
+        post(core.releaseAll())
     }
 
     func scroll(dx: Float32, dy: Float32) {
@@ -114,9 +135,50 @@ final class InputInjector {
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         _ = Self.untrustedLogOnce
-        guard let event = CGEvent(keyboardEventSource: nil,
-                                  virtualKey: CGKeyCode(macKeyCode), keyDown: down) else { return }
-        event.flags = CGEventFlags(rawValue: flags)
-        event.post(tap: .cghidEventTap)
+        post(core.key(macKeyCode: macKeyCode, down: down, flags: flags))
+    }
+
+    // MARK: - CGEvent layer
+
+    private func post(_ events: [InputEvent]) { for e in events { Self.post(e) } }
+
+    private static func post(_ event: InputEvent) {
+        switch event {
+        case let .mouse(action, button, point, clickCount, delta):
+            let type: CGEventType
+            switch (action, button) {
+            case (.move, _): type = .mouseMoved
+            case (.down, 0): type = .leftMouseDown
+            case (.down, 1): type = .rightMouseDown
+            case (.down, _): type = .otherMouseDown
+            case (.up, 0): type = .leftMouseUp
+            case (.up, 1): type = .rightMouseUp
+            case (.up, _): type = .otherMouseUp
+            case (.drag, 0): type = .leftMouseDragged
+            case (.drag, 1): type = .rightMouseDragged
+            case (.drag, _): type = .otherMouseDragged
+            }
+            let cgButton = CGMouseButton(rawValue: UInt32(button)) ?? .left
+            guard let ev = CGEvent(mouseEventSource: nil, mouseType: type,
+                                   mouseCursorPosition: point, mouseButton: cgButton) else { return }
+            if button > 1 { ev.setIntegerValueField(.mouseEventButtonNumber, value: Int64(button)) }
+            if action != .move { ev.setIntegerValueField(.mouseEventClickState, value: Int64(clickCount)) }
+            if let d = delta {
+                ev.setIntegerValueField(.mouseEventDeltaX, value: Int64(d.dx.rounded()))
+                ev.setIntegerValueField(.mouseEventDeltaY, value: Int64(d.dy.rounded()))
+            }
+            ev.post(tap: .cghidEventTap)
+        case let .key(code, down, flags):
+            guard let ev = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: down) else { return }
+            ev.flags = CGEventFlags(rawValue: flags)
+            ev.post(tap: .cghidEventTap)
+        case let .text(chunk):
+            let units = Array(chunk.utf16)
+            for down in [true, false] {
+                guard let ev = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: down) else { continue }
+                ev.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                ev.post(tap: .cghidEventTap)
+            }
+        }
     }
 }

@@ -12,6 +12,16 @@ enum StreamMessageType: UInt8 {
     case hostLockState = 0x05  // host -> client: screen locked/unlocked (1 byte bool)
     case cursorPos = 0x06      // host -> client: remote cursor position (see "Cursor-follow auto-pan")
     case ping = 0x07           // both directions: empty keepalive; the host echoes the client's
+    // 0x08...0x0F belong to the authentication/encryption layer (PROTOCOL.md
+    // "Device authentication and encrypted session"); constants only here.
+    case authChallenge = 0x08
+    case authResponse = 0x09
+    case authResult = 0x0A
+    case hostInfo = 0x0B
+    case clientInfo = 0x0C
+    case devicePending = 0x0D
+    case deviceDecision = 0x0E
+    case secure = 0x0F
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
@@ -19,7 +29,19 @@ enum StreamMessageType: UInt8 {
     case mouseButton = 0x21
     case key = 0x22
     case scroll = 0x23        // client -> host: dx, dy wheel deltas
+    case mouseRelative = 0x24 // client -> host: dx, dy in points (needs relativeMouse)
+    case text = 0x25          // client -> host: UTF-8 text to type (needs textInput)
     case clipboard = 0x30     // both directions: UTF-8 plain text
+}
+
+/// Feature bits exchanged in the handshake (PROTOCOL.md "Capabilities").
+struct StreamCapabilities: OptionSet {
+    let rawValue: UInt32
+    static let approvalRequired = StreamCapabilities(rawValue: 1 << 0)
+    static let relativeMouse    = StreamCapabilities(rawValue: 1 << 1)
+    static let textInput        = StreamCapabilities(rawValue: 1 << 2)
+    static let extraButtons     = StreamCapabilities(rawValue: 1 << 3)
+    static let deviceApproval   = StreamCapabilities(rawValue: 1 << 4)
 }
 
 enum StreamCodec: UInt8 {
@@ -149,6 +171,17 @@ enum StreamMessage {
         return frame(type: .scroll, payload: p)
     }
 
+    /// Pointer movement in points for a captured pointer (needs `relativeMouse`).
+    static func mouseRelative(dx: Float32, dy: Float32) -> Data {
+        var p = Data(); p.appendBE(dx); p.appendBE(dy)
+        return frame(type: .mouseRelative, payload: p)
+    }
+
+    /// Text to type as-is (needs `textInput`); the host refuses more than 16 KB.
+    static func text(_ s: String) -> Data {
+        frame(type: .text, payload: Data(s.utf8))
+    }
+
     static func audioFrame(_ aac: Data) -> Data { frame(type: .audioFrame, payload: aac) }
 
     /// Live stream status for the client's quality indicator: current encoder
@@ -186,8 +219,13 @@ enum StreamMessage {
 /// Unknown message types are skipped (forward compatibility).
 final class StreamMessageParser {
     private var buffer = Data()
-    /// Cap a single message at 64 MB — anything bigger is a corrupt stream.
-    private let maxPayload = 64 << 20
+    /// Default cap for a single message: 64 MB — anything bigger is a corrupt stream.
+    static let defaultMaxPayload = 64 << 20
+    private let maxPayload: Int
+
+    init(maxPayload: Int = StreamMessageParser.defaultMaxPayload) {
+        self.maxPayload = maxPayload
+    }
 
     var onMessage: ((StreamMessageType, Data) -> Void)?
     /// Set when the stream is unrecoverably corrupt; caller should disconnect.

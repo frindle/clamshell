@@ -321,6 +321,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         audioEncoder = nil
         clipboard?.stop()
         clipboard = nil
+        injector?.releaseAll()
         injector = nil
     }
 
@@ -361,8 +362,16 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         case .scroll:
             guard payload.count >= 8 else { return }
             injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseRelative:
+            guard payload.count >= 8 else { return }
+            injector?.mouseRelative(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .text:
+            injector?.text(payload)
         case .clipboard:
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
+        case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
+             .devicePending, .deviceDecision, .secure:
+            break // the auth layer will handle these
         case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
         }
