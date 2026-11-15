@@ -1,0 +1,647 @@
+{
+  "about": "Reference vectors for PROTOCOL.md \"Input mapping\". All byte values are hex. \"payload\" is the message payload and \"frame\" the whole inner message ([type][4-byte length][payload]) before SECURE wraps it. An encoder must produce the bytes in \"frames\" from the listed values and a decoder the values from the bytes. \"ignored\" lists messages a host must drop without acting, and \"longer\" messages whose extra bytes it must skip. \"scroll\" and \"relative\" give the deltas a host uses (before any rounding of its own); an entry marked \"ignored\" scrolls nothing. \"keyFlags\" gives the flag bits a host actually uses. \"text\" gives what a host types for an INPUT_TEXT payload: the steps in order, where a \"key\" step is a press and release of that key (codes in \"textKeys\") and adjacent typed pieces count as one \"text\" step (a host may type them in smaller pieces, never splitting a code point).",
+  "version": 1,
+  "messageTypes": {
+    "INPUT_MOUSE_MOVE": 32,
+    "INPUT_MOUSE_BUTTON": 33,
+    "INPUT_KEY": 34,
+    "INPUT_SCROLL": 35,
+    "INPUT_MOUSE_RELATIVE": 36,
+    "INPUT_TEXT": 37,
+    "INPUT_MOUSE_BUTTON_AT_CURSOR": 38
+  },
+  "modifierMask": "0000000000ff0000",
+  "maxTextBytes": 16384,
+  "deltaCap": 10000,
+  "textKeys": {
+    "return": 36,
+    "tab": 48
+  },
+  "frames": [
+    {
+      "name": "pointer at the centre",
+      "type": "INPUT_MOUSE_MOVE",
+      "x": 0.5,
+      "y": 0.5,
+      "payload": "3f0000003f000000",
+      "frame": "20000000083f0000003f000000"
+    },
+    {
+      "name": "pointer at the top-left corner",
+      "type": "INPUT_MOUSE_MOVE",
+      "x": 0,
+      "y": 0,
+      "payload": "0000000000000000",
+      "frame": "20000000080000000000000000"
+    },
+    {
+      "name": "pointer at the bottom-right corner",
+      "type": "INPUT_MOUSE_MOVE",
+      "x": 1,
+      "y": 1,
+      "payload": "3f8000003f800000",
+      "frame": "20000000083f8000003f800000"
+    },
+    {
+      "name": "left button down",
+      "type": "INPUT_MOUSE_BUTTON",
+      "button": 0,
+      "down": true,
+      "x": 0.25,
+      "y": 0.75,
+      "payload": "00013e8000003f400000",
+      "frame": "210000000a00013e8000003f400000"
+    },
+    {
+      "name": "left button up",
+      "type": "INPUT_MOUSE_BUTTON",
+      "button": 0,
+      "down": false,
+      "x": 0.25,
+      "y": 0.75,
+      "payload": "00003e8000003f400000",
+      "frame": "210000000a00003e8000003f400000"
+    },
+    {
+      "name": "right button down",
+      "type": "INPUT_MOUSE_BUTTON",
+      "button": 1,
+      "down": true,
+      "x": 0.5,
+      "y": 0.5,
+      "payload": "01013f0000003f000000",
+      "frame": "210000000a01013f0000003f000000"
+    },
+    {
+      "name": "middle button down",
+      "type": "INPUT_MOUSE_BUTTON",
+      "button": 2,
+      "down": true,
+      "x": 0.5,
+      "y": 0.5,
+      "payload": "02013f0000003f000000",
+      "frame": "210000000a02013f0000003f000000",
+      "note": "buttons 2-4 need extraButtons"
+    },
+    {
+      "name": "back button down",
+      "type": "INPUT_MOUSE_BUTTON",
+      "button": 3,
+      "down": true,
+      "x": 0.5,
+      "y": 0.5,
+      "payload": "03013f0000003f000000",
+      "frame": "210000000a03013f0000003f000000"
+    },
+    {
+      "name": "forward button up",
+      "type": "INPUT_MOUSE_BUTTON",
+      "button": 4,
+      "down": false,
+      "x": 0.5,
+      "y": 0.5,
+      "payload": "04003f0000003f000000",
+      "frame": "210000000a04003f0000003f000000"
+    },
+    {
+      "name": "A down, no modifiers",
+      "type": "INPUT_KEY",
+      "macKeyCode": 0,
+      "down": true,
+      "flags": "0000000000000000",
+      "payload": "0000010000000000000000",
+      "frame": "220000000b0000010000000000000000"
+    },
+    {
+      "name": "A up, no modifiers",
+      "type": "INPUT_KEY",
+      "macKeyCode": 0,
+      "down": false,
+      "flags": "0000000000000000",
+      "payload": "0000000000000000000000",
+      "frame": "220000000b0000000000000000000000"
+    },
+    {
+      "name": "Command down",
+      "type": "INPUT_KEY",
+      "macKeyCode": 55,
+      "down": true,
+      "flags": "0000000000100000",
+      "payload": "0037010000000000100000",
+      "frame": "220000000b0037010000000000100000"
+    },
+    {
+      "name": "Tab down with Command held",
+      "type": "INPUT_KEY",
+      "macKeyCode": 48,
+      "down": true,
+      "flags": "0000000000100000",
+      "payload": "0030010000000000100000",
+      "frame": "220000000b0030010000000000100000"
+    },
+    {
+      "name": "Escape down with Command and Option held",
+      "type": "INPUT_KEY",
+      "macKeyCode": 53,
+      "down": true,
+      "flags": "0000000000180000",
+      "payload": "0035010000000000180000",
+      "frame": "220000000b0035010000000000180000"
+    },
+    {
+      "name": "Left arrow down with Shift and Control held",
+      "type": "INPUT_KEY",
+      "macKeyCode": 123,
+      "down": true,
+      "flags": "0000000000060000",
+      "payload": "007b010000000000060000",
+      "frame": "220000000b007b010000000000060000"
+    },
+    {
+      "name": "scroll down by 12",
+      "type": "INPUT_SCROLL",
+      "dx": 0,
+      "dy": -12,
+      "payload": "00000000c1400000",
+      "frame": "230000000800000000c1400000"
+    },
+    {
+      "name": "scroll right by 3.5",
+      "type": "INPUT_SCROLL",
+      "dx": 3.5,
+      "dy": 0,
+      "payload": "4060000000000000",
+      "frame": "23000000084060000000000000"
+    },
+    {
+      "name": "pointer moved right 10 and down 4",
+      "type": "INPUT_MOUSE_RELATIVE",
+      "dx": 10,
+      "dy": 4,
+      "payload": "4120000040800000",
+      "frame": "24000000084120000040800000"
+    },
+    {
+      "name": "pointer moved left and up by a fraction",
+      "type": "INPUT_MOUSE_RELATIVE",
+      "dx": -0.5,
+      "dy": -0.25,
+      "payload": "bf000000be800000",
+      "frame": "2400000008bf000000be800000"
+    },
+    {
+      "name": "left button down at the cursor",
+      "type": "INPUT_MOUSE_BUTTON_AT_CURSOR",
+      "button": 0,
+      "down": true,
+      "payload": "0001",
+      "frame": "26000000020001"
+    },
+    {
+      "name": "left button up at the cursor",
+      "type": "INPUT_MOUSE_BUTTON_AT_CURSOR",
+      "button": 0,
+      "down": false,
+      "payload": "0000",
+      "frame": "26000000020000"
+    },
+    {
+      "name": "forward button down at the cursor",
+      "type": "INPUT_MOUSE_BUTTON_AT_CURSOR",
+      "button": 4,
+      "down": true,
+      "payload": "0401",
+      "frame": "26000000020401"
+    },
+    {
+      "name": "plain text",
+      "type": "INPUT_TEXT",
+      "text": "hello",
+      "payload": "68656c6c6f",
+      "frame": "250000000568656c6c6f"
+    },
+    {
+      "name": "accents and an emoji",
+      "type": "INPUT_TEXT",
+      "text": "héllo 👋",
+      "payload": "68c3a96c6c6f20f09f918b",
+      "frame": "250000000b68c3a96c6c6f20f09f918b"
+    }
+  ],
+  "ignored": [
+    {
+      "name": "move with NaN x",
+      "type": "INPUT_MOUSE_MOVE",
+      "payload": "7fc000003f000000",
+      "frame": "20000000087fc000003f000000"
+    },
+    {
+      "name": "move with infinite y",
+      "type": "INPUT_MOUSE_MOVE",
+      "payload": "3f0000007f800000",
+      "frame": "20000000083f0000007f800000"
+    },
+    {
+      "name": "button with NaN position",
+      "type": "INPUT_MOUSE_BUTTON",
+      "payload": "00017fc000007fc00000",
+      "frame": "210000000a00017fc000007fc00000",
+      "note": "no press happens and nothing is taken as held"
+    },
+    {
+      "name": "relative move with negative infinity",
+      "type": "INPUT_MOUSE_RELATIVE",
+      "payload": "ff80000000000000",
+      "frame": "2400000008ff80000000000000"
+    },
+    {
+      "name": "relative move with NaN dy",
+      "type": "INPUT_MOUSE_RELATIVE",
+      "payload": "404000007fc00000",
+      "frame": "2400000008404000007fc00000"
+    },
+    {
+      "name": "button 5",
+      "type": "INPUT_MOUSE_BUTTON",
+      "payload": "05013f0000003f000000",
+      "frame": "210000000a05013f0000003f000000",
+      "note": "only buttons 0-4 exist"
+    },
+    {
+      "name": "button 255 at the cursor",
+      "type": "INPUT_MOUSE_BUTTON_AT_CURSOR",
+      "payload": "ff01",
+      "frame": "2600000002ff01"
+    },
+    {
+      "name": "key code 256",
+      "type": "INPUT_KEY",
+      "payload": "0100010000000000000000",
+      "frame": "220000000b0100010000000000000000",
+      "note": "a key code above 0xFF is not a macOS virtual key code"
+    },
+    {
+      "name": "key code 65535",
+      "type": "INPUT_KEY",
+      "payload": "ffff010000000000000000",
+      "frame": "220000000bffff010000000000000000"
+    },
+    {
+      "name": "move cut short",
+      "type": "INPUT_MOUSE_MOVE",
+      "payload": "3f000000",
+      "frame": "20000000043f000000",
+      "note": "fewer bytes than the layout needs"
+    },
+    {
+      "name": "button cut short",
+      "type": "INPUT_MOUSE_BUTTON",
+      "payload": "00013f000000",
+      "frame": "210000000600013f000000"
+    },
+    {
+      "name": "key cut short",
+      "type": "INPUT_KEY",
+      "payload": "000001",
+      "frame": "2200000003000001"
+    },
+    {
+      "name": "button at the cursor cut short",
+      "type": "INPUT_MOUSE_BUTTON_AT_CURSOR",
+      "payload": "00",
+      "frame": "260000000100"
+    }
+  ],
+  "longer": [
+    {
+      "name": "move with two extra bytes",
+      "payload": "3f0000003f000000aabb",
+      "frame": "200000000a3f0000003f000000aabb",
+      "decodesAs": "pointer at the centre"
+    }
+  ],
+  "scroll": [
+    {
+      "name": "plain",
+      "payload": "00000000c1400000",
+      "frame": "230000000800000000c1400000",
+      "dxUsed": 0,
+      "dyUsed": -12
+    },
+    {
+      "name": "NaN dx",
+      "payload": "7fc00000c1400000",
+      "frame": "23000000087fc00000c1400000",
+      "dxUsed": 0,
+      "dyUsed": -12,
+      "note": "a non-finite delta counts as 0; the other axis still scrolls"
+    },
+    {
+      "name": "infinite dy",
+      "payload": "40a000007f800000",
+      "frame": "230000000840a000007f800000",
+      "dxUsed": 5,
+      "dyUsed": 0,
+      "note": "infinity is not capped, it counts as 0"
+    },
+    {
+      "name": "over the cap",
+      "payload": "469c4000c69c4000",
+      "frame": "2300000008469c4000c69c4000",
+      "dxUsed": 10000,
+      "dyUsed": -10000,
+      "note": "each delta is capped at 10 000"
+    },
+    {
+      "name": "at the cap",
+      "payload": "461c4000c61c4000",
+      "frame": "2300000008461c4000c61c4000",
+      "dxUsed": 10000,
+      "dyUsed": -10000
+    },
+    {
+      "name": "largest finite values",
+      "payload": "7f7fffffff7fffff",
+      "frame": "23000000087f7fffffff7fffff",
+      "dxUsed": 10000,
+      "dyUsed": -10000
+    },
+    {
+      "name": "both zero",
+      "payload": "0000000000000000",
+      "frame": "23000000080000000000000000",
+      "ignored": true,
+      "note": "nothing to scroll"
+    },
+    {
+      "name": "both non-finite",
+      "payload": "7fc00000ff800000",
+      "frame": "23000000087fc00000ff800000",
+      "ignored": true,
+      "note": "nothing to scroll"
+    }
+  ],
+  "relative": [
+    {
+      "name": "plain",
+      "payload": "4120000040800000",
+      "frame": "24000000084120000040800000",
+      "dxUsed": 10,
+      "dyUsed": 4
+    },
+    {
+      "name": "over the cap",
+      "payload": "469c4000c69c4000",
+      "frame": "2400000008469c4000c69c4000",
+      "dxUsed": 10000,
+      "dyUsed": -10000,
+      "note": "each delta is capped at 10 000 points"
+    },
+    {
+      "name": "largest finite values",
+      "payload": "ff7fffff7f7fffff",
+      "frame": "2400000008ff7fffff7f7fffff",
+      "dxUsed": -10000,
+      "dyUsed": 10000
+    }
+  ],
+  "keyFlags": [
+    {
+      "name": "no flags",
+      "flags": "0000000000000000",
+      "used": "0000000000000000"
+    },
+    {
+      "name": "command and shift",
+      "flags": "0000000000120000",
+      "used": "0000000000120000"
+    },
+    {
+      "name": "every modifier bit",
+      "flags": "0000000000ff0000",
+      "used": "0000000000ff0000"
+    },
+    {
+      "name": "command plus the non-coalesced bit",
+      "flags": "0000000000100100",
+      "used": "0000000000100000"
+    },
+    {
+      "name": "device-dependent low bits only",
+      "flags": "000000000000ffff",
+      "used": "0000000000000000"
+    },
+    {
+      "name": "every bit set",
+      "flags": "ffffffffffffffff",
+      "used": "0000000000ff0000"
+    }
+  ],
+  "text": [
+    {
+      "name": "plain",
+      "utf8": "68656c6c6f",
+      "steps": [
+        {
+          "text": "hello"
+        }
+      ]
+    },
+    {
+      "name": "line feed",
+      "utf8": "610a62",
+      "steps": [
+        {
+          "text": "a"
+        },
+        {
+          "key": "return"
+        },
+        {
+          "text": "b"
+        }
+      ],
+      "note": "a line feed is the Return key"
+    },
+    {
+      "name": "carriage return and line feed",
+      "utf8": "610d0a62",
+      "steps": [
+        {
+          "text": "a"
+        },
+        {
+          "key": "return"
+        },
+        {
+          "text": "b"
+        }
+      ],
+      "note": "CR LF is one Return, not two"
+    },
+    {
+      "name": "carriage return alone",
+      "utf8": "610d62",
+      "steps": [
+        {
+          "text": "a"
+        },
+        {
+          "key": "return"
+        },
+        {
+          "text": "b"
+        }
+      ]
+    },
+    {
+      "name": "CR, CR LF, LF",
+      "utf8": "0d0d0a0a",
+      "steps": [
+        {
+          "key": "return"
+        },
+        {
+          "key": "return"
+        },
+        {
+          "key": "return"
+        }
+      ],
+      "note": "three Returns"
+    },
+    {
+      "name": "tab",
+      "utf8": "610962",
+      "steps": [
+        {
+          "text": "a"
+        },
+        {
+          "key": "tab"
+        },
+        {
+          "text": "b"
+        }
+      ],
+      "note": "a tab is the Tab key"
+    },
+    {
+      "name": "trailing line feed",
+      "utf8": "646f6e650a",
+      "steps": [
+        {
+          "text": "done"
+        },
+        {
+          "key": "return"
+        }
+      ]
+    },
+    {
+      "name": "control characters are dropped",
+      "utf8": "61006207631b647f65c28566c29f67",
+      "steps": [
+        {
+          "text": "abcdefg"
+        }
+      ],
+      "note": "U+0000-U+001F other than tab, LF and CR, then U+007F and U+0080-U+009F"
+    },
+    {
+      "name": "only control characters",
+      "utf8": "01027f",
+      "steps": [],
+      "note": "nothing is typed"
+    },
+    {
+      "name": "accents",
+      "utf8": "c3a9c3a820c3bcc39f",
+      "steps": [
+        {
+          "text": "éè üß"
+        }
+      ]
+    },
+    {
+      "name": "emoji with a skin tone",
+      "utf8": "f09f918bf09f8fbd",
+      "steps": [
+        {
+          "text": "👋🏽"
+        }
+      ],
+      "note": "two code points outside the BMP: four UTF-16 units"
+    },
+    {
+      "name": "twenty-five waving hands",
+      "utf8": "f09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918bf09f918b",
+      "steps": [
+        {
+          "text": "👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋👋"
+        }
+      ],
+      "note": "50 UTF-16 units; a host that types in pieces must not split a surrogate pair"
+    },
+    {
+      "name": "nineteen letters then an emoji",
+      "utf8": "61616161616161616161616161616161616161f09f9880",
+      "steps": [
+        {
+          "text": "aaaaaaaaaaaaaaaaaaa😀"
+        }
+      ],
+      "note": "a 20-unit piece would end inside the emoji: the piece must break before it"
+    },
+    {
+      "name": "no-break space and line separator",
+      "utf8": "61c2a062e280a863",
+      "steps": [
+        {
+          "text": "a b c"
+        }
+      ],
+      "note": "typed as they are: neither is a control character"
+    },
+    {
+      "name": "invalid UTF-8",
+      "utf8": "c328",
+      "ignored": true,
+      "note": "the whole message is ignored"
+    },
+    {
+      "name": "encoded surrogate",
+      "utf8": "61eda08062",
+      "ignored": true,
+      "note": "not valid UTF-8: the whole message is ignored"
+    },
+    {
+      "name": "cut-off sequence",
+      "utf8": "68c3",
+      "ignored": true,
+      "note": "ends inside a code point: the whole message is ignored"
+    },
+    {
+      "name": "empty",
+      "utf8": "",
+      "steps": [],
+      "note": "nothing is typed"
+    }
+  ],
+  "textSize": [
+    {
+      "name": "exactly at the limit",
+      "repeatByte": "61",
+      "count": 16384,
+      "typedLength": 16384,
+      "note": "the byte 0x61 repeated count times is typed in full"
+    },
+    {
+      "name": "one byte over the limit",
+      "repeatByte": "61",
+      "count": 16385,
+      "ignored": true,
+      "note": "longer than 16 KB: the whole message is ignored"
+    }
+  ]
+}
