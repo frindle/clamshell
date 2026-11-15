@@ -62,6 +62,11 @@ final class StreamClient: ObservableObject {
     /// Called with received clipboard text (main thread).
     var onClipboard: ((String) -> Void)?
 
+    /// What the current socket's HELLO carried, and whether HELLO_ACK is still
+    /// pending. Main thread only.
+    private var helloReport: DisplayReport?
+    private var awaitingHelloAck = false
+
     /// Decoded-ready compressed samples for the display layer. Called on the
     /// network queue; AVSampleBufferDisplayLayer enqueue is thread-safe.
     var onSampleBuffer: ((CMSampleBuffer) -> Void)?
@@ -162,6 +167,8 @@ final class StreamClient: ObservableObject {
         // URLSession queues sends until the handshake completes.
         noteSent()
         startKeepalive()
+        helloReport = currentDisplayReport
+        awaitingHelloAck = true
         task.send(.data(StreamMessage.hello(requestedCodec: .hevc, displayInfo: displayInfoPayload,
                                             secondSize: secondSizePayload))) { _ in }
         receiveLoop(task)
@@ -200,14 +207,39 @@ final class StreamClient: ObservableObject {
     /// surface size). Stores the values — they ride the next HELLO on
     /// reconnect — and, when connected, tells the host now via
     /// CLIENT_DISPLAYS so it can reshape its virtual display(s).
+    ///
+    /// Between opening the socket and HELLO_ACK nothing is sent: the stored
+    /// values may already ride the HELLO, and a display rebuild that early
+    /// raced with the host's capture start. `helloAcknowledged()` sends one
+    /// update afterwards if the values moved meanwhile.
     func updateReportedDisplay(pixelSize: CGSize? = nil, secondDisplay: Bool, secondPixelSize: CGSize? = nil) {
         if let pixelSize { reportedPixelSize = pixelSize }
         if let secondPixelSize { reportedSecondPixelSize = secondPixelSize }
         reportsSecondDisplay = secondDisplay
-        guard task != nil, let info = displayInfoPayload else { return }
-        clogViewer("reporting display update: \(Int(info.widthPx))x\(Int(info.heightPx))px, second display \(secondDisplay)")
+        guard task != nil, !awaitingHelloAck else { return }
+        sendDisplayUpdate()
+    }
+
+    private func sendDisplayUpdate() {
+        guard let info = displayInfoPayload else { return }
+        clogViewer("reporting display update: \(Int(info.widthPx))x\(Int(info.heightPx))px, second display \(info.secondDisplay)")
         send(StreamMessage.clientDisplays(widthPx: info.widthPx, heightPx: info.heightPx,
                                           secondDisplay: info.secondDisplay, secondSize: secondSizePayload))
+    }
+
+    /// The current report in comparable form (nil while no size is known).
+    private var currentDisplayReport: DisplayReport? {
+        guard let info = displayInfoPayload else { return nil }
+        let second = secondSizePayload
+        return DisplayReport(width: info.widthPx, height: info.heightPx, secondDisplay: info.secondDisplay,
+                             secondWidth: second?.widthPx ?? 0, secondHeight: second?.heightPx ?? 0)
+    }
+
+    /// Main thread, on HELLO_ACK: updates were held back since the HELLO.
+    private func helloAcknowledged() {
+        guard awaitingHelloAck else { return }
+        awaitingHelloAck = false
+        if DisplayReport.differs(sent: helloReport, now: currentDisplayReport) { sendDisplayUpdate() }
     }
 
     /// User-initiated disconnect: stop reconnecting and tear down.
@@ -279,6 +311,7 @@ final class StreamClient: ObservableObject {
         handshakeTimeout = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+        awaitingHelloAck = false
         parser = nil
         assembler = nil
         audio?.stop()
@@ -347,6 +380,7 @@ final class StreamClient: ObservableObject {
                 self.codecName = codecName
                 self.lastError = nil // streaming actually started — clear any stale reason
                 self.status = .streaming("\(codecName) \(width)x\(height)")
+                self.helloAcknowledged()
             }
         case .streamStatus:
             guard payload.count >= 2 else { return }
