@@ -397,6 +397,25 @@ final class StreamClient: ObservableObject {
         guard hostCapabilities.contains(.relativeMouse) else { return }
         send(StreamMessage.mouseRelative(dx: dx, dy: dy))
     }
+    /// Text with no key code (dictation, emoji, input-method output) as
+    /// INPUT_TEXT. Returns false, sending nothing, when the host lacks
+    /// `textInput`. Long text goes in pieces under the host's 16 KB limit.
+    @discardableResult
+    func sendText(_ text: String) -> Bool {
+        guard hostCapabilities.contains(.textInput), !text.isEmpty else { return false }
+        var piece = ""
+        var bytes = 0
+        for ch in text {
+            let n = String(ch).utf8.count
+            if bytes + n > 8 * 1024 {
+                send(StreamMessage.text(piece))
+                piece = ""; bytes = 0
+            }
+            piece.append(ch); bytes += n
+        }
+        if !piece.isEmpty { send(StreamMessage.text(piece)) }
+        return true
+    }
     func sendScroll(dx: Float, dy: Float) { send(StreamMessage.scroll(dx: dx, dy: dy)) }
     func sendKey(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         send(StreamMessage.key(macKeyCode: macKeyCode, down: down, flags: flags))
