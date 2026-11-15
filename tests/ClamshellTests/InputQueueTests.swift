@@ -132,6 +132,7 @@ final class InputQueueTests: XCTestCase {
     func testReleaseAllTwiceIsHarmless() {
         let q = makeQueue()
         q.enqueue([kd(5)])
+        InputQueue.drain() // the down is posted, so it needs an up
         q.releaseAll()
         q.releaseAll()
         InputQueue.drain()
