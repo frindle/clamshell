@@ -72,13 +72,18 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x24 | INPUT_MOUSE_RELATIVE | client → host | dx(Float32 BE), dy(Float32 BE) — pointer movement in points, for a captured pointer. Only to a host that advertises `relativeMouse` |
 | 0x25 | INPUT_TEXT       | client → host | UTF-8 text to type as-is (dictation, input-method text, emoji), at most 16 KB. Only to a host that advertises `textInput` |
 | 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
+| 0x50 | PERIPHERAL_ATTACH | client → host | UTF-8 JSON — one peripheral the client offers; see "Peripherals attached to the client" |
+| 0x51 | PERIPHERAL_STATUS | host → client | id(4 BE), status(1) |
+| 0x52 | PERIPHERAL_DETACH | client → host | id(4 BE) |
+| 0x53 | PERIPHERAL_INPUT  | client → host | id(4 BE), then a report whose layout depends on the peripheral's kind |
+| 0x54 | PERIPHERAL_OUTPUT | host → client | id(4 BE), then a report for the peripheral (rumble, MIDI) |
 | 0x58 | FILE_OFFER       | both          | UTF-8 JSON — one file the sender wants to transfer; see "File transfer" |
 | 0x59 | FILE_ANSWER      | both          | id(4 BE), status(1) |
 | 0x5A | FILE_DATA        | both          | id(4 BE), then the next bytes of the file, at most 64 KB |
 | 0x5B | FILE_END         | both          | id(4 BE), status(1) |
 
-Reserved, not specified yet: 0x40–0x49 (Window Handoff v2, below), 0x50–0x53
-(devices attached to the client).
+Reserved, not specified yet: 0x40–0x49 (Window Handoff v2, below) and
+0x55–0x57 (further peripheral messages).
 
 Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
 host picks what its hardware encoder actually supports (HEVC preferred on
@@ -549,6 +554,7 @@ that sent no challenge has every bit 0.
 | 3 | `extraButtons` | host accepts mouse buttons 2–4 |
 | 4 | `deviceApproval` | host: trusted devices may approve others. Client: can show the approval prompt |
 | 5 | `fileTransfer` | both: can send and receive files — see "File transfer" |
+| 6 | `peripherals` | host: accepts peripherals attached to the client. Client: can send them — see "Peripherals attached to the client" |
 
 Unassigned bits are sent as 0 and ignored on receipt.
 
@@ -582,6 +588,10 @@ a second address, and can keep a host's LAN, VPN and tunnel addresses together
 under one saved entry, trying them in turn. Every address still has to pass
 the handshake with the saved identity key, so a wrong or hostile entry can
 waste a connection attempt but cannot stand in for the host.
+
+An optional `peripherals` array, for example `["gamepad","midi"]`, lists the
+kinds of peripheral the host accepts (see "Peripherals attached to the
+client"). A client leaves the other kinds out of what it offers the user.
 
 **CLIENT_INFO** (client → host), sent once after `accepted`:
 
@@ -663,6 +673,168 @@ device.
   nothing for 60 s fails.
 - A client that receives a file asks the user where to save it before it
   answers 0.
+
+## Peripherals attached to the client (PERIPHERAL_*)
+
+*Status: specified here, not implemented yet.*
+
+A game controller or MIDI instrument plugged into the client, or paired with
+it, can be used on the host as though it were attached there. This is not USB
+passthrough: the client reads the peripheral through its own system and sends
+what it reads, and the host builds a matching virtual device of a kind it
+already knows. A peripheral the client's system gives an app no way to read
+cannot be sent.
+
+"Peripheral" never means the client itself, which is the *device* of the
+handshake above. Keyboards, mice and trackpads are not peripherals in this
+sense either: what they do travels as INPUT_* messages. Files on an attached
+drive travel by file transfer. A security key is used through remote
+confirmation (below), not sent as a peripheral.
+
+All five messages travel only inside SECURE and only when both sides set
+capability bit 6. A session without the handshake never carries a peripheral.
+
+```
+client → host     PERIPHERAL_ATTACH   {"id":1,"kind":"gamepad","name":"DualSense Wireless Controller","rumble":true}
+host   → client   PERIPHERAL_STATUS   id, status
+client → host     PERIPHERAL_INPUT    id, report      whenever its state changes
+host   → client   PERIPHERAL_OUTPUT   id, report      when the host has something for it
+client → host     PERIPHERAL_DETACH   id
+```
+
+- `id` is chosen by the client, from 1 to 2^32 − 1, and is never used twice on
+  one connection, so a late message about a peripheral that has gone cannot be
+  taken for one about its replacement.
+- `kind` is `gamepad` or `midi`. More kinds will follow. HOST_INFO's
+  `peripherals` array says which ones a host accepts.
+- `name` is for display only: at most 64 bytes of UTF-8, cleaned the way
+  device names are.
+- A client with several connections to one host attaches a peripheral on only
+  one of them.
+- PERIPHERAL_STATUS answers every PERIPHERAL_ATTACH and is sent again if the
+  answer changes later:
+
+  | Status | Meaning |
+  |---|---|
+  | 0 | attached: the host presents a device of this kind |
+  | 1 | attached as keys and pointer (`gamepad` only): the host cannot present a game controller and turns its reports into key presses and pointer movement instead |
+  | 2 | this host does not accept this kind |
+  | 3 | too many peripherals |
+  | 4 | peripherals are turned off |
+  | 5 | removed: the host could not create it, or has taken it away |
+
+- The client sends PERIPHERAL_INPUT only after status 0 or 1. After any other
+  status the id is finished. A message for an id that is not attached is
+  ignored.
+
+### Game controllers (`gamepad`)
+
+A PERIPHERAL_INPUT report is the controller's whole state, not a change:
+
+```
+id(4 BE), buttons(4 BE), leftTrigger(1), rightTrigger(1),
+leftX(2 BE), leftY(2 BE), rightX(2 BE), rightY(2 BE)          18 bytes
+```
+
+`buttons` is a bit field, bit 0 the least significant. The numbering is that
+of the W3C "standard gamepad", which goes by where a button sits, not by what
+is printed on it:
+
+| Bit | Button |
+|---|---|
+| 0–3 | face buttons: bottom, right, left, top (A, B, X, Y on an Xbox controller; Cross, Circle, Square, Triangle on a PlayStation one) |
+| 4, 5 | left and right shoulder |
+| 6, 7 | always 0: the triggers travel as values |
+| 8, 9 | the centre pair: left (View, Share, Select) and right (Menu, Options, Start) |
+| 10, 11 | left and right stick pressed in |
+| 12–15 | d-pad up, down, left, right |
+| 16 | Home / Guide |
+| 17–31 | 0 until assigned |
+
+- Triggers run from 0 (released) to 255 (fully pressed). A trigger that is
+  only a switch sends 0 or 255.
+- Stick values are signed 16-bit, −32767 to 32767, 0 at the centre. Positive X
+  is right and positive Y is **down**, as in the W3C layout. GameController
+  and XInput count up as positive, so clients built on them negate Y. −32768
+  is not used.
+- The client sends a report when the state changes, at most 250 a second for
+  one controller, and always finishes with the latest state. A host that is
+  sent more may skip some, but always applies the last.
+- The client also sends a report at least once a second while nothing changes.
+  A host that receives none for 3 s puts the controller at rest (no buttons,
+  triggers 0, sticks centred) until the next one arrives, so a client that
+  froze with a stick held over cannot keep it there. A client about to stop
+  reading a controller for a while (its app leaves the foreground) sends the
+  at-rest report first.
+- A report longer than 18 bytes is accepted and the extra bytes ignored, which
+  leaves room for later fields. A shorter one is ignored.
+
+Example: the bottom face button and d-pad left held, the right trigger half
+pressed and the left stick fully right, for peripheral 1. The whole message,
+before SECURE wraps it:
+
+```
+53 00000012  00000001 00004001 00 80 7FFF 0000 0000 0000
+```
+
+**Rumble.** When PERIPHERAL_ATTACH carried `"rumble": true`, the host may send
+PERIPHERAL_OUTPUT: `id(4 BE), strong(1), weak(1), durationMs(2 BE)`. `strong`
+is the low-frequency motor and `weak` the high-frequency one, each 0–255. The
+client runs them for the duration and then stops by itself. A new report
+replaces the one before, and 0, 0 stops at once. The client never runs longer
+than 5 s on one report, so a stop that never arrives cannot leave the motors
+on.
+
+### MIDI instruments (`midi`)
+
+PERIPHERAL_ATTACH adds two fields: `"sends": true` when the instrument
+produces MIDI (carried to the host by PERIPHERAL_INPUT) and `"receives": true`
+when it accepts MIDI (carried from the host by PERIPHERAL_OUTPUT). At least
+one is true. The host shows a virtual MIDI source, destination or both under
+the peripheral's name.
+
+A report in either direction is `id(4 BE)` followed by MIDI 1.0 bytes: one or
+more whole messages, each with its own status byte (no running status), at
+most 64 KB in all. A System Exclusive message has to fit in one report. A
+report that does not parse as whole MIDI messages is dropped.
+
+Reports are played as they arrive. There are no timestamps in this version, so
+timing carries the network's jitter: fine for playing and controlling, not for
+recording that has to be sample-accurate.
+
+When a MIDI peripheral detaches or its connection ends, the host ends any note
+it left sounding and releases the sustain pedal. The client does the same
+toward the instrument.
+
+### Host rules
+
+They matter because a remote device is asking the host to create an input
+device.
+
+- The host builds only the kinds it implements, each from a description fixed
+  in the host. A client never supplies a HID report descriptor, raw HID
+  reports, or vendor and product numbers for the host to adopt. A virtual game
+  controller has buttons, triggers and sticks and nothing else: it cannot type
+  or move the pointer.
+- With status 1 the host itself turns reports into the key and pointer events
+  that INPUT_* messages produce, under every rule that applies to those. Which
+  control does what is a host setting.
+- At most 4 game controllers and 8 peripherals in all per connection. Beyond
+  that the answer is status 3.
+- A peripheral never outlives its connection. On PERIPHERAL_DETACH, and when
+  the connection or the session ends for any reason, the host puts the
+  peripheral at rest and removes the virtual device.
+- The host shows which peripherals are attached and which device brought each
+  one. The user can remove one there (status 5) or turn peripherals off
+  (status 4).
+- On macOS a virtual game controller needs Apple's
+  `com.apple.developer.hid.virtual.device` entitlement in the host's
+  signature. A host without it answers a game controller with status 1 or 2.
+  MIDI needs no entitlement.
+
+**Reference vectors.** `tests/vectors/peripheral-v1.json` holds game
+controller states with the exact message bytes for each, plus rumble and
+status messages. Every encoder and decoder must reproduce them byte for byte.
 
 ## Future (not in v1)
 
