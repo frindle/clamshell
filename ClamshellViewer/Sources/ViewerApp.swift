@@ -544,6 +544,14 @@ struct ContentView: View {
                         if showShortcuts {
                             ShortcutBar(client: client)
                         }
+                        if let notice = pointerLock.notice {
+                            Text(notice)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 14).padding(.vertical, 8)
+                                .background(.black.opacity(0.75), in: Capsule())
+                        }
                         // Always visible while locked: the way out, usable by touch.
                         if pointerLock.isLocked {
                             Button {
