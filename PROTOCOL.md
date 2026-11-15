@@ -176,8 +176,15 @@ key codes (client is responsible for any translation).
 
 From host 0.12 (each gated by a capability bit, see "Capabilities"):
 
-- **Non-finite coordinates are dropped.** A NaN or infinite x, y, dx or dy is
-  ignored rather than mapped.
+- **Non-finite numbers are dropped.** A move, button or relative-move message
+  with a NaN or infinite value is ignored. In INPUT_SCROLL a NaN or infinite
+  delta counts as 0 and the other axis still scrolls.
+- **Deltas are capped.** Each INPUT_SCROLL and INPUT_MOUSE_RELATIVE delta is
+  cut to ±10 000.
+- **Short messages are ignored, extra bytes skipped.** A message shorter than
+  its layout does nothing. Bytes after the layout are skipped, so a later
+  version can add fields. A button above 4 or a key code above 0xFF is
+  ignored.
 - **Buttons 2–4** (middle, back, forward) are posted as "other" mouse buttons
   with that button number.
 - **Clicks carry a click count.** Two presses of the same button within the
@@ -208,15 +215,24 @@ From host 0.12 (each gated by a capability bit, see "Capabilities"):
   willing to hold, it drops new events, but never the release of a key or
   button it has already taken as down.
 - **INPUT_TEXT** types the text through keyboard events that carry the
-  characters themselves, in pieces of at most 20 UTF-16 units; a line feed
-  becomes the Return key and a tab the Tab key. It is for text that has no
-  key code. Text longer than 16 KB is refused: use CLIPBOARD and paste.
+  characters themselves, in pieces of at most 20 UTF-16 units that never
+  split a code point. A line feed, a carriage return, or the pair CR LF
+  becomes one press of the Return key, and a tab one press of the Tab key.
+  Other control characters (U+0000–U+001F, U+007F–U+009F) are left out. It is
+  for text that has no key code. A payload that is not valid UTF-8, or is
+  longer than 16 KB, is ignored as a whole: use CLIPBOARD and paste for long
+  text.
 - **Held input is released when the session ends.** The host tracks which
   buttons and keys a client has down and posts the matching "up" events when
   the connection drops or another client takes over, so a lost connection
   cannot leave a key or a drag stuck on the Mac. Text and other input still
   waiting at that moment is abandoned, so the host does not keep typing for
   a client that has gone.
+
+**Reference vectors.** `tests/vectors/input-v1.json` holds the exact bytes of
+every input message, the messages a host must ignore, the deltas and flag
+bits it uses, and what it types for a range of INPUT_TEXT payloads. Every
+encoder must reproduce the bytes, and every host the outcomes.
 
 ## Encoder contract (host)
 
@@ -659,14 +675,20 @@ receiver → sender     FILE_END      id, 0          stored
 - `id` is chosen by the sender (below 2^32) and is unique among the transfers
   it has open on this connection. The two directions number separately.
 - `name` is a file name, at most 255 bytes of UTF-8. `size` is the exact
-  length in bytes. `modified` (seconds since 1970) is optional.
+  length in bytes, a whole number from 0 to 2^53 − 1. `modified` (seconds
+  since 1970) is optional, and left out by the receiver when it is not a
+  whole number. Fields the receiver does not know are skipped.
+- An offer that is not a JSON object, or has no usable `id`, is ignored, and
+  so is one that reuses an id still open. An offer with a usable `id` but a
+  missing or wrong `name` or `size` is answered with status 1.
 - FILE_ANSWER status: 0 accept, 1 declined, 2 too large or no room, 3 too many
   transfers open, 4 transfers are turned off.
 - FILE_DATA carries the next bytes of the file, at most 64 KB per message.
   There is no offset: messages arrive in order. The sender hands the network
   one FILE_DATA at a time and lets waiting input and video go first, so a
   large file never holds them up by more than one message. On a slow link it
-  uses smaller pieces.
+  uses smaller pieces. A FILE_DATA with no bytes is ignored. One with more
+  than 64 KB fails the transfer.
 - FILE_END status: 0 complete (from the sender: every byte was sent; from the
   receiver: the file is stored), 1 cancelled, 2 failed. Either side may send 1
   or 2 at any time; the transfer is then over and the receiver discards what
@@ -677,10 +699,16 @@ receiver → sender     FILE_END      id, 0          stored
 **Receiver rules.** They matter most on the host, where the sender is a remote
 device.
 
-- The name is never used as a path. The receiver keeps only its last
-  component, drops control characters, path separators and leading dots, uses
-  `file` if nothing is left, and never overwrites: a name already taken gets
-  ` 2`, ` 3`, … before its extension.
+- The name is never used as a path. The receiver keeps what follows the last
+  `/` or `\`, removes control characters and `:`, then removes dots and
+  spaces from the start and spaces from the end, and uses `file` if nothing
+  is left. A receiver also changes whatever its own file system refuses (on
+  Windows the characters `< > " | ? *`, trailing dots, and device names such
+  as `CON`).
+- The receiver never overwrites. A name already taken gets ` 2`, ` 3`, …
+  before its extension (the part from the last dot on, unless that dot is the
+  first or last character), and the final name is claimed in one step that
+  cannot replace an existing file.
 - The host stores received files in one folder (`~/Downloads/Clamshell` by
   default). It writes each file under a temporary name and renames it only
   after the sender's FILE_END 0, with exactly `size` bytes received. More
@@ -694,6 +722,11 @@ device.
   nothing for 60 s fails.
 - A client that receives a file asks the user where to save it before it
   answers 0.
+
+**Reference vectors.** `tests/vectors/file-transfer-v1.json` holds the message
+bytes, offers a receiver must accept, decline or ignore, the stored name for a
+range of offered names, and the receiver's handling of one transfer step by
+step (complete, too many bytes, ended early, cancelled).
 
 ## Peripherals attached to the client (PERIPHERAL_*)
 
