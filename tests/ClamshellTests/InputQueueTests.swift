@@ -129,6 +129,58 @@ final class InputQueueTests: XCTestCase {
         XCTAssertEqual(snapshot(), [move()]) // no B down, no click, no ups for them
     }
 
+    func testOverCapOnlyReleasesOfHeldAreAccepted() {
+        let core = InputCore(boundsProvider: { CGRect(x: 0, y: 0, width: 100, height: 100) },
+                             displaysProvider: { [] }, cursorProvider: { self.here },
+                             clock: { 0 }, doubleClickInterval: { 0.5 })
+        let q = makeQueue()
+        core.isBacklogged = { q.isBacklogged }
+        let inj = InputInjector(core: core, queue: q)
+
+        inj.key(macKeyCode: 55, down: true, flags: 0)   // held, posted
+        inj.mouseButton(button: 0, down: true, x: 0.5, y: 0.5)
+        InputQueue.drain()
+        let before = snapshot().count
+
+        blockOn = { if case .mouse(.move, _, _, _, _) = $0 { return true } else { return false } }
+        XCTAssertTrue(q.enqueue(Array(repeating: move(), count: InputQueue.maxBacklogEvents)))
+        XCTAssertEqual(entered.wait(timeout: .now() + 5), .success)
+        XCTAssertFalse(q.hasRoom())
+
+        inj.key(macKeyCode: 9, down: false, flags: 0)    // not held: dropped
+        inj.mouseButton(button: 1, down: false, x: 0.5, y: 0.5) // not held: dropped
+        inj.mouseButtonAtCursor(button: 2, down: false)  // not held: dropped
+        inj.key(macKeyCode: 55, down: false, flags: 0)   // held: accepted
+        inj.key(macKeyCode: 55, down: false, flags: 0)   // no longer held: dropped
+        inj.mouseButtonAtCursor(button: 0, down: false)  // held: accepted
+        inj.key(macKeyCode: 12, down: true, flags: 0)    // a down: dropped
+
+        proceed.signal()
+        InputQueue.drain()
+        let tail = Array(snapshot().dropFirst(before + InputQueue.maxBacklogEvents))
+        XCTAssertEqual(tail.count, 2)
+        XCTAssertEqual(tail.first, ku(55))
+        if case .mouse(.up, 0, _, _, _) = tail[1] {} else { XCTFail("expected mouse up, got \(tail[1])") }
+    }
+
+    func testMaxSizeTextWithManyEventsIsDeliveredOnEmptyQueue() {
+        let core = InputCore(boundsProvider: { .zero }, displaysProvider: { [] },
+                             cursorProvider: { .zero }, clock: { 0 }, doubleClickInterval: { 0.5 })
+        let payload = Data(String(repeating: "a\n", count: 2000).utf8) // 4 KB
+        let events = core.text(payload)
+        XCTAssertGreaterThan(events.count, InputQueue.maxBacklogEvents)
+        let q = makeQueue()
+        XCTAssertTrue(q.hasRoom(textBytes: payload.count))
+        XCTAssertTrue(q.enqueue(events, textBytes: payload.count))
+        InputQueue.drain()
+        XCTAssertEqual(snapshot().count, events.count)
+
+        // Even the 16 KB maximum goes through an empty queue.
+        let big = Data(String(repeating: "a\n", count: 8192).utf8)
+        XCTAssertTrue(q.enqueue(core.text(big), textBytes: big.count))
+        InputQueue.drain()
+    }
+
     func testReleaseAllTwiceIsHarmless() {
         let q = makeQueue()
         q.enqueue([kd(5)])

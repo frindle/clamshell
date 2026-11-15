@@ -66,6 +66,8 @@ final class InputCore {
 
     var heldButtonCount: Int { heldButtons.count }
     var heldKeyCount: Int { heldKeys.count }
+    func isKeyHeld(_ code: UInt16) -> Bool { heldKeys.contains(code) }
+    func isButtonHeld(_ button: Int) -> Bool { heldButtons.contains(button) }
 
     // MARK: mapping
 
