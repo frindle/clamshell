@@ -218,8 +218,19 @@ final class StreamProtocolTests: XCTestCase {
         let expected: [(StreamMessageType, UInt8)] = [
             (.authChallenge, 0x08), (.authResponse, 0x09), (.authResult, 0x0A), (.hostInfo, 0x0B),
             (.clientInfo, 0x0C), (.devicePending, 0x0D), (.deviceDecision, 0x0E), (.secure, 0x0F),
-            (.mouseRelative, 0x24), (.text, 0x25)]
+            (.mouseRelative, 0x24), (.text, 0x25), (.mouseButtonAtCursor, 0x26)]
         for (t, v) in expected { XCTAssertEqual(t.rawValue, v) }
+    }
+
+    func testMouseButtonAtCursorFrame() {
+        // The documented example: left button down.
+        XCTAssertEqual([UInt8](StreamMessage.mouseButtonAtCursor(button: 0, down: true)),
+                       [0x26, 0, 0, 0, 2, 0, 1])
+        XCTAssertEqual([UInt8](StreamMessage.mouseButtonAtCursor(button: 2, down: false)),
+                       [0x26, 0, 0, 0, 2, 2, 0])
+        let r = parse(StreamMessage.mouseButtonAtCursor(button: 3, down: true))
+        XCTAssertEqual(r.messages[0].0, .mouseButtonAtCursor)
+        XCTAssertEqual([UInt8](r.messages[0].1), [3, 1])
     }
 
     func testMouseRelativeRoundTrip() {

@@ -365,6 +365,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         case .mouseRelative:
             guard payload.count >= 8 else { return }
             injector?.mouseRelative(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseButtonAtCursor:
+            guard payload.count >= 2 else { return }
+            injector?.mouseButtonAtCursor(button: payload[payload.startIndex], down: payload[payload.startIndex + 1] == 1)
         case .text:
             injector?.text(payload)
         case .clipboard:

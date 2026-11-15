@@ -31,6 +31,7 @@ enum StreamMessageType: UInt8 {
     case scroll = 0x23        // client -> host: dx, dy wheel deltas
     case mouseRelative = 0x24 // client -> host: dx, dy in points (needs relativeMouse)
     case text = 0x25          // client -> host: UTF-8 text to type (needs textInput)
+    case mouseButtonAtCursor = 0x26 // client -> host: button, down; at the host cursor (needs relativeMouse)
     case clipboard = 0x30     // both directions: UTF-8 plain text
 }
 
@@ -175,6 +176,12 @@ enum StreamMessage {
     static func mouseRelative(dx: Float32, dy: Float32) -> Data {
         var p = Data(); p.appendBE(dx); p.appendBE(dy)
         return frame(type: .mouseRelative, payload: p)
+    }
+
+    /// A press or release where the host cursor is now, for a captured pointer
+    /// (needs `relativeMouse`).
+    static func mouseButtonAtCursor(button: UInt8, down: Bool) -> Data {
+        frame(type: .mouseButtonAtCursor, payload: Data([button, down ? 1 : 0]))
     }
 
     /// Text to type as-is (needs `textInput`); the host refuses more than 16 KB.
