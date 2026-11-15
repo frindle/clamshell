@@ -16,7 +16,7 @@ func describeScreen(_ screen: UIScreen) -> String {
     return "\(Int(b.width))x\(Int(b.height))pt @\(screen.scale)x (native \(Int(n.width))x\(Int(n.height))px, maxFPS \(screen.maximumFramesPerSecond))"
 }
 
-final class VideoUIView: UIView {
+final class VideoUIView: UIView, UIKeyInput {
     override class var layerClass: AnyClass { AVSampleBufferDisplayLayer.self }
     var displayLayer: AVSampleBufferDisplayLayer { layer as! AVSampleBufferDisplayLayer }
 
@@ -86,6 +86,34 @@ final class VideoUIView: UIView {
         let dy = Float(t.y - lastScroll.y)
         lastScroll = t
         if dx != 0 || dy != 0 { client?.sendScroll(dx: dx, dy: dy) }
+    }
+
+    // MARK: text with no key code
+    // Dictation, the emoji picker and input methods deliver characters, not
+    // key presses. They arrive here as UIKeyInput and go to the host as
+    // INPUT_TEXT when it advertises `textInput`; otherwise they are ignored
+    // (as before, when this view took no text input at all). Mapped hardware
+    // keys never reach insertText: pressesBegan consumes them.
+    //
+    // An empty input view keeps the software keyboard from covering the stream.
+    private let noKeyboard = UIView(frame: .zero)
+    override var inputView: UIView? { noKeyboard }
+    var autocorrectionType: UITextAutocorrectionType = .no
+    var autocapitalizationType: UITextAutocapitalizationType = .none
+    var spellCheckingType: UITextSpellCheckingType = .no
+    var smartQuotesType: UITextSmartQuotesType = .no
+    var smartDashesType: UITextSmartDashesType = .no
+    var smartInsertDeleteType: UITextSmartInsertDeleteType = .no
+
+    var hasText: Bool { true }
+    func insertText(_ text: String) {
+        guard interactive else { return }
+        client?.sendText(text)
+    }
+    func deleteBackward() {
+        guard interactive, let client else { return }
+        client.sendKey(macKeyCode: 51, down: true, flags: 0)
+        client.sendKey(macKeyCode: 51, down: false, flags: 0)
     }
 
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
