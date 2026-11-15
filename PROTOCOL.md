@@ -211,6 +211,12 @@ From host 0.12 (each gated by a capability bit, see "Capabilities"):
 - **Only the modifier bits of cgEventFlags are used.** The host keeps bits
   16–23 (caps lock, shift, control, option, command, numeric pad, help, fn)
   and ignores every other bit.
+- **Modifier keys are also sent as keys.** A client sends each modifier's own
+  INPUT_KEY down and up, as a hardware keyboard does, and sets the modifier's
+  bit in the flags of every key pressed while it is down. A Mac host applies
+  the flags. A host on another system uses only the key events and ignores
+  the flags, so a client that sent flags alone would lose its modifiers
+  there.
 - **The backlog is bounded.** When more input is waiting than the host is
   willing to hold, it drops new events, but never the release of a key or
   button it has already taken as down.
