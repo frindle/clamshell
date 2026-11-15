@@ -321,6 +321,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         audioEncoder = nil
         clipboard?.stop()
         clipboard = nil
+        injector?.releaseAll()
         injector = nil
     }
 
@@ -347,22 +348,22 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             send(StreamMessage.frame(type: .ping, payload: Data()))
         case .keyframeRequest:
             encoder?.requestKeyframe()
-        case .mouseMove:
-            guard payload.count >= 8 else { return }
-            injector?.mouseMove(x: payload.beFloat32(at: 0), y: payload.beFloat32(at: 4))
-        case .mouseButton:
-            guard payload.count >= 10 else { return }
-            injector?.mouseButton(button: payload[payload.startIndex], down: payload[payload.startIndex + 1] == 1,
-                                  x: payload.beFloat32(at: 2), y: payload.beFloat32(at: 6))
-        case .key:
-            guard payload.count >= 11 else { return }
-            injector?.key(macKeyCode: payload.beUInt16(at: 0), down: payload[payload.startIndex + 2] == 1,
-                          flags: payload.beUInt64(at: 3))
-        case .scroll:
-            guard payload.count >= 8 else { return }
-            injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseMove, .mouseButton, .key, .scroll, .mouseRelative, .mouseButtonAtCursor, .text:
+            guard let input = InputMessage.decode(type: type, payload: payload) else { return }
+            switch input {
+            case let .mouseMove(x, y): injector?.mouseMove(x: x, y: y)
+            case let .mouseButton(button, down, x, y): injector?.mouseButton(button: button, down: down, x: x, y: y)
+            case let .key(code, down, flags): injector?.key(macKeyCode: code, down: down, flags: flags)
+            case let .scroll(dx, dy): injector?.scroll(dx: dx, dy: dy)
+            case let .mouseRelative(dx, dy): injector?.mouseRelative(dx: dx, dy: dy)
+            case let .mouseButtonAtCursor(button, down): injector?.mouseButtonAtCursor(button: button, down: down)
+            case let .text(data): injector?.text(data)
+            }
         case .clipboard:
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
+        case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
+             .devicePending, .deviceDecision, .secure:
+            break // the auth layer will handle these
         case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
         }

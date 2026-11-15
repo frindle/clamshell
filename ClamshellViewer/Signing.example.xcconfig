@@ -1,0 +1,6 @@
+// Copy to Signing.xcconfig (git-ignored) and fill in your own values.
+// Your team ID is shown in Xcode under Signing & Capabilities, or at
+// developer.apple.com/account under Membership details.
+DEVELOPMENT_TEAM = YOURTEAMID
+// Change this if the default bundle identifier is taken for your team.
+// PRODUCT_BUNDLE_IDENTIFIER = com.example.clamshell.viewer

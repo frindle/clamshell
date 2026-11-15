@@ -17,6 +17,10 @@
 	     exception to local-network/literal-IP hosts only; wss:// tunnel
 	     connections to real internet hostnames are unaffected and still get
 	     full ATS/TLS enforcement. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_clamshell._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

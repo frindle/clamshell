@@ -35,6 +35,14 @@ final class StreamClient: ObservableObject {
     /// (auto-pan) should treat that as "not visible here". See
     /// PROTOCOL.md "Cursor-follow auto-pan".
     @Published var cursorPos: CGPoint?
+    /// What the host says it supports (PROTOCOL.md "Capabilities"). Empty until
+    /// the handshake fills it, so against today's hosts every feature that
+    /// needs a capability stays off.
+    @Published var hostCapabilities: StreamCapabilities = []
+
+    private let keepaliveLock = NSLock()
+    private var keepalive = KeepaliveGate(now: ProcessInfo.processInfo.systemUptime)
+    private var keepaliveTimer: DispatchSourceTimer?
 
     /// Whether audio plays through this client. Only the primary (iPad-screen)
     /// client plays audio; the external-display client stays muted.
@@ -53,6 +61,11 @@ final class StreamClient: ObservableObject {
     var reportedSecondPixelSize: CGSize?
     /// Called with received clipboard text (main thread).
     var onClipboard: ((String) -> Void)?
+
+    /// What the host last heard on this socket (HELLO, then CLIENT_DISPLAYS), and whether HELLO_ACK is still
+    /// pending. Main thread only.
+    private var helloReport: DisplayReport?
+    private var awaitingHelloAck = false
 
     /// Decoded-ready compressed samples for the display layer. Called on the
     /// network queue; AVSampleBufferDisplayLayer enqueue is thread-safe.
@@ -152,6 +165,10 @@ final class StreamClient: ObservableObject {
         self.task = task
         task.resume()
         // URLSession queues sends until the handshake completes.
+        noteSent()
+        startKeepalive()
+        helloReport = currentDisplayReport
+        awaitingHelloAck = true
         task.send(.data(StreamMessage.hello(requestedCodec: .hevc, displayInfo: displayInfoPayload,
                                             secondSize: secondSizePayload))) { _ in }
         receiveLoop(task)
@@ -190,14 +207,43 @@ final class StreamClient: ObservableObject {
     /// surface size). Stores the values — they ride the next HELLO on
     /// reconnect — and, when connected, tells the host now via
     /// CLIENT_DISPLAYS so it can reshape its virtual display(s).
+    ///
+    /// Between opening the socket and HELLO_ACK nothing is sent: the stored
+    /// values may already ride the HELLO, and a display rebuild that early
+    /// raced with the host's capture start. `helloAcknowledged()` sends one
+    /// update afterwards if the values moved meanwhile.
     func updateReportedDisplay(pixelSize: CGSize? = nil, secondDisplay: Bool, secondPixelSize: CGSize? = nil) {
         if let pixelSize { reportedPixelSize = pixelSize }
         if let secondPixelSize { reportedSecondPixelSize = secondPixelSize }
         reportsSecondDisplay = secondDisplay
-        guard task != nil, let info = displayInfoPayload else { return }
-        clogViewer("reporting display update: \(Int(info.widthPx))x\(Int(info.heightPx))px, second display \(secondDisplay)")
+        guard task != nil, !awaitingHelloAck else { return }
+        // Re-evaluations that change nothing the host cares about (same size
+        // after a window closed, say) must not make it rebuild its display.
+        guard DisplayReport.differs(sent: helloReport, now: currentDisplayReport) else { return }
+        sendDisplayUpdate()
+    }
+
+    private func sendDisplayUpdate() {
+        guard let info = displayInfoPayload else { return }
+        helloReport = currentDisplayReport // from here on: what the host last heard
+        clogViewer("reporting display update: \(Int(info.widthPx))x\(Int(info.heightPx))px, second display \(info.secondDisplay)")
         send(StreamMessage.clientDisplays(widthPx: info.widthPx, heightPx: info.heightPx,
                                           secondDisplay: info.secondDisplay, secondSize: secondSizePayload))
+    }
+
+    /// The current report in comparable form (nil while no size is known).
+    private var currentDisplayReport: DisplayReport? {
+        guard let info = displayInfoPayload else { return nil }
+        let second = secondSizePayload
+        return DisplayReport(width: info.widthPx, height: info.heightPx, secondDisplay: info.secondDisplay,
+                             secondWidth: second?.widthPx ?? 0, secondHeight: second?.heightPx ?? 0)
+    }
+
+    /// Main thread, on HELLO_ACK: updates were held back since the HELLO.
+    private func helloAcknowledged() {
+        guard awaitingHelloAck else { return }
+        awaitingHelloAck = false
+        if DisplayReport.differs(sent: helloReport, now: currentDisplayReport) { sendDisplayUpdate() }
     }
 
     /// User-initiated disconnect: stop reconnecting and tear down.
@@ -214,6 +260,7 @@ final class StreamClient: ObservableObject {
         hostLocked = false
         lastError = nil
         cursorPos = nil
+        hostCapabilities = []
     }
 
     /// The Mac's browser VNC bridge (noVNC on http://<mac>:5901), derived from
@@ -235,11 +282,40 @@ final class StreamClient: ObservableObject {
         return URL(string: "http://\(host):5901") // WebServer.httpPort
     }
 
+    // MARK: Keepalive
+
+    private func noteSent() {
+        keepaliveLock.lock()
+        keepalive.noteSent(at: ProcessInfo.processInfo.systemUptime)
+        keepaliveLock.unlock()
+    }
+
+    /// PING after 20 s of sending nothing, so a still screen (no video, no
+    /// input) does not let a NAT or tunnel drop the connection. The host's
+    /// echo is ignored.
+    private func startKeepalive() {
+        keepaliveTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.task != nil else { return }
+            self.keepaliveLock.lock()
+            let due = self.keepalive.shouldPing(at: ProcessInfo.processInfo.systemUptime)
+            self.keepaliveLock.unlock()
+            if due { self.send(StreamMessage.frame(type: .ping)) }
+        }
+        keepaliveTimer = timer
+        timer.resume()
+    }
+
     private func teardownSocket() {
+        keepaliveTimer?.cancel()
+        keepaliveTimer = nil
         handshakeTimeout?.cancel()
         handshakeTimeout = nil
         task?.cancel(with: .normalClosure, reason: nil)
         task = nil
+        awaitingHelloAck = false
         parser = nil
         assembler = nil
         audio?.stop()
@@ -308,6 +384,7 @@ final class StreamClient: ObservableObject {
                 self.codecName = codecName
                 self.lastError = nil // streaming actually started — clear any stale reason
                 self.status = .streaming("\(codecName) \(width)x\(height)")
+                self.helloAcknowledged()
             }
         case .streamStatus:
             guard payload.count >= 2 else { return }
@@ -332,6 +409,11 @@ final class StreamClient: ObservableObject {
                 lastClipboard = text
                 DispatchQueue.main.async { self.onClipboard?(text) }
             }
+        case .ping:
+            break // echo of our keepalive: nothing to do
+        case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
+             .devicePending, .deviceDecision, .secure:
+            break // the auth layer will handle these
         default:
             break // client never receives hello/keyframeRequest
         }
@@ -340,12 +422,45 @@ final class StreamClient: ObservableObject {
     // MARK: Input (normalized 0..1 display coordinates)
 
     private func send(_ data: Data) {
+        noteSent()
         task?.send(.data(data)) { _ in }
     }
 
     func sendMouseMove(x: Float, y: Float) { send(StreamMessage.mouseMove(x: x, y: y)) }
     func sendMouseButton(button: UInt8, down: Bool, x: Float, y: Float) {
         send(StreamMessage.mouseButton(button: button, down: down, x: x, y: y))
+    }
+    /// Captured-pointer movement in points; only to a host with `relativeMouse`.
+    func sendMouseRelative(dx: Float, dy: Float) {
+        guard hostCapabilities.contains(.relativeMouse) else { return }
+        send(StreamMessage.mouseRelative(dx: dx, dy: dy))
+    }
+    /// A press or release of a captured pointer, applied where the host cursor
+    /// is; only to a host with `relativeMouse`. Returns false when not sent.
+    @discardableResult
+    func sendMouseButtonAtCursor(button: UInt8, down: Bool) -> Bool {
+        guard hostCapabilities.contains(.relativeMouse) else { return false }
+        send(StreamMessage.mouseButtonAtCursor(button: button, down: down))
+        return true
+    }
+    /// Text with no key code (dictation, emoji, input-method output) as
+    /// INPUT_TEXT. Returns false, sending nothing, when the host lacks
+    /// `textInput`. Long text goes in pieces under the host's 16 KB limit.
+    @discardableResult
+    func sendText(_ text: String) -> Bool {
+        guard hostCapabilities.contains(.textInput), !text.isEmpty else { return false }
+        var piece = ""
+        var bytes = 0
+        for ch in text {
+            let n = String(ch).utf8.count
+            if bytes + n > 8 * 1024 {
+                send(StreamMessage.text(piece))
+                piece = ""; bytes = 0
+            }
+            piece.append(ch); bytes += n
+        }
+        if !piece.isEmpty { send(StreamMessage.text(piece)) }
+        return true
     }
     func sendScroll(dx: Float, dy: Float) { send(StreamMessage.scroll(dx: dx, dy: dy)) }
     func sendKey(macKeyCode: UInt16, down: Bool, flags: UInt64) {

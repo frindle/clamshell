@@ -10,6 +10,13 @@
 		BB0000000000000000000001 /* ViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000001 /* ViewerApp.swift */; };
 		BB0000000000000000000002 /* StreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* StreamProtocol.swift */; };
 		BB0000000000000000000003 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
+		BB0000000000000000000050 /* DisplayEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000050 /* DisplayEndpoint.swift */; };
+		BB0000000000000000000051 /* Keepalive.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000051 /* Keepalive.swift */; };
+		BB0000000000000000000052 /* NearbyHosts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000052 /* NearbyHosts.swift */; };
+		BB0000000000000000000053 /* PointerButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000053 /* PointerButtons.swift */; };
+		BB0000000000000000000055 /* Shortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000055 /* Shortcuts.swift */; };
+		BB0000000000000000000057 /* DisplayReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000057 /* DisplayReport.swift */; };
+		BB0000000000000000000054 /* PointerLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000054 /* PointerLock.swift */; };
 		BB0000000000000000000005 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
 		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
 		BB0000000000000000000007 /* StreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000007 /* StreamClient.swift */; };
@@ -31,6 +38,8 @@
 		FF0000000000000000000001 /* ViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerApp.swift; sourceTree = "<group>"; };
 		FF0000000000000000000002 /* StreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamProtocol.swift; path = ../Sources/Clamshell/Streaming/StreamProtocol.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000003 /* FrameAssembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FrameAssembler.swift; path = ../Sources/Clamshell/Streaming/FrameAssembler.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000050 /* DisplayEndpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DisplayEndpoint.swift; path = ../Sources/Clamshell/Streaming/DisplayEndpoint.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000051 /* Keepalive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Keepalive.swift; path = ../Sources/Clamshell/Streaming/Keepalive.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000004 /* ClamshellViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FF0000000000000000000005 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
 		FF0000000000000000000006 /* KeyMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMap.swift; sourceTree = "<group>"; };
@@ -38,6 +47,12 @@
 		FF0000000000000000000008 /* VideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoView.swift; sourceTree = "<group>"; };
 		FF0000000000000000000009 /* ControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlApp.swift; sourceTree = "<group>"; };
 		FF0000000000000000000020 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
+		FF0000000000000000000053 /* PointerButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PointerButtons.swift; path = ../Sources/Clamshell/Streaming/PointerButtons.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000057 /* DisplayReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DisplayReport.swift; path = ../Sources/Clamshell/Streaming/DisplayReport.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000056 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		FF0000000000000000000055 /* Shortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Shortcuts.swift; path = ../Sources/Clamshell/Streaming/Shortcuts.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000054 /* PointerLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerLock.swift; sourceTree = "<group>"; };
+		FF0000000000000000000052 /* NearbyHosts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyHosts.swift; sourceTree = "<group>"; };
 		FF0000000000000000000040 /* RDPSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPSession.swift; sourceTree = "<group>"; };
 		FF0000000000000000000042 /* RDPView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPView.swift; sourceTree = "<group>"; };
 		FF0000000000000000000044 /* RDPKeyMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPKeyMap.swift; sourceTree = "<group>"; };
@@ -61,6 +76,7 @@
 		AA0000000000000000000001 = {
 			isa = PBXGroup;
 			children = (
+				FF0000000000000000000056 /* Config.xcconfig */,
 				AA0000000000000000000002 /* Sources */,
 				AA0000000000000000000005 /* ControlSources */,
 				AA0000000000000000000003 /* Shared */,
@@ -78,6 +94,8 @@
 				FF0000000000000000000020 /* SharedUI.swift */,
 				FF0000000000000000000005 /* AudioPlayer.swift */,
 				FF0000000000000000000006 /* KeyMap.swift */,
+				FF0000000000000000000052 /* NearbyHosts.swift */,
+				FF0000000000000000000054 /* PointerLock.swift */,
 				FF0000000000000000000040 /* RDPSession.swift */,
 				FF0000000000000000000042 /* RDPView.swift */,
 				FF0000000000000000000044 /* RDPKeyMap.swift */,
@@ -93,6 +111,11 @@
 			children = (
 				FF0000000000000000000002 /* StreamProtocol.swift */,
 				FF0000000000000000000003 /* FrameAssembler.swift */,
+				FF0000000000000000000050 /* DisplayEndpoint.swift */,
+				FF0000000000000000000051 /* Keepalive.swift */,
+				FF0000000000000000000053 /* PointerButtons.swift */,
+				FF0000000000000000000055 /* Shortcuts.swift */,
+				FF0000000000000000000057 /* DisplayReport.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -192,6 +215,13 @@
 				BB0000000000000000000006 /* KeyMap.swift in Sources */,
 				BB0000000000000000000002 /* StreamProtocol.swift in Sources */,
 				BB0000000000000000000003 /* FrameAssembler.swift in Sources */,
+				BB0000000000000000000050 /* DisplayEndpoint.swift in Sources */,
+				BB0000000000000000000051 /* Keepalive.swift in Sources */,
+				BB0000000000000000000052 /* NearbyHosts.swift in Sources */,
+				BB0000000000000000000053 /* PointerButtons.swift in Sources */,
+				BB0000000000000000000055 /* Shortcuts.swift in Sources */,
+				BB0000000000000000000057 /* DisplayReport.swift in Sources */,
+				BB0000000000000000000054 /* PointerLock.swift in Sources */,
 				BB0000000000000000000041 /* RDPSession.swift in Sources */,
 				BB0000000000000000000043 /* RDPView.swift in Sources */,
 				BB0000000000000000000045 /* RDPKeyMap.swift in Sources */,
@@ -244,18 +274,19 @@
 		};
 		DC0000000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = FF0000000000000000000056 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Clamshell Client looks for your Mac on your home or office network so you can pick it from a list, and connects to it to show its screen.";
 				INFOPLIST_KEY_CFBundleDisplayName = "Clamshell Client";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -270,18 +301,19 @@
 		};
 		DC0000000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = FF0000000000000000000056 /* Config.xcconfig */;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Clamshell Client looks for your Mac on your home or office network so you can pick it from a list, and connects to it to show its screen.";
 				INFOPLIST_KEY_CFBundleDisplayName = "Clamshell Client";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UIRequiresFullScreen = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
