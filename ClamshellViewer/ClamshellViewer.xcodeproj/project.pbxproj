@@ -12,6 +12,7 @@
 		BB0000000000000000000003 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
 		BB0000000000000000000050 /* DisplayEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000050 /* DisplayEndpoint.swift */; };
 		BB0000000000000000000051 /* Keepalive.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000051 /* Keepalive.swift */; };
+		BB0000000000000000000052 /* NearbyHosts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000052 /* NearbyHosts.swift */; };
 		BB0000000000000000000005 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
 		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
 		BB0000000000000000000007 /* StreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000007 /* StreamClient.swift */; };
@@ -42,6 +43,7 @@
 		FF0000000000000000000008 /* VideoView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoView.swift; sourceTree = "<group>"; };
 		FF0000000000000000000009 /* ControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlApp.swift; sourceTree = "<group>"; };
 		FF0000000000000000000020 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
+		FF0000000000000000000052 /* NearbyHosts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyHosts.swift; sourceTree = "<group>"; };
 		FF0000000000000000000040 /* RDPSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPSession.swift; sourceTree = "<group>"; };
 		FF0000000000000000000042 /* RDPView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPView.swift; sourceTree = "<group>"; };
 		FF0000000000000000000044 /* RDPKeyMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPKeyMap.swift; sourceTree = "<group>"; };
@@ -82,6 +84,7 @@
 				FF0000000000000000000020 /* SharedUI.swift */,
 				FF0000000000000000000005 /* AudioPlayer.swift */,
 				FF0000000000000000000006 /* KeyMap.swift */,
+				FF0000000000000000000052 /* NearbyHosts.swift */,
 				FF0000000000000000000040 /* RDPSession.swift */,
 				FF0000000000000000000042 /* RDPView.swift */,
 				FF0000000000000000000044 /* RDPKeyMap.swift */,
@@ -200,6 +203,7 @@
 				BB0000000000000000000003 /* FrameAssembler.swift in Sources */,
 				BB0000000000000000000050 /* DisplayEndpoint.swift in Sources */,
 				BB0000000000000000000051 /* Keepalive.swift in Sources */,
+				BB0000000000000000000052 /* NearbyHosts.swift in Sources */,
 				BB0000000000000000000041 /* RDPSession.swift in Sources */,
 				BB0000000000000000000043 /* RDPView.swift in Sources */,
 				BB0000000000000000000045 /* RDPKeyMap.swift in Sources */,
@@ -258,7 +262,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Clamshell Client looks for your Mac on your home or office network so you can pick it from a list, and connects to it to show its screen.";
 				INFOPLIST_KEY_CFBundleDisplayName = "Clamshell Client";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -284,7 +288,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Connects to your Mac to stream its display.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "Clamshell Client looks for your Mac on your home or office network so you can pick it from a list, and connects to it to show its screen.";
 				INFOPLIST_KEY_CFBundleDisplayName = "Clamshell Client";
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;

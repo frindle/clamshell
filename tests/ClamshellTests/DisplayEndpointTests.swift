@@ -36,4 +36,20 @@ final class DisplayEndpointTests: XCTestCase {
         XCTAssertNil(b("http://mac.example.com:80"))
         XCTAssertNil(b("ws://mac.example.com:65535"))
     }
+
+    func testNearbyURL() {
+        XCTAssertEqual(NearbyHost.url(host: "192.168.1.20", port: 5903), "ws://192.168.1.20:5903")
+        XCTAssertEqual(NearbyHost.url(host: "fe80::1%en0", port: 5903), "ws://[fe80::1]:5903")
+        XCTAssertEqual(NearbyHost.url(host: "[fe80::1]", port: 5903), "ws://[fe80::1]:5903")
+        XCTAssertNil(NearbyHost.url(host: "", port: 5903))
+        XCTAssertNil(NearbyHost.url(host: "192.168.1.20", port: 0))
+    }
+
+    func testNearbyLabel() {
+        XCTAssertEqual(NearbyHost.label(hint: "Studio", serviceName: "svc"), "Studio")
+        XCTAssertEqual(NearbyHost.label(hint: nil, serviceName: "svc"), "svc")
+        XCTAssertEqual(NearbyHost.label(hint: "  \n\t ", serviceName: "svc"), "svc")
+        XCTAssertEqual(NearbyHost.label(hint: "A\u{7}B\nC", serviceName: "svc"), "ABC")
+        XCTAssertEqual(NearbyHost.label(hint: String(repeating: "x", count: 100), serviceName: "svc").count, 60)
+    }
 }

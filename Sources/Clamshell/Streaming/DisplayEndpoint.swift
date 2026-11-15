@@ -53,3 +53,35 @@ enum DisplayEndpoint {
         return c.string
     }
 }
+
+// MARK: - Nearby hosts (Bonjour)
+
+/// Pure helpers for hosts found by browsing `_clamshell._tcp`. TXT records are
+/// hints only: they label an entry, they never decide who a host is.
+enum NearbyHost {
+    static let serviceType = "_clamshell._tcp"
+
+    /// `ws://<host>:<port>` for a resolved address. IPv6 literals are
+    /// bracketed and any zone suffix (`%en0`) is dropped.
+    static func url(host: String, port: UInt16) -> String? {
+        var h = host.trimmingCharacters(in: .whitespaces)
+        if let zone = h.firstIndex(of: "%") { h = String(h[..<zone]) }
+        guard !h.isEmpty, port > 0 else { return nil }
+        if h.contains(":") && !h.hasPrefix("[") { h = "[\(h)]" }
+        guard URLComponents(string: "ws://\(h):\(port)")?.host != nil else { return nil }
+        return "ws://\(h):\(port)"
+    }
+
+    /// A display label from a TXT `name` hint, falling back to the service
+    /// name: control characters removed, whitespace trimmed, capped at 60.
+    static func label(hint: String?, serviceName: String) -> String {
+        func clean(_ s: String) -> String {
+            let kept = String(String.UnicodeScalarView(s.unicodeScalars.filter {
+                !CharacterSet.controlCharacters.contains($0) && !CharacterSet.newlines.contains($0)
+            }))
+            return String(kept.trimmingCharacters(in: .whitespaces).prefix(60))
+        }
+        let h = clean(hint ?? "")
+        return h.isEmpty ? clean(serviceName) : h
+    }
+}
