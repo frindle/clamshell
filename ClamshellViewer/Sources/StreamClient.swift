@@ -435,6 +435,14 @@ final class StreamClient: ObservableObject {
         guard hostCapabilities.contains(.relativeMouse) else { return }
         send(StreamMessage.mouseRelative(dx: dx, dy: dy))
     }
+    /// A press or release of a captured pointer, applied where the host cursor
+    /// is; only to a host with `relativeMouse`. Returns false when not sent.
+    @discardableResult
+    func sendMouseButtonAtCursor(button: UInt8, down: Bool) -> Bool {
+        guard hostCapabilities.contains(.relativeMouse) else { return false }
+        send(StreamMessage.mouseButtonAtCursor(button: button, down: down))
+        return true
+    }
     /// Text with no key code (dictation, emoji, input-method output) as
     /// INPUT_TEXT. Returns false, sending nothing, when the host lacks
     /// `textInput`. Long text goes in pieces under the host's 16 KB limit.

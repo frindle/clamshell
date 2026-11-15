@@ -27,19 +27,42 @@ final class PointerLock: ObservableObject {
         // follow it so the button reflects reality.
         observers.append(nc.addObserver(forName: UIPointerLockState.didChangeNotification, object: nil, queue: .main) { [weak self] note in
             guard let self, self.isLocked else { return }
-            guard let state = (note.object as? UIScene)?.pointerLockState else { return }
+            // The scene arrives in userInfo, not as the notification object.
+            guard let scene = note.userInfo?[UIPointerLockState.sceneUserInfoKey] as? UIScene,
+                  let state = scene.pointerLockState else { return }
             if state.isLocked { self.engaged = true } else if self.engaged { self.set(false, client: nil) }
         })
     }
+
+    /// Shown briefly when iPadOS declines to lock the pointer.
+    @Published private(set) var notice: String?
+    private var generation = 0
 
     func set(_ on: Bool, client: StreamClient?) {
         if on == isLocked { return }
         isLocked = on
         engaged = false
+        generation += 1
         self.client = on ? client : nil
         if on { Self.installOverride() }
         attachMouseHandlers()
         Self.rootViewController()?.setNeedsUpdateOfPrefersPointerLocked()
+        if on { checkGranted(generation) }
+    }
+
+    /// iPadOS grants a lock only to a window that fills the screen. If it has
+    /// not locked a second after asking, give up and say why.
+    private func checkGranted(_ gen: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            guard let self, self.generation == gen, self.isLocked else { return }
+            let scene = Self.rootViewController()?.view.window?.windowScene
+            if scene?.pointerLockState?.isLocked == true { return }
+            self.set(false, client: nil)
+            self.notice = "iPadOS did not lock the pointer. Try with the window filling the screen."
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                self?.notice = nil
+            }
+        }
     }
 
     private func attachMouseHandlers() {
