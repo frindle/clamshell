@@ -226,8 +226,8 @@ final class Connection: ObservableObject {
             let parts = host.split(separator: "|", maxSplits: 1)
             return parts.count == 2 ? String(parts[1]) : nil
         }
-        if host.contains("://") { return nil } // tunnel URL, can't derive port
-        return "ws://\(host):\(streamDefaultPort + 1)"
+        // Derived from A: /ws/a -> /ws/b, then a "-a" host label -> "-b", then port + 1.
+        return DisplayEndpoint.displayB(fromA: host)
     }
 }
 

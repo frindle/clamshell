@@ -10,6 +10,7 @@
 		BB0000000000000000000001 /* ViewerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000001 /* ViewerApp.swift */; };
 		BB0000000000000000000002 /* StreamProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* StreamProtocol.swift */; };
 		BB0000000000000000000003 /* FrameAssembler.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* FrameAssembler.swift */; };
+		BB0000000000000000000050 /* DisplayEndpoint.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000050 /* DisplayEndpoint.swift */; };
 		BB0000000000000000000005 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
 		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
 		BB0000000000000000000007 /* StreamClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000007 /* StreamClient.swift */; };
@@ -31,6 +32,7 @@
 		FF0000000000000000000001 /* ViewerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewerApp.swift; sourceTree = "<group>"; };
 		FF0000000000000000000002 /* StreamProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = StreamProtocol.swift; path = ../Sources/Clamshell/Streaming/StreamProtocol.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000003 /* FrameAssembler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FrameAssembler.swift; path = ../Sources/Clamshell/Streaming/FrameAssembler.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000050 /* DisplayEndpoint.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = DisplayEndpoint.swift; path = ../Sources/Clamshell/Streaming/DisplayEndpoint.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000004 /* ClamshellViewer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ClamshellViewer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FF0000000000000000000005 /* AudioPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioPlayer.swift; sourceTree = "<group>"; };
 		FF0000000000000000000006 /* KeyMap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyMap.swift; sourceTree = "<group>"; };
@@ -93,6 +95,7 @@
 			children = (
 				FF0000000000000000000002 /* StreamProtocol.swift */,
 				FF0000000000000000000003 /* FrameAssembler.swift */,
+				FF0000000000000000000050 /* DisplayEndpoint.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -192,6 +195,7 @@
 				BB0000000000000000000006 /* KeyMap.swift in Sources */,
 				BB0000000000000000000002 /* StreamProtocol.swift in Sources */,
 				BB0000000000000000000003 /* FrameAssembler.swift in Sources */,
+				BB0000000000000000000050 /* DisplayEndpoint.swift in Sources */,
 				BB0000000000000000000041 /* RDPSession.swift in Sources */,
 				BB0000000000000000000043 /* RDPView.swift in Sources */,
 				BB0000000000000000000045 /* RDPKeyMap.swift in Sources */,
