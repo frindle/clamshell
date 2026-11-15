@@ -10,12 +10,10 @@ import AppKit
 
 final class InputInjector {
     private let core: InputCore
-    /// Text is typed from its own serial queue so a long paste cannot stall
-    /// the server queue (which also sends video). `textGeneration` lets a
-    /// session end abandon whatever is left.
-    private let textQueue = DispatchQueue(label: "clamshell.input.text")
-    private let genLock = NSLock()
-    private var textGeneration = 0
+    /// All keyboard events (keys and typed text) are posted from this serial
+    /// queue, in arrival order, so a long paste cannot stall the server queue
+    /// (which also sends video).
+    private let keyboard = KeyboardQueue { InputInjector.post($0) }
 
     private static func makeCore(_ bounds: @escaping () -> CGRect) -> InputCore {
         InputCore(
@@ -95,22 +93,17 @@ final class InputInjector {
         _ = Self.untrustedLogOnce
         let events = core.text(payload)
         guard !events.isEmpty else { return }
-        genLock.lock(); let gen = textGeneration; genLock.unlock()
-        textQueue.async { [weak self] in
-            for e in events {
-                guard let self else { return }
-                self.genLock.lock(); let current = self.textGeneration; self.genLock.unlock()
-                if current != gen { return } // session ended: abandon the rest
-                Self.post(e)
-                usleep(1000)
-            }
+        if case .dropped(let first) = keyboard.enqueueText(events, byteCount: payload.count), first {
+            clog("INPUT: text backlog over \(KeyboardQueue.maxBacklogBytes) bytes; dropping new INPUT_TEXT (logged once per session).")
         }
     }
 
-    /// Posts "up" for every held button and key and abandons pending text.
+    /// Releases held buttons now; held keys' ups go behind queued keyboard
+    /// events, and unstarted text is abandoned.
     func releaseAll() {
-        genLock.lock(); textGeneration += 1; genLock.unlock()
-        post(core.releaseAll())
+        let events = core.releaseAll()
+        post(events.filter { if case .mouse = $0 { return true } else { return false } })
+        keyboard.releaseAll(events.filter { if case .key = $0 { return true } else { return false } })
     }
 
     func scroll(dx: Float32, dy: Float32) {
@@ -135,7 +128,7 @@ final class InputInjector {
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
         _ = Self.untrustedLogOnce
-        post(core.key(macKeyCode: macKeyCode, down: down, flags: flags))
+        keyboard.enqueueKey(core.key(macKeyCode: macKeyCode, down: down, flags: flags))
     }
 
     // MARK: - CGEvent layer
