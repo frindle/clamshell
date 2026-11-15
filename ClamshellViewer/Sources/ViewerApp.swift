@@ -274,7 +274,19 @@ struct WindowSizeReader: UIViewRepresentable {
         // display that the window doesn't actually cover even fullscreen, so
         // reporting the raw screen size made the Mac size Display B larger
         // than what the video actually renders into, causing black bars.
+        //
+        // Debounced: a live window resize fires layout continuously, and each
+        // report makes the host rebuild its display, so only the size the
+        // window settles at (no change for `debounce`) is reported.
+        private let debounce: TimeInterval = 0.3
+        private var pending: DispatchWorkItem?
         private func report() {
+            pending?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.reportNow() }
+            pending = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + debounce, execute: work)
+        }
+        private func reportNow() {
             guard let screen = window?.screen, bounds.width > 0, bounds.height > 0 else { return }
             let scale = screen.scale
             let size = CGSize(width: bounds.width * scale, height: bounds.height * scale)
@@ -428,12 +440,15 @@ struct ContentView: View {
                             windowPixelSize = size
                             if showingDisplayB {
                                 connection.updateDisplayBSize(size)
-                            } else if isDeviceScreen {
+                            } else if isDeviceScreen || windowCount.count <= 1 {
+                                // The only window is authoritative on whichever
+                                // screen it sits (e.g. dragged to an external
+                                // display under Stage Manager).
                                 connection.updatePrimarySize(size)
                             }
-                            // else: mirroring Display A on a non-device
-                            // screen (Extend not toggled here) — let it
-                            // aspect-fit locally, don't fight over A's size.
+                            // else: a second window mirroring Display A on a
+                            // non-device screen (Extend not toggled here) — let
+                            // it aspect-fit locally, don't fight over A's size.
                         }
                     )
                     .overlay(alignment: .top) {
