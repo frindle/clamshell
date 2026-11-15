@@ -24,7 +24,9 @@ on LAN/Tailscale; `wss://` through a Cloudflare Tunnel for remote use — WS was
 chosen over raw TCP precisely so the tunnel's zero-config HTTP path carries it,
 matching how Clamshell's noVNC web access is already tunneled). No NAT
 traversal, no custom TLS. TCP head-of-line blocking is an accepted tradeoff
-for simplicity. One client at a time; a new connection replaces the old one.
+for simplicity. One client at a time; a new connection replaces the old one
+(from host 0.12 on, only a connection that has passed "Device authentication
+and encrypted session" below does).
 
 Host side is an `NWListener` with `NWProtocolWebSocket`; client side is
 `URLSessionWebSocketTask`. Every protocol message is sent as one **binary**
@@ -52,14 +54,27 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x05 | HOST_LOCK_STATE  | host → client | locked(1: 0/1) — see "Lock screen fallback" |
 | 0x06 | CURSOR_POS       | host → client | x(Float32 BE), y(Float32 BE) — normalized 0..1 in this display's source-frame space; see "Cursor-follow auto-pan" |
 | 0x07 | PING             | both | empty. Keepalive: the browser client sends one after 20 s of sending nothing; the host echoes it. Hosts older than 0.9.23 skip it as an unknown type |
+| 0x08 | AUTH_CHALLENGE   | host → client | first message on every connection — see "Device authentication and encrypted session" |
+| 0x09 | AUTH_RESPONSE    | client → host | device key, device name, signature |
+| 0x0A | AUTH_RESULT      | host → client | status(1) and the host's signature; repeats while the device waits for approval |
+| 0x0B | HOST_INFO        | host → client | UTF-8 JSON — host name, kind, displays, known endpoints |
+| 0x0C | CLIENT_INFO      | client → host | UTF-8 JSON — the URL the client connected to, app, version |
+| 0x0D | DEVICE_PENDING   | host → client | UTF-8 JSON — devices waiting for approval |
+| 0x0E | DEVICE_DECISION  | client → host | UTF-8 JSON — approve or deny one waiting device |
+| 0x0F | SECURE           | both | AES-256-GCM ciphertext of exactly one inner message, then the 16-byte tag |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
 | 0x20 | INPUT_MOUSE_MOVE | client → host | x(Float32 BE), y(Float32 BE) — normalized 0..1 in display space |
-| 0x21 | INPUT_MOUSE_BUTTON | client → host | button(1: 0=left, 1=right), down(1: 0/1), x(Float32 BE), y(Float32 BE) |
+| 0x21 | INPUT_MOUSE_BUTTON | client → host | button(1: 0=left, 1=right, 2=middle, 3=back, 4=forward), down(1: 0/1), x(Float32 BE), y(Float32 BE). Buttons 2–4 only to a host that advertises `extraButtons`; older hosts treat every button other than 1 as left |
 | 0x22 | INPUT_KEY        | client → host | macKeyCode(2 BE), down(1), cgEventFlags(8 BE) |
 | 0x23 | INPUT_SCROLL     | client → host | dx(Float32 BE), dy(Float32 BE) — pixel wheel deltas |
+| 0x24 | INPUT_MOUSE_RELATIVE | client → host | dx(Float32 BE), dy(Float32 BE) — pointer movement in points, for a captured pointer. Only to a host that advertises `relativeMouse` |
+| 0x25 | INPUT_TEXT       | client → host | UTF-8 text to type as-is (dictation, input-method text, emoji), at most 16 KB. Only to a host that advertises `textInput` |
 | 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
+
+Reserved, not specified yet: 0x40–0x49 (Window Handoff v2, below), 0x50–0x53
+(devices attached to the client), 0x58–0x5B (file transfer).
 
 Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
 host picks what its hardware encoder actually supports (HEVC preferred on
@@ -148,6 +163,30 @@ Coordinates are normalized (0..1, origin top-left) so the client never needs
 the Mac's coordinate space; the host maps them into `CGDisplayBounds` of the
 streamed display and injects with `CGEventPost`. Key codes are macOS virtual
 key codes (client is responsible for any translation).
+
+From host 0.12 (each gated by a capability bit, see "Capabilities"):
+
+- **Non-finite coordinates are dropped.** A NaN or infinite x, y, dx or dy is
+  ignored rather than mapped.
+- **Buttons 2–4** (middle, back, forward) are posted as "other" mouse buttons
+  with that button number.
+- **Clicks carry a click count.** Two presses of the same button within the
+  system double-click interval and a few points of each other are posted as a
+  double-click (then triple, and so on), so double-click-to-select works for
+  every client without the client sending anything extra.
+- **INPUT_MOUSE_RELATIVE** moves the host cursor by (dx, dy) points from where
+  it is now. A move that would leave every display is clamped to the display
+  the cursor is on. While a button is held the move is posted as a drag, like
+  an absolute move. Clients use it when they capture the pointer (pointer
+  lock), where there is no absolute position to send.
+- **INPUT_TEXT** types the text through keyboard events that carry the
+  characters themselves, in pieces of at most 20 UTF-16 units; a line feed
+  becomes the Return key and a tab the Tab key. It is for text that has no
+  key code. Text longer than 16 KB is refused: use CLIPBOARD and paste.
+- **Held input is released when the session ends.** The host tracks which
+  buttons and keys a client has down and posts the matching "up" events when
+  the connection drops or another client takes over, so a lost connection
+  cannot leave a key or a drag stuck on the Mac.
 
 ## Encoder contract (host)
 
@@ -261,14 +300,307 @@ fixed on both ends, so no magic cookie / ADTS header is transmitted — the iPad
 rebuilds the same `AVAudioFormat` and decodes to PCM for `AVAudioEngine`.
 Only the primary connection carries audio; secondary displays are video+input.
 
+## Device authentication and encrypted session (host 0.12+)
+
+*Status: specified here, implementation in progress. Hosts before 0.12 send no
+challenge and serve any connection that reaches them.*
+
+Where a connection comes from (LAN, VPN, loopback, Cloudflare Access) is not
+what lets it control the host. Every client device holds a long-term P-256
+key, every host holds a long-term P-256 identity key, and each connection
+opens with a signed key exchange. The host does nothing for a connection — no
+collapse, no capture, no input — until its device key is one the user has
+approved. From then on every message is encrypted, so plain `ws://` on a LAN
+cannot be read or injected into, and a tunnel's edge sees only ciphertext.
+
+There are no pairing codes. A new device asks; the user approves it once, on
+the host or from a device that is already trusted.
+
+### Keys, ids and names
+
+- P-256 throughout. Public keys travel as the 65-byte X9.63 uncompressed point
+  (`0x04 ‖ X ‖ Y`). Signatures are ECDSA over SHA-256 in the 64-byte raw
+  `r ‖ s` form (IEEE P1363, not DER). These are the native formats of
+  CryptoKit, browser WebCrypto and .NET, so no client needs an ASN.1 codec.
+- A **device id** is the lowercase hex SHA-256 of the 65-byte public key (64
+  characters). The **fingerprint** people compare is its first 16 characters
+  in upper case, grouped in fours: `AB12-CD34-EF56-7890`. A host's id and
+  fingerprint come from its identity key the same way.
+- Names are for display and prove nothing. Both sides drop control characters
+  before showing one.
+
+### Handshake
+
+```
+host   → client   AUTH_CHALLENGE   as soon as the WebSocket opens
+client → host     AUTH_RESPONSE
+host   → client   AUTH_RESULT      repeated while the device waits for approval
+```
+
+All three travel in the clear in the normal `[type][len][payload]` frame, so
+names and public keys are visible to anyone on the path. Nothing else is.
+
+**AUTH_CHALLENGE payload**
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| version | 1 | 1 |
+| caps | 4 BE | host capability bits — see "Capabilities" |
+| hostNonce | 32 | random, new for every connection |
+| hostEphemeral | 65 | key-exchange public key, new for every connection |
+| hostIdentity | 65 | the host's long-term public key |
+| nameLen, name | 1 + n | UTF-8 host name, n ≤ 64 |
+| extLen, ext | 2 BE + n | extension records |
+
+**AUTH_RESPONSE payload**
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| version | 1 | 1 |
+| caps | 4 BE | client capability bits |
+| clientNonce | 32 | random, new for every connection |
+| clientEphemeral | 65 | key-exchange public key, new for every connection |
+| deviceKey | 65 | the device's long-term public key |
+| nameLen, name | 1 + n | UTF-8 device name, n ≤ 64 |
+| extLen, ext | 2 BE + n | extension records |
+| signature | 64 | by the device key |
+
+**AUTH_RESULT payload**
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| status | 1 | see below |
+| extLen, ext | 2 BE + n | extension records |
+| signature | 64 | by the host identity key |
+
+Extension records are `type(1) len(2 BE) value`, repeated to fill `extLen`. A
+record of an unknown type is skipped. Version 1 defines none; type 0x01 is
+reserved for an account-signed device certificate.
+
+**What is signed.** Write `L(x)` for `u32be(length of x) ‖ x`, and call a
+message's payload without its trailing 64 signature bytes its *body*.
+
+```
+client signs   "clamshell-auth-v1/client" ‖ 0x00 ‖ L(challenge) ‖ L(response body)
+host signs     "clamshell-auth-v1/host"   ‖ 0x00 ‖ L(challenge) ‖ L(response) ‖ L(result body)
+```
+
+`challenge` and `response` are the whole payloads exactly as they crossed the
+wire. Each signature therefore covers both long-term keys, both key-exchange
+keys, both nonces and both capability sets, so nobody in the middle can swap a
+key or strip a capability. For status 4 and 5 the host may never have seen a
+response, so there `response` is always the empty string.
+
+**Status**
+
+| Status | Name | Then |
+|---|---|---|
+| 0 | accepted | the encrypted session starts |
+| 1 | pending | the device is waiting for approval. The host keeps the socket open and repeats this result every 20 s (which also keeps a tunnel from idling the socket out) |
+| 2 | denied | the device was denied or revoked. The client stops retrying and says so |
+| 3 | invalid | malformed response, unsupported version or bad signature |
+| 4 | busy | too many connections or devices are already waiting; try again later |
+| 5 | timeout | no response within 10 s, or no approval within 10 minutes. The device stays on the waiting list, so the client reconnects and keeps waiting |
+
+After any status other than 0 or 1 the host closes the connection.
+
+**Host rules**
+
+- Before `accepted`, the host accepts one message from the connection: an
+  AUTH_RESPONSE of at most 4 KB, within 10 s. Anything else is ignored and
+  starts nothing; anything larger closes the connection.
+- The host checks the version, that both client keys are valid curve points,
+  and the signature, then looks the device id up: trusted → `accepted`,
+  denied → `denied`, unknown → added to the waiting list → `pending`.
+- At most 8 connections wait for approval at once and at most 16 devices are
+  on the waiting list; more get `busy`. At most 10 new devices are listed per
+  minute. A waiting device nobody approves is dropped after 24 hours.
+- Approval while the device's connection is still open sends `accepted` on
+  that connection, so the session starts without a reconnect.
+
+**Client rules**
+
+- The client waits for AUTH_CHALLENGE before sending anything.
+- It keeps the host identity key from the first handshake that ends in a
+  verified `accepted` (trust on first use) together with that host's saved
+  addresses. From then on, for that host:
+  - a challenge carrying a different identity key is refused and shown as a
+    changed identity, with both fingerprints. Replacing the saved key takes a
+    deliberate action by the user; it is never automatic;
+  - no challenge within 2 s is refused too. A host that has spoken this
+    protocol once never falls back to an open connection.
+- For a host it has no key for, no challenge within 2 s means a host older
+  than 0.12 (which sends nothing until HELLO). The client may then send HELLO
+  in the clear and carry on as before 0.12, with every capability bit taken
+  as 0.
+- Every AUTH_RESULT's signature is checked against the `hostIdentity` from the
+  challenge. A result that does not verify is treated as a failed connection,
+  whatever its status says.
+- While `pending`, the client shows the host's name and both fingerprints so
+  the user can compare them with what the host shows before approving.
+
+### Session keys and SECURE
+
+```
+th    = SHA-256( L(challenge) ‖ L(response) )
+Z     = ECDH on P-256 between the two key-exchange keys: the shared point's X coordinate, 32 bytes
+okm   = HKDF-SHA256( ikm = Z, salt = hostNonce ‖ clientNonce,
+                     info = "clamshell-session-v1" ‖ th, length = 64 )
+k_h2c = okm[0 ..< 32]     host → client
+k_c2h = okm[32 ..< 64]    client → host
+```
+
+After `accepted`, every message in both directions is one SECURE message:
+
+```
+SECURE payload = AES-256-GCM( key, nonce, plaintext, no additional data ) ‖ tag(16)
+plaintext      = one whole inner message: [type][4-byte BE length][payload]
+nonce          = 0x00000000 ‖ u64be(counter)
+```
+
+Each direction has its own key and its own counter. The counter starts at 0,
+goes up by one per SECURE message and is not sent; the WebSocket keeps
+messages in order. A side closes the connection when a SECURE message fails to
+decrypt, when the inner message is itself SECURE or an AUTH message, when any
+message other than SECURE arrives after `accepted`, or before its counter
+could pass 2^48. Reconnecting runs the handshake again and gives fresh keys.
+
+HELLO and everything after it are unchanged; they simply travel inside SECURE.
+The first inner message from the host is HOST_INFO.
+
+**Reference vectors.** `tests/vectors/auth-v1.json` holds one complete
+exchange from fixed test keys: the three handshake payloads, both signature
+inputs, the ids and fingerprints, the transcript hash, the shared secret, both
+session keys and four SECURE frames. ECDSA signatures are randomized, so an
+implementation checks that the recorded ones verify; every other value must
+come out byte for byte. Each client and host is tested against this file.
+
+### Hosts that do not require approval
+
+Approval is on by default (capability bit 0 in the challenge). A host with it
+turned off still sends the challenge. A client that answers is accepted
+whatever its key and gets the encrypted session; a client that sends HELLO in
+the clear instead is served the way hosts before 0.12 served it. Such a host
+is only as safe as its network, as before.
+
+A host with approval on never answers a HELLO in the clear: the connection is
+closed when the 10 s response deadline passes. Clients older than this section
+therefore cannot use it.
+
+### Approving a device
+
+A waiting device is approved or denied in one of three ways: on the host's own
+screen, on the host's command line (`clamshell approve <id or fingerprint>`,
+usable over SSH), or from a connected trusted device with the two messages
+below. Revoking a trusted device makes it `denied` and closes its live
+connections; forgetting a device removes it, so it may ask again.
+
+Both messages travel inside SECURE and only when both sides set capability bit
+4.
+
+- **DEVICE_PENDING** (host → trusted client), UTF-8 JSON, sent after
+  `accepted` when devices are waiting and again whenever the list changes
+  (an empty list means none are):
+  `{"devices":[{"id":"<64 hex>","name":"iPhone","fingerprint":"AB12-CD34-EF56-7890","firstSeen":1794000000,"address":"192.168.1.23"}]}`
+- **DEVICE_DECISION** (trusted client → host), UTF-8 JSON:
+  `{"id":"<64 hex>","decision":"approve"}` or `"deny"`. The client sends it
+  only after showing the name and fingerprint and getting an explicit answer
+  from the user. The host replies with a fresh DEVICE_PENDING and shows on its
+  own screen which device made the decision.
+
+A trusted device can already type and click on the host, so letting it approve
+another device gives it nothing it could not do through the host's own
+approval window.
+
+### Browser client
+
+The browser client reaches the stream through the web server's WebSocket
+relay. The handshake runs end to end through the relay, which is trusted no
+more than any other network hop. Browsers offer WebCrypto only to pages loaded
+over HTTPS (or from `localhost`), so the browser client needs the tunnel
+hostname or the host's own LAN certificate; it cannot authenticate from a
+plain `http://` page.
+
+## Capabilities
+
+The `caps` field of AUTH_CHALLENGE says what the host does; the same field in
+AUTH_RESPONSE says what the client does. A side uses a feature only when the
+other side set its bit. Both fields are covered by both signatures. A host
+that sent no challenge has every bit 0.
+
+| Bit | Name | Meaning |
+|---|---|---|
+| 0 | `approvalRequired` | host only: unknown devices must be approved |
+| 1 | `relativeMouse` | host accepts INPUT_MOUSE_RELATIVE |
+| 2 | `textInput` | host accepts INPUT_TEXT |
+| 3 | `extraButtons` | host accepts mouse buttons 2–4 |
+| 4 | `deviceApproval` | host: trusted devices may approve others. Client: can show the approval prompt |
+
+Unassigned bits are sent as 0 and ignored on receipt.
+
+## Host and client info (HOST_INFO / CLIENT_INFO)
+
+Both are UTF-8 JSON inside SECURE. Unknown fields are ignored.
+
+**HOST_INFO** (host → client) is the first message of the encrypted session:
+
+```json
+{
+  "name": "Studio",
+  "kind": "mac",
+  "version": "0.12.0",
+  "hostId": "<64 hex>",
+  "display": 0,
+  "displays": [
+    {"index": 0, "name": "Display A", "primary": true,
+     "urls": ["ws://192.168.1.20:5903", "wss://mac.example.com/ws/a"]},
+    {"index": 1, "name": "Display B",
+     "urls": ["ws://192.168.1.20:5904", "wss://mac.example.com/ws/b"]}
+  ]
+}
+```
+
+`kind` is `mac`, `windows` or `kvm`. `display` is the index this connection
+serves. `urls` lists every address the host knows for a display: its own LAN
+and VPN addresses, then the ones clients have reported. With this a client
+that reached Display A by any route can open Display B without the user typing
+a second address, and can keep a host's LAN, VPN and tunnel addresses together
+under one saved entry, trying them in turn. Every address still has to pass
+the handshake with the saved identity key, so a wrong or hostile entry can
+waste a connection attempt but cannot stand in for the host.
+
+**CLIENT_INFO** (client → host), sent once after `accepted`:
+
+```json
+{"url": "wss://mac.example.com/ws/a", "app": "ios", "version": "1.5.0"}
+```
+
+`url` is the address the client actually connected to. That is how a host
+learns the tunnel or VPN names it is reachable under, which it cannot see for
+itself. The host keeps a reported URL only if it is `ws://` or `wss://`, at
+most 256 bytes, with no user info, query or fragment; it keeps at most 16 per
+display, dropping the one unused longest; and it hands reported URLs only to
+devices the user approved.
+
+## Discovery (Bonjour)
+
+The host advertises `_clamshell._tcp` on the primary display's port, with TXT
+records `v` (the handshake version, `1`), `id` (the first 16 characters of the
+host id), `name` and `kind`. These are hints for building a list of nearby
+hosts. They prove nothing: a discovered host still has to pass the handshake,
+and one whose `id` matches a saved host must present that host's saved key.
+
+Off the LAN there is nothing to browse, so a client reaches a host through an
+address saved from an earlier HOST_INFO, or one typed in once.
+
 ## Future (not in v1)
 
 H.264/HEVC negotiation beyond the single byte, multi-touch
-gestures, auth on the WS endpoint (currently: VPN, trusted LAN, or Cloudflare
-Access in front of the tunnel). Cloudflare Access, if used, is enforced at the
+gestures. Cloudflare Access, if used, is enforced at the
 edge — via WARP-enrolled devices or an Access policy that trusts the
 connection at the network layer — not by app-level Service Token headers (the
-apps send no `CF-Access-*` headers). Also on the roadmap, explicitly
+apps send no `CF-Access-*` headers); it is a second gate in front of the
+device authentication above, not a replacement for it. Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
 VNC/RDP/SSH, so real support means a custom guacd protocol plugin.
 
