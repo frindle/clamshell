@@ -14,6 +14,7 @@
 		BB0000000000000000000051 /* Keepalive.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000051 /* Keepalive.swift */; };
 		BB0000000000000000000052 /* NearbyHosts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000052 /* NearbyHosts.swift */; };
 		BB0000000000000000000053 /* PointerButtons.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000053 /* PointerButtons.swift */; };
+		BB0000000000000000000055 /* Shortcuts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000055 /* Shortcuts.swift */; };
 		BB0000000000000000000054 /* PointerLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000054 /* PointerLock.swift */; };
 		BB0000000000000000000005 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
 		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
@@ -46,6 +47,7 @@
 		FF0000000000000000000009 /* ControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlApp.swift; sourceTree = "<group>"; };
 		FF0000000000000000000020 /* SharedUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SharedUI.swift; sourceTree = "<group>"; };
 		FF0000000000000000000053 /* PointerButtons.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PointerButtons.swift; path = ../Sources/Clamshell/Streaming/PointerButtons.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000055 /* Shortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Shortcuts.swift; path = ../Sources/Clamshell/Streaming/Shortcuts.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000054 /* PointerLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerLock.swift; sourceTree = "<group>"; };
 		FF0000000000000000000052 /* NearbyHosts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NearbyHosts.swift; sourceTree = "<group>"; };
 		FF0000000000000000000040 /* RDPSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RDPSession.swift; sourceTree = "<group>"; };
@@ -108,6 +110,7 @@
 				FF0000000000000000000050 /* DisplayEndpoint.swift */,
 				FF0000000000000000000051 /* Keepalive.swift */,
 				FF0000000000000000000053 /* PointerButtons.swift */,
+				FF0000000000000000000055 /* Shortcuts.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -211,6 +214,7 @@
 				BB0000000000000000000051 /* Keepalive.swift in Sources */,
 				BB0000000000000000000052 /* NearbyHosts.swift in Sources */,
 				BB0000000000000000000053 /* PointerButtons.swift in Sources */,
+				BB0000000000000000000055 /* Shortcuts.swift in Sources */,
 				BB0000000000000000000054 /* PointerLock.swift in Sources */,
 				BB0000000000000000000041 /* RDPSession.swift in Sources */,
 				BB0000000000000000000043 /* RDPView.swift in Sources */,

@@ -332,6 +332,51 @@ final class WindowCount: ObservableObject {
 
 // MARK: - UI
 
+/// Compact bar for key combinations iPadOS keeps for itself. The modifier
+/// chips are sticky for one use: tap Shift, then a shortcut, and the shortcut
+/// goes out with Shift added.
+struct ShortcutBar: View {
+    @ObservedObject var client: StreamClient
+    @State private var sticky = StickyModifiers()
+
+    private let chips: [(String, ShortcutModifiers)] = [
+        ("Cmd", .command), ("Opt", .option), ("Ctrl", .control), ("Shift", .shift),
+    ]
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(chips, id: \.0) { chip in
+                    let on = sticky.active.contains(chip.1)
+                    Button(chip.0) { sticky.toggle(chip.1) }
+                        .buttonStyle(.plain)
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(on ? Color.accentColor : Color.white.opacity(0.2), in: Capsule())
+                }
+                Divider().frame(height: 18)
+                ForEach(Shortcut.presets, id: \.title) { shortcut in
+                    Button(shortcut.title) {
+                        let extra = sticky.consume()
+                        for k in ShortcutKeys.strokes(shortcut, extra: extra) {
+                            client.sendKey(macKeyCode: k.code, down: k.down, flags: k.flags)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .background(Color.white.opacity(0.2), in: Capsule())
+                }
+            }
+            .padding(.horizontal, 10)
+        }
+        .font(.footnote.weight(.semibold))
+        .foregroundStyle(.white)
+        .padding(.vertical, 6)
+        .background(.black.opacity(0.75), in: Capsule())
+        .frame(maxWidth: 640)
+        .padding(.horizontal, 12)
+    }
+}
+
 struct ContentView: View {
     @ObservedObject private var connection = Connection.shared
     @ObservedObject private var windowCount = WindowCount.shared
@@ -356,6 +401,7 @@ struct ContentView: View {
     @ObservedObject private var pointerLock = PointerLock.shared
     @StateObject private var nearby = NearbyHostBrowser()
     @State private var resolvingNearby: String?
+    @State private var showShortcuts = false
     @AppStorage("hostAddress") private var host = ""
     @State private var machineName = ""
     @AppStorage("nerdMode") private var nerdMode = false
@@ -463,6 +509,10 @@ struct ContentView: View {
                         .padding(.top, 8)
                     }
                     .overlay(alignment: .bottom) {
+                        VStack(spacing: 8) {
+                        if showShortcuts {
+                            ShortcutBar(client: client)
+                        }
                         // Always visible while locked: the way out, usable by touch.
                         if pointerLock.isLocked {
                             Button {
@@ -474,8 +524,9 @@ struct ContentView: View {
                                     .padding(.horizontal, 14).padding(.vertical, 8)
                                     .background(.black.opacity(0.75), in: Capsule())
                             }
-                            .padding(.bottom, 12)
                         }
+                        }
+                        .padding(.bottom, 12)
                     }
                     .overlay(alignment: .topTrailing) {
                         ZStack(alignment: .topTrailing) {
@@ -511,6 +562,13 @@ struct ContentView: View {
                                             .font(.subheadline)
                                             .foregroundStyle(.white.opacity(0.7))
                                     }
+                                }
+                                Button {
+                                    showShortcuts.toggle()
+                                } label: {
+                                    Label(showShortcuts ? "Hide keys" : "Keys", systemImage: "command")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.white.opacity(0.7))
                                 }
                                 if client.hostCapabilities.contains(.relativeMouse) {
                                     Button {
