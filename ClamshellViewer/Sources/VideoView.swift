@@ -59,9 +59,24 @@ final class VideoUIView: UIView {
     }
 
     @objc private func onHover(_ g: UIHoverGestureRecognizer) {
-        guard let (x, y) = normalized(g.location(in: self)) else { return }
+        // While the pointer is locked it is frozen: its position means nothing.
+        guard !PointerLock.shared.isLocked,
+              let (x, y) = normalized(g.location(in: self)) else { return }
         client?.sendMouseMove(x: x, y: y)
     }
+
+    /// Where a click lands. Locked, the pointer is frozen, so use the host
+    /// cursor's last reported position (CURSOR_POS) instead of the touch.
+    private func clickPosition(_ t: UITouch) -> (Float, Float)? {
+        if PointerLock.shared.isLocked, let p = client?.cursorPos,
+           p.x >= 0, p.x <= 1, p.y >= 0, p.y <= 1 {
+            return (Float(p.x), Float(p.y))
+        }
+        return normalized(t.location(in: self))
+    }
+
+    /// The button number sent on down, reused for the matching up.
+    private var downButton: UInt8 = 0
 
     private var lastScroll: CGPoint = .zero
     @objc private func onScroll(_ g: UIPanGestureRecognizer) {
@@ -128,27 +143,29 @@ final class VideoUIView: UIView {
             }
             return
         }
-        guard let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
-        // A real mouse's right button reports as .secondary in the buttonMask;
+        guard let t = touches.first, let (x, y) = clickPosition(t) else { return }
+        // A real mouse's buttons report in the buttonMask (secondary = right);
         // finger touches have no buttonMask, so this is a no-op for touch.
-        let right = event?.buttonMask.contains(.secondary) ?? false
+        // Middle/back/forward are sent only to a host with extraButtons.
+        let extra = client?.hostCapabilities.contains(.extraButtons) ?? false
+        downButton = PointerButtons.button(forMask: event?.buttonMask.rawValue ?? 0, extraButtons: extra)
         leftDown = true
-        client?.sendMouseButton(button: right ? 1 : 0, down: true, x: x, y: y)
+        client?.sendMouseButton(button: downButton, down: true, x: x, y: y)
     }
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        guard leftDown, !PointerLock.shared.isLocked,
+              let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
         client?.sendMouseMove(x: x, y: y)
     }
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        guard leftDown, let t = touches.first, let (x, y) = clickPosition(t) else { return }
         leftDown = false
-        let right = event?.buttonMask.contains(.secondary) ?? false
-        client?.sendMouseButton(button: right ? 1 : 0, down: false, x: x, y: y)
+        client?.sendMouseButton(button: downButton, down: false, x: x, y: y)
     }
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard leftDown, let t = touches.first, let (x, y) = normalized(t.location(in: self)) else { return }
+        guard leftDown, let t = touches.first, let (x, y) = clickPosition(t) else { return }
         leftDown = false
-        client?.sendMouseButton(button: 0, down: false, x: x, y: y)
+        client?.sendMouseButton(button: downButton, down: false, x: x, y: y)
     }
 
     /// Finger-only right-click: two-finger tap sends button-1 down+up at the
