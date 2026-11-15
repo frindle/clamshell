@@ -140,6 +140,7 @@ final class InputCore {
     // MARK: keyboard
 
     func key(macKeyCode: UInt16, down: Bool, flags: UInt64) -> [InputEvent] {
+        guard macKeyCode <= 0xFF else { return [] }
         if down {
             if !heldKeys.contains(macKeyCode) { heldKeys.append(macKeyCode) }
         } else {
