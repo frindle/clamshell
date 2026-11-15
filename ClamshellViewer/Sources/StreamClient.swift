@@ -35,6 +35,14 @@ final class StreamClient: ObservableObject {
     /// (auto-pan) should treat that as "not visible here". See
     /// PROTOCOL.md "Cursor-follow auto-pan".
     @Published var cursorPos: CGPoint?
+    /// What the host says it supports (PROTOCOL.md "Capabilities"). Empty until
+    /// the handshake fills it, so against today's hosts every feature that
+    /// needs a capability stays off.
+    @Published var hostCapabilities: StreamCapabilities = []
+
+    private let keepaliveLock = NSLock()
+    private var keepalive = KeepaliveGate(now: ProcessInfo.processInfo.systemUptime)
+    private var keepaliveTimer: DispatchSourceTimer?
 
     /// Whether audio plays through this client. Only the primary (iPad-screen)
     /// client plays audio; the external-display client stays muted.
@@ -152,6 +160,8 @@ final class StreamClient: ObservableObject {
         self.task = task
         task.resume()
         // URLSession queues sends until the handshake completes.
+        noteSent()
+        startKeepalive()
         task.send(.data(StreamMessage.hello(requestedCodec: .hevc, displayInfo: displayInfoPayload,
                                             secondSize: secondSizePayload))) { _ in }
         receiveLoop(task)
@@ -214,6 +224,7 @@ final class StreamClient: ObservableObject {
         hostLocked = false
         lastError = nil
         cursorPos = nil
+        hostCapabilities = []
     }
 
     /// The Mac's browser VNC bridge (noVNC on http://<mac>:5901), derived from
@@ -235,7 +246,35 @@ final class StreamClient: ObservableObject {
         return URL(string: "http://\(host):5901") // WebServer.httpPort
     }
 
+    // MARK: Keepalive
+
+    private func noteSent() {
+        keepaliveLock.lock()
+        keepalive.noteSent(at: ProcessInfo.processInfo.systemUptime)
+        keepaliveLock.unlock()
+    }
+
+    /// PING after 20 s of sending nothing, so a still screen (no video, no
+    /// input) does not let a NAT or tunnel drop the connection. The host's
+    /// echo is ignored.
+    private func startKeepalive() {
+        keepaliveTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler { [weak self] in
+            guard let self, self.task != nil else { return }
+            self.keepaliveLock.lock()
+            let due = self.keepalive.shouldPing(at: ProcessInfo.processInfo.systemUptime)
+            self.keepaliveLock.unlock()
+            if due { self.send(StreamMessage.frame(type: .ping)) }
+        }
+        keepaliveTimer = timer
+        timer.resume()
+    }
+
     private func teardownSocket() {
+        keepaliveTimer?.cancel()
+        keepaliveTimer = nil
         handshakeTimeout?.cancel()
         handshakeTimeout = nil
         task?.cancel(with: .normalClosure, reason: nil)
@@ -332,6 +371,11 @@ final class StreamClient: ObservableObject {
                 lastClipboard = text
                 DispatchQueue.main.async { self.onClipboard?(text) }
             }
+        case .ping:
+            break // echo of our keepalive: nothing to do
+        case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
+             .devicePending, .deviceDecision, .secure:
+            break // the auth layer will handle these
         default:
             break // client never receives hello/keyframeRequest
         }
@@ -340,6 +384,7 @@ final class StreamClient: ObservableObject {
     // MARK: Input (normalized 0..1 display coordinates)
 
     private func send(_ data: Data) {
+        noteSent()
         task?.send(.data(data)) { _ in }
     }
 
