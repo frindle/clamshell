@@ -249,11 +249,18 @@ struct WindowSizeReader: UIViewRepresentable {
     /// triggered another layout pass that reported again. Only the device's
     /// own screen should ever drive Display A's size; a window mirroring A
     /// on any other screen just aspect-fits locally.
+    /// Changes when the situation around the window changes without a resize
+    /// (the number of open windows). A change forgets the last size and
+    /// reports again, so the routing closure gets to re-decide: a window whose
+    /// earlier report was ignored (a second window mirroring A) is not stuck
+    /// silent after the other window closes.
+    var epoch: Int = 0
     var onChange: (CGSize, Bool) -> Void
 
     func makeUIView(context: Context) -> UIView {
         let view = SizeReaderView()
         view.onChange = onChange
+        view.epoch = epoch
         return view
     }
     // Without this, the closure captured in makeUIView (and everything it
@@ -261,14 +268,32 @@ struct WindowSizeReader: UIViewRepresentable {
     // freeze at the window's first layout pass, before the user ever taps
     // the toggle — misrouting size reports permanently.
     func updateUIView(_ uiView: UIView, context: Context) {
-        (uiView as? SizeReaderView)?.onChange = onChange
+        guard let view = uiView as? SizeReaderView else { return }
+        view.onChange = onChange
+        view.epoch = epoch
     }
 
     private final class SizeReaderView: UIView {
         var onChange: ((CGSize, Bool) -> Void)?
         private var lastSize: CGSize?
+        var epoch = 0 {
+            didSet {
+                guard epoch != oldValue else { return }
+                lastSize = nil
+                report()
+            }
+        }
         override func didMoveToWindow() { super.didMoveToWindow(); report() }
         override func layoutSubviews() { super.layoutSubviews(); report() }
+        // A move between screens with equal point size but a different scale
+        // changes the pixel size without any layout pass.
+        override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+            super.traitCollectionDidChange(previous)
+            if previous?.displayScale != traitCollection.displayScale {
+                lastSize = nil
+                report()
+            }
+        }
         // Measures THIS VIEW's own rendered area, not the screen's full
         // nativeBounds — real bug hit 2026-07-31: the video only fills the
         // window's own bounds, but iPadOS reserves some space on an external
@@ -476,7 +501,7 @@ struct ContentView: View {
             // report is only stored.
             Color.black.ignoresSafeArea()
                 .background(
-                    WindowSizeReader { size, isDeviceScreen in
+                    WindowSizeReader(epoch: windowCount.count) { size, isDeviceScreen in
                         guard !isPhoneIdiom else { return }
                         windowPixelSize = size
                         if showingDisplayB {
