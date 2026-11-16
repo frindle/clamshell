@@ -366,6 +366,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             break // the auth layer will handle these
         case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
+        case .peripheralAttach, .peripheralStatus, .peripheralDetach, .peripheralInput, .peripheralOutput,
+             .fileOffer, .fileAnswer, .fileData, .fileEnd:
+            break // not wired into the host yet
         }
     }
 

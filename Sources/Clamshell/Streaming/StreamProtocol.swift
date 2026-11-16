@@ -33,6 +33,17 @@ enum StreamMessageType: UInt8 {
     case text = 0x25          // client -> host: UTF-8 text to type (needs textInput)
     case mouseButtonAtCursor = 0x26 // client -> host: button, down; at the host cursor (needs relativeMouse)
     case clipboard = 0x30     // both directions: UTF-8 plain text
+    // 0x50...0x54: peripherals attached to the client (needs peripherals).
+    case peripheralAttach = 0x50
+    case peripheralStatus = 0x51
+    case peripheralDetach = 0x52
+    case peripheralInput = 0x53
+    case peripheralOutput = 0x54
+    // 0x58...0x5B: file transfer, both directions (needs fileTransfer).
+    case fileOffer = 0x58
+    case fileAnswer = 0x59
+    case fileData = 0x5A
+    case fileEnd = 0x5B
 }
 
 /// Feature bits exchanged in the handshake (PROTOCOL.md "Capabilities").
@@ -43,6 +54,8 @@ struct StreamCapabilities: OptionSet {
     static let textInput        = StreamCapabilities(rawValue: 1 << 2)
     static let extraButtons     = StreamCapabilities(rawValue: 1 << 3)
     static let deviceApproval   = StreamCapabilities(rawValue: 1 << 4)
+    static let fileTransfer     = StreamCapabilities(rawValue: 1 << 5)
+    static let peripherals      = StreamCapabilities(rawValue: 1 << 6)
 }
 
 enum StreamCodec: UInt8 {
@@ -275,7 +288,9 @@ final class StreamMessageParser {
     private var buffer = Data()
     /// Default cap for a single message: 64 MB — anything bigger is a corrupt stream.
     static let defaultMaxPayload = 64 << 20
-    private let maxPayload: Int
+    /// Settable so a host can read a small cap before a connection has
+    /// authenticated and the normal one after.
+    var maxPayload: Int
 
     init(maxPayload: Int = StreamMessageParser.defaultMaxPayload) {
         self.maxPayload = maxPayload
