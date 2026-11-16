@@ -18,6 +18,8 @@ import {
 } from '/client/hello.js';
 import {
   HeldKeys, reconnectDelay, frameAction, ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue,
+  CAP, hostHas, protocolButton, claimsButton,
+  encodeMouseMove, encodeMouseButton, encodeKey, encodeScroll, encodeMouseRelative, encodeButtonAtCursor,
 } from '/client/input.js';
 import { AudioPlayer, audioSupported } from '/client/audio.js';
 
@@ -553,9 +555,15 @@ function normFromEvent(e) {
 
 // Pointer events (not mouse events) so a drag that leaves the canvas keeps
 // reporting to us and its button-up is never lost, and so touch works.
-const buttonsDown = new Set(); // 0 = left, 1 = right
+const buttonsDown = new Set(); // protocol buttons: 0 left, 1 right, 2 middle, 3 back, 4 forward
 let lastPos = { x: 0.5, y: 0.5 };
 let pendingMove = null;
+
+// Pointer lock (host capability relativeMouse). While the canvas holds the
+// lock the pointer is reported as movement and buttons act where the host
+// cursor is; when the lock ends everything is absolute again.
+let pointerLocked = false;
+let pendingRel = null; // {dx, dy} gathered since the last frame
 
 // Mice report up to 1000 moves a second; the host can't use more than one
 // per frame. Send the newest position once per animation frame.
@@ -566,16 +574,30 @@ function queueMove(pos) {
   requestAnimationFrame(flushMove);
 }
 function flushMove() {
+  flushRelative();
   if (!pendingMove) return;
   const { x, y } = pendingMove;
   pendingMove = null;
-  send(frameMsg(T.MOUSE_MOVE, concat(f32(x), f32(y))));
+  send(encodeMouseMove(x, y));
+}
+// Relative movement adds up instead of being replaced.
+function queueRelative(dx, dy) {
+  if (pendingRel) { pendingRel.dx += dx; pendingRel.dy += dy; return; }
+  pendingRel = { dx, dy };
+  requestAnimationFrame(flushRelative);
+}
+function flushRelative() {
+  if (!pendingRel) return;
+  const { dx, dy } = pendingRel;
+  pendingRel = null;
+  if (dx !== 0 || dy !== 0) send(encodeMouseRelative(dx, dy));
 }
 function sendButton(button, down, pos) {
   flushMove(); // the host must see the move before the click
-  lastPos = pos;
   if (down) buttonsDown.add(button); else buttonsDown.delete(button);
-  send(frameMsg(T.MOUSE_BUTTON, concat(new Uint8Array([button, down ? 1 : 0]), f32(pos.x), f32(pos.y))));
+  if (pointerLocked) { send(encodeButtonAtCursor(button, down)); return; }
+  lastPos = pos;
+  send(encodeMouseButton(button, down, pos.x, pos.y));
 }
 function releaseButtons() {
   for (const b of [...buttonsDown]) sendButton(b, false, lastPos);
@@ -640,20 +662,44 @@ function touchUp(e, cancelled) {
 
 canvas.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'touch') { touchMove(e); return; }
+  if (pointerLocked) { queueRelative(e.movementX, e.movementY); return; }
   queueMove(normFromEvent(e));
 });
 canvas.addEventListener('pointerdown', (e) => {
   canvas.focus();
   maybeResumeSound();
   if (e.pointerType === 'touch') { e.preventDefault(); touchDown(e); return; }
-  if (e.button !== 0 && e.button !== 2) return;
+  const button = protocolButton(e.button);
+  if (button === null) return;
+  if (claimsButton(e.button)) e.preventDefault();
   try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-  sendButton(e.button === 2 ? 1 : 0, true, normFromEvent(e));
+  sendButton(button, true, normFromEvent(e));
+  // A mouse press captures the pointer when the host takes relative movement.
+  if (!pointerLocked && hostHas(CAP.relativeMouse) && canvas.requestPointerLock) {
+    try { const p = canvas.requestPointerLock(); if (p && p.catch) p.catch(() => {}); } catch (err) { /* ignore */ }
+  }
 });
 canvas.addEventListener('pointerup', (e) => {
   if (e.pointerType === 'touch') { touchUp(e, false); return; }
-  if (e.button !== 0 && e.button !== 2) return;
-  sendButton(e.button === 2 ? 1 : 0, false, normFromEvent(e));
+  const button = protocolButton(e.button);
+  if (button === null) return;
+  if (claimsButton(e.button)) e.preventDefault();
+  sendButton(button, false, normFromEvent(e));
+});
+// Back and forward would otherwise navigate the page away, and a middle click
+// would start autoscroll, once the host takes those buttons.
+for (const type of ['mousedown', 'mouseup', 'auxclick']) {
+  canvas.addEventListener(type, (e) => { if (claimsButton(e.button)) e.preventDefault(); });
+}
+document.addEventListener('pointerlockchange', () => {
+  const locked = document.pointerLockElement === canvas;
+  if (locked === pointerLocked) return;
+  if (!locked) {
+    // Let go while buttons still go out the way they were pressed.
+    releaseInput();
+    pendingRel = null;
+  }
+  pointerLocked = locked;
 });
 canvas.addEventListener('pointercancel', (e) => {
   if (e.pointerType === 'touch') { touchUp(e, true); return; }
@@ -665,7 +711,7 @@ canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
   // Normalize LINE/PAGE deltaMode to an approximate pixel value.
   const mul = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? canvas.clientHeight : 1;
-  send(frameMsg(T.SCROLL, concat(f32(e.deltaX * mul), f32(e.deltaY * mul))));
+  send(encodeScroll(e.deltaX * mul, e.deltaY * mul));
 }, { passive: false });
 
 // "Ctrl acts as Cmd": remembered per browser, on by default on Windows/Linux.
@@ -684,11 +730,7 @@ function cgFlags(e) {
 }
 
 function sendKey(macVK, down, flags) {
-  const b = new Uint8Array(11);
-  new DataView(b.buffer).setUint16(0, macVK, false);
-  b[2] = down ? 1 : 0;
-  new DataView(b.buffer).setBigUint64(3, flags, false);
-  send(frameMsg(T.KEY, b));
+  send(encodeKey(macVK, down, flags));
 }
 
 const held = new HeldKeys();
@@ -700,6 +742,7 @@ function releaseInput() {
   releaseButtons();
 }
 window.addEventListener('blur', releaseInput);
+canvas.addEventListener('blur', releaseInput);
 
 canvas.addEventListener('keydown', (e) => {
   const vk = remapKey(e.code, codeToMacVK[e.code], ctrlAsCmd);
