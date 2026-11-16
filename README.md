@@ -1056,13 +1056,18 @@ form.
   /clipboard` on the web server sync the Mac clipboard with the browser —
   pulled on page focus, pushed when the page is hidden. Requires a secure
   context (HTTPS tunnel or localhost); over plain LAN HTTP the browser
-  clipboard API is unavailable and the script no-ops. Same trust boundary
-  as the rest of the web server by default; if the server is exposed
-  through a tunnel, gate the endpoint with a token —
-  `defaults write com.frindle.clamshell clipboardToken <secret>` (then
-  relaunch Clamshell). Requests must then carry `?token=<secret>` or an
-  `Authorization: Bearer <secret>` header; the served pages embed the
-  token automatically so browser sync keeps working.
+  clipboard API is unavailable and the script no-ops. Every request must
+  carry a token, as `?token=<secret>` or an `Authorization: Bearer
+  <secret>` header, and it has to be the whole token. The pages the server
+  hands out carry it, so browser sync needs no setup. Clamshell makes the
+  token the first time it runs and keeps it
+  (`defaults read com.frindle.clamshell clipboardToken`). Set your own with
+  `defaults write com.frindle.clamshell clipboardToken <secret>`, or delete
+  the key to get a new one, then relaunch Clamshell. The token keeps out
+  what never loaded a Clamshell page, such as another website open in the
+  same browser. It does not keep out anyone who can load a page from the
+  web server, so the web server still needs the network controls it needed
+  before.
 - **Sunshine disconnect fix** (⚠ untested on real hardware): Sunshine's
   `serverinfo` BUSY state only means the streaming app is running, not
   that a client is attached, so it kept Clamshell collapsed forever after

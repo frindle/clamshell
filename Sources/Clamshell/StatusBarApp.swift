@@ -144,9 +144,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         webServer.bindHosts = UserDefaults.standard.stringArray(forKey: "bindHosts")
             ?? UserDefaults.standard.string(forKey: "bindHost").map { [$0] } // migrate pre-multi-select key
             ?? []
-        // Optional token gating the /clipboard endpoint (see README):
+        // The token every /clipboard request must carry (see README). The
+        // one in the preferences is used; when there is none, the server's
+        // own random one is kept there, so a page that was open before a
+        // relaunch goes on working.
         //   defaults write com.frindle.clamshell clipboardToken <secret>
-        webServer.clipboardToken = UserDefaults.standard.string(forKey: "clipboardToken")
+        if let stored = UserDefaults.standard.string(forKey: "clipboardToken"), !stored.isEmpty {
+            webServer.clipboardToken = stored
+        } else {
+            UserDefaults.standard.set(webServer.clipboardToken, forKey: "clipboardToken")
+        }
         if UserDefaults.standard.bool(forKey: "webAccess") {
             webServer.start()
         }

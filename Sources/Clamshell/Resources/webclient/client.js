@@ -26,7 +26,14 @@ import { AudioPlayer, audioSupported } from '/client/audio.js';
 const params = new URLSearchParams(location.search);
 const display = ['a', 'b', 'c'].includes(params.get('display')) ? params.get('display') : 'a';
 const isPrimary = display === 'a';
-const token = params.get('token'); // optional clipboardToken passthrough
+// The clipboard endpoint needs a token. The server writes it into this page;
+// a `?token=` in the address is used first, for a page opened with one.
+function pageClipboardToken() {
+  const meta = document.querySelector('meta[name="clamshell-clipboard-token"]');
+  if (!meta || !meta.content) return null;
+  try { return decodeURIComponent(meta.content); } catch (e) { return null; }
+}
+const token = params.get('token') || pageClipboardToken();
 
 // Browser-facing WS bridge ports (see WebServer.swift streamBridgePorts):
 // one per display, each proxying to the matching local StreamServer port.
