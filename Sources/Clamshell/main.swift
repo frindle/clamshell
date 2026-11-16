@@ -78,7 +78,7 @@ if args.count > 1 {
         // StreamFleet follows display topology changes: a client HELLO can
         // trigger a collapse that creates virtual display(s) mid-run, and
         // those must take over the ports (A at base, B at base+1).
-        let fleet = StreamFleet(basePort: basePort)
+        let fleet = StreamFleet(basePort: basePort, announce: BonjourAdvertiser.isEnabled)
         fleet.rebuild()
         guard fleet.isServing else {
             print("FAILED to start any stream server (ports in use?) — see log")
@@ -205,6 +205,11 @@ if args.count > 1 {
         // listeners and clients, a device list in a temporary directory.
         // Captures nothing and types nothing.
         exit(AuthGateSelfTest.run())
+    case "discovery-selftest":
+        // The local-network announcement, registered so that only this
+        // machine can see it and read back from the system's discovery
+        // service. Announces nothing on the network and listens on nothing.
+        exit(DiscoverySelfTest.run())
     case "confirmation-bridge-selftest":
         exit(ConfirmationBridgeSelfTest.run())
     case "confirmation-coordinator-selftest":
@@ -244,7 +249,7 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "auth-gate-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
+              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
               "devices | approve | deny | revoke | forget]")
         exit(64)
     }

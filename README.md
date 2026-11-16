@@ -347,6 +347,14 @@ terminal for debugging:
 .build/debug/Clamshell stream-selftest   # encode → TCP loopback → decode check
 ```
 
+While native streaming is on, the Mac announces itself on the local network
+(`_clamshell._tcp`) so the apps can list it without an address being typed.
+Being found gives a device nothing: it still has to be approved. Turn the
+announcement off with **Announce on Local Network** in the same menu, or
+`defaults write com.frindle.clamshell announceOnLAN -bool false`. macOS may
+ask once whether Clamshell may find devices on the local network; saying no
+only stops the announcement.
+
 `stream` needs **Screen Recording** permission. The iOS client is the
 `ClamshellViewer/` Xcode project (SwiftUI, `AVSampleBufferDisplayLayer`,
 touch → mouse forwarding) — one universal app, single target/scheme

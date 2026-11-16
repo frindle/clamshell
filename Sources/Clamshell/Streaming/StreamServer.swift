@@ -882,6 +882,10 @@ final class StreamFleet {
     private var servers: [StreamServer] = []
     private var currentIDs: [CGDirectDisplayID] = []
     private var pendingRebuild: DispatchWorkItem?
+    /// Whether the primary display's port is announced on the local network
+    /// (PROTOCOL.md "Discovery"), and what does the announcing.
+    private var announce: Bool
+    private var advertiser: BonjourAdvertiser?
 
     /// Current screen-lock state, tracked from the `com.apple.screenIsLocked` /
     /// `...Unlocked` distributed notifications. Seeded from the login-session
@@ -919,9 +923,13 @@ final class StreamFleet {
     /// `reportLockState: false` keeps HOST_LOCK_STATE at "unlocked" for good —
     /// for the login-window agent, where the lock screen is what's being
     /// served and the client must not fall back to VNC.
-    init(basePort: UInt16, reportLockState: Bool = true, auth: HostAuth = .shared) {
+    ///
+    /// `announce` is off unless asked for: a test rig or the login-window
+    /// agent should not put this Mac in the clients' list of nearby hosts.
+    init(basePort: UInt16, reportLockState: Bool = true, auth: HostAuth = .shared, announce: Bool = false) {
         self.basePort = basePort
         self.auth = auth
+        self.announce = announce
         CGDisplayRegisterReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
         callbackRegistered = true
         guard reportLockState else { return }
@@ -974,6 +982,7 @@ final class StreamFleet {
         servers = []
         currentIDs = []
         auth.directory.setDisplays([])
+        updateAnnouncement()
         if callbackRegistered {
             CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
             callbackRegistered = false
@@ -1046,8 +1055,32 @@ final class StreamFleet {
             }
             // What HOST_INFO tells a client it can also connect to.
             auth.directory.setDisplays(served)
+            updateAnnouncement()
             clog("STREAM: serving \(servers.count) display(s) on ports \(basePort)–\(basePort + UInt16(max(servers.count, 1) - 1))")
         }
+    }
+
+    /// The Streaming menu's switch.
+    func setAnnounce(_ on: Bool) {
+        announce = on
+        updateAnnouncement()
+    }
+
+    /// How the announcement stands, for the menu.
+    var announcement: BonjourAdvertiser.Outcome { advertiser?.outcome ?? .off }
+
+    /// Announces the primary display's port while it is being served and the
+    /// user wants it announced. The port stays the same across rebuilds, so
+    /// the announcement is left alone while the listeners are replaced.
+    private func updateAnnouncement() {
+        guard announce, let primary = servers.first(where: { $0.primary }) else {
+            advertiser?.stop()
+            return
+        }
+        if advertiser == nil {
+            advertiser = BonjourAdvertiser(hostId: auth.identity.id, name: auth.hostName)
+        }
+        advertiser?.start(port: primary.portNumber)
     }
 
     /// "Display A", "Display B", …: the names the clients already use.

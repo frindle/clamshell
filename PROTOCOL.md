@@ -666,6 +666,10 @@ host id), `name` and `kind`. These are hints for building a list of nearby
 hosts. They prove nothing: a discovered host still has to pass the handshake,
 and one whose `id` matches a saved host must present that host's saved key.
 
+A host can be told not to advertise. Advertising is also separate from
+listening: a host that is not advertising, by choice or because the system
+refused it, still answers a client that has its address.
+
 Off the LAN there is nothing to browse, so a client reaches a host through an
 address saved from an earlier HOST_INFO, or one typed in once.
 

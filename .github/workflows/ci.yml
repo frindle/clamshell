@@ -24,6 +24,16 @@ jobs:
           .build/debug/Clamshell confirmation-bridge-selftest
           .build/debug/Clamshell confirmation-coordinator-selftest
           .build/debug/Clamshell auth-gate-selftest
+          # macOS asks before a program may use the local network, and nobody
+          # can answer on a runner. The selftest exits 75 when it was not
+          # allowed to announce at all. Root is not asked, so it then runs
+          # again as root. Any other failure, or a second 75, fails the step.
+          .build/debug/Clamshell discovery-selftest || {
+            code=$?
+            [ "$code" -eq 75 ] || exit "$code"
+            echo "Not allowed to announce as the runner user; running the discovery selftest as root."
+            sudo .build/debug/Clamshell discovery-selftest
+          }
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

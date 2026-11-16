@@ -414,6 +414,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stream.target = self
         streamingMenu.addItem(stream)
 
+        // Whether the apps can find this Mac by themselves on the local
+        // network. Finding it gives a device nothing: it still has to be
+        // approved.
+        let announce = NSMenuItem(
+            title: "Announce on Local Network (apps find this Mac)",
+            action: #selector(toggleAnnounce), keyEquivalent: ""
+        )
+        announce.state = BonjourAdvertiser.isEnabled ? .on : .off
+        announce.target = self
+        streamingMenu.addItem(announce)
+        if case .failed(let code)? = streamFleet?.announcement {
+            let why = NSMenuItem(title: "Not announced: \(BonjourAdvertiser.describe(code))",
+                                 action: nil, keyEquivalent: "")
+            why.isEnabled = false
+            streamingMenu.addItem(why)
+        }
+
         // Bind-address picker — only interesting with more than one LAN IP.
         // Multi-select: each interface toggles independently; "All Interfaces"
         // clears the selection (empty selection = bind everything).
@@ -659,7 +676,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startNativeStreaming() {
         guard streamFleet == nil else { return }
-        let fleet = StreamFleet(basePort: streamDefaultPort)
+        let fleet = StreamFleet(basePort: streamDefaultPort, announce: BonjourAdvertiser.isEnabled)
         fleet.rebuild()
         streamFleet = fleet
         StreamFleet.shared = fleet
@@ -671,6 +688,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         streamFleet = nil
         StreamFleet.shared = nil
         clog("native streaming disabled from menu bar")
+    }
+
+    @objc private func toggleAnnounce() {
+        let on = !BonjourAdvertiser.isEnabled
+        BonjourAdvertiser.setEnabled(on)
+        streamFleet?.setAnnounce(on)
+        rebuildMenu()
     }
 
     @objc private func toggleNativeStreaming() {
