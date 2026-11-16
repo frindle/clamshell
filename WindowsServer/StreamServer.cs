@@ -145,16 +145,16 @@ internal sealed partial class StreamServer : IDisposable
                 RequestKeyframe();
                 break;
             case MessageType.MouseMove:
-                if (p.Length >= 8) _injector?.MouseMove(Be.F32(p, 0), Be.F32(p, 4));
-                break;
             case MessageType.MouseButton:
-                if (p.Length >= 10) _injector?.MouseButton(p[0], p[1] == 1, Be.F32(p, 2), Be.F32(p, 6));
-                break;
             case MessageType.Key:
-                if (p.Length >= 11) _injector?.Key(Be.U16(p, 0), p[2] == 1, Be.U64(p, 3));
-                break;
             case MessageType.Scroll:
-                if (p.Length >= 8) _injector?.Scroll(Be.F32(p, 0), Be.F32(p, 4));
+            case MessageType.MouseRelative:
+            case MessageType.Text:
+            case MessageType.MouseButtonAtCursor:
+                {
+                    var m = InputMessage.Decode(type, p);
+                    if (m is not null) _injector?.Handle(m);
+                }
                 break;
             case MessageType.Clipboard:
                 _clipboard?.ReceiveFromClient(System.Text.Encoding.UTF8.GetString(p));
@@ -168,6 +168,7 @@ internal sealed partial class StreamServer : IDisposable
 
     private void StartSession(StreamCodec requestedCodec)
     {
+        _injector?.ReleaseAll(); // a repeated HELLO must not strand held keys
         _injector = new InputInjector(_display.Bounds);
         if (IsPrimary)
         {
@@ -215,6 +216,8 @@ internal sealed partial class StreamServer : IDisposable
         TeardownVideo();
         _clipboard?.Dispose();
         _clipboard = null;
+        // Release anything this client still holds down before the session goes.
+        _injector?.ReleaseAll();
         _injector = null;
         try { _ws?.Abort(); } catch { }
         try { _ws?.Dispose(); } catch { }
