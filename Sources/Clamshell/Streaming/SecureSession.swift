@@ -170,10 +170,41 @@ enum AuthWire {
 
 // MARK: - Ids and keys
 
+enum Hex {
+    static func encode<Bytes: Sequence>(_ bytes: Bytes) -> String where Bytes.Element == UInt8 {
+        bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// nil unless the text is an even number of hex digits and nothing else.
+    static func decode(_ text: String) -> Data? {
+        let digits = Array(text.utf8)
+        guard digits.count % 2 == 0 else { return nil }
+        func value(_ c: UInt8) -> UInt8? {
+            switch c {
+            case 0x30 ... 0x39: return c - 0x30
+            case 0x41 ... 0x46: return c - 0x41 + 10
+            case 0x61 ... 0x66: return c - 0x61 + 10
+            default: return nil
+            }
+        }
+        var out = Data(capacity: digits.count / 2)
+        for i in stride(from: 0, to: digits.count, by: 2) {
+            guard let high = value(digits[i]), let low = value(digits[i + 1]) else { return nil }
+            out.append(high << 4 | low)
+        }
+        return out
+    }
+}
+
 enum DeviceIdentity {
     /// Lowercase hex SHA-256 of the 65-byte public key.
     static func id(ofPublicKey key: Data) -> String {
-        SHA256.hash(data: key).map { String(format: "%02x", $0) }.joined()
+        Hex.encode(SHA256.hash(data: key))
+    }
+
+    /// True for text that has the shape of a device id: 64 lowercase hex digits.
+    static func isWellFormedId(_ text: String) -> Bool {
+        text.utf8.count == 64 && text.utf8.allSatisfy { (0x30 ... 0x39).contains($0) || (0x61 ... 0x66).contains($0) }
     }
 
     /// `AB12-CD34-EF56-7890`: the first 16 characters of an id, upper case, in

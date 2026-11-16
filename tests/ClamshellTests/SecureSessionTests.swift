@@ -335,7 +335,7 @@ final class SecureSessionTests: XCTestCase {
             var sealer = SecureSealer(key: key(for: direction))
             var opener = SecureOpener(key: key(for: direction))
             for v in secureVectors where v["direction"] as! String == direction {
-                let counter = UInt64(v["counter"] as! String)!
+                let counter = (v["counter"] as! NSNumber).uint64Value
                 XCTAssertEqual(sealer.counter, counter)
                 XCTAssertEqual(toHex(SecureFrame.nonce(counter)), v["nonce"] as! String)
                 let inner = hex(v["inner"] as! String)
