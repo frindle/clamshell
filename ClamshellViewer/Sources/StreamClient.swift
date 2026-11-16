@@ -87,10 +87,13 @@ final class StreamClient: ObservableObject {
         var opened = false
         var timers: [(FlowTimer, DispatchWorkItem)] = []
         var openTimer: DispatchWorkItem?
+        /// How long this attempt waits for the socket to open.
+        let openTimeout: TimeInterval
 
-        init(task: URLSessionWebSocketTask, flow: ClientAuthFlow) {
+        init(task: URLSessionWebSocketTask, flow: ClientAuthFlow, openTimeout: TimeInterval) {
             self.task = task
             self.flow = flow
+            self.openTimeout = openTimeout
         }
 
         func cancelTimers() {
@@ -145,6 +148,11 @@ final class StreamClient: ObservableObject {
     /// open the flow's own timers (2 s / 10 s for the challenge, 15 s for the
     /// result, 60 s while pending) bound every later wait.
     private let openTimeoutInterval: TimeInterval = 10
+    /// The same wait when the Mac has other saved addresses to try next.
+    private let alternateOpenTimeoutInterval: TimeInterval = 4
+    /// Which of the saved Mac's addresses the next attempt dials (0 is the
+    /// address the user picked). Moves on only when a socket never opened.
+    private var dialIndex = 0
 
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
@@ -153,8 +161,34 @@ final class StreamClient: ObservableObject {
         lastError = nil
         authState = nil
         flowCarry = FlowCarry()
+        dialIndex = 0
         connectHost = host
         openSocket()
+    }
+
+    /// The addresses to try for a saved Mac: the one the user picked first,
+    /// then the others its key is known at, last successful first. Each one
+    /// goes through the same flow against the same saved key, so another
+    /// address can never stand in for a different Mac.
+    private func dialURLs(for host: String) -> [String] {
+        let primary = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
+        let known = KnownHostsStore.shared.hosts
+        guard let normalized = KnownHosts.normalizeAddress(primary),
+              case let .host(id) = known.standing(of: normalized) else { return [primary] }
+        var urls = [primary]
+        for address in known.dialOrder(hostId: id) where address != normalized {
+            if let url = Self.url(forAddress: address) { urls.append(url) }
+        }
+        return urls
+    }
+
+    /// A dialable URL for a normalized `host:port` (port 443 means wss, as
+    /// the spec's default for that scheme; the path is not kept).
+    private static func url(forAddress address: String) -> String? {
+        guard let colon = address.lastIndex(of: ":") else { return nil }
+        let host = String(address[..<colon]), port = String(address[address.index(after: colon)...])
+        guard !host.isEmpty, UInt16(port) != nil else { return nil }
+        return port == "443" ? "wss://\(host)" : "ws://\(host):\(port)"
     }
 
     /// The user's answer to a question the connection flow asked ("Connect"
@@ -200,7 +234,9 @@ final class StreamClient: ObservableObject {
     private func openSocket() {
         teardownSocket()
         guard let host = connectHost else { return }
-        let urlString = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
+        let urls = dialURLs(for: host)
+        if dialIndex >= urls.count { dialIndex = 0 }
+        let urlString = urls[dialIndex]
         guard let url = URL(string: urlString) else {
             clogViewer("connect FAILED: invalid address '\(urlString)'")
             status = .failed("invalid address")
@@ -238,7 +274,8 @@ final class StreamClient: ObservableObject {
         socketDelegate.onOpen = { [weak self] task in self?.socketOpened(task) }
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20 // keyframes at full display resolution
-        let attempt = Attempt(task: task, flow: flow)
+        let attempt = Attempt(task: task, flow: flow,
+                              openTimeout: urls.count > 1 ? alternateOpenTimeoutInterval : openTimeoutInterval)
         attempt.parser.onMessage = { [weak self, weak attempt] type, payload in
             guard let self, let attempt, !attempt.ended else { return }
             self.perform(attempt.flow.received(type: type.rawValue, payload: payload), on: attempt)
@@ -276,11 +313,11 @@ final class StreamClient: ObservableObject {
     private func armOpenTimer(_ a: Attempt) {
         let item = DispatchWorkItem { [weak self, weak a] in
             guard let self, let a, !a.ended, !a.opened else { return }
-            clogViewer("the socket did not open within \(Int(self.openTimeoutInterval)) s")
+            clogViewer("the socket did not open within \(Int(a.openTimeout)) s")
             self.perform([.end(.failure, "the socket did not open in time")], on: a)
         }
         a.openTimer = item
-        wireQueue.asyncAfter(deadline: .now() + openTimeoutInterval, execute: item)
+        wireQueue.asyncAfter(deadline: .now() + a.openTimeout, execute: item)
     }
 
     /// Any thread: the delegate saw the WebSocket open.
@@ -342,7 +379,8 @@ final class StreamClient: ObservableObject {
                 a.ended = true
                 a.cancelTimers()
                 a.task.cancel(with: .normalClosure, reason: nil)
-                DispatchQueue.main.async { [weak self] in self?.attemptEnded(a, end, reason) }
+                let opened = a.opened
+                DispatchQueue.main.async { [weak self] in self?.attemptEnded(a, end, reason, socketOpened: opened) }
             }
         }
     }
@@ -359,7 +397,7 @@ final class StreamClient: ObservableObject {
 
     /// Main thread: an attempt finished. `.stop` waits for the user,
     /// `.failure` uses this client's own back-off, `.reconnect` does as told.
-    private func attemptEnded(_ a: Attempt, _ end: FlowEnd, _ reason: String) {
+    private func attemptEnded(_ a: Attempt, _ end: FlowEnd, _ reason: String, socketOpened opened: Bool) {
         guard current === a else { return }
         clogViewer("connection attempt ended: \(reason)")
         let shown = authState
@@ -374,6 +412,18 @@ final class StreamClient: ObservableObject {
                 status = .failed(Self.describe(shown) ?? reason)
             }
         case .failure:
+            if !opened, wantConnection, let host = connectHost {
+                // The socket never opened: try the Mac's next saved address
+                // at once; only after the last one does the back-off apply.
+                if dialIndex + 1 < dialURLs(for: host).count {
+                    dialIndex += 1
+                    clogViewer("that address did not answer; trying the next saved one")
+                    teardownSocket()
+                    openSocket()
+                    return
+                }
+                dialIndex = 0
+            }
             if case let .failed(text)? = shown { lastError = "Could not connect securely: \(text)" }
             scheduleReconnect()
         case let .reconnect(after, carry):
