@@ -49,6 +49,14 @@ enum LoginWindowAgent {
         }
         clog("LOGINWINDOW-AGENT: nobody logged in — serving (uid \(getuid()))")
 
+        // Device approval is not solved here yet. At the login window this
+        // process is not the user who approved the devices, so `HostAuth.shared`
+        // reads a different state directory: a host key of its own and an
+        // empty device list. With approval on, that lets nobody in, and a
+        // client that saved the user's host key refuses this one as a changed
+        // identity. Both fail closed. Giving the agent the user's host key
+        // and trusted list (read-only, root-owned copy) is part of the
+        // login-window work and has to land before this agent is installed.
         let web = WebServer()
         web.start()
         // The login window is this agent's whole job, so it never tells the

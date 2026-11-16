@@ -76,10 +76,19 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// The primary server (main display, base port) also carries system audio
     /// and clipboard sync; secondary displays are video+input only.
     private let isPrimary: Bool
+    /// Listen on this machine's loopback address only. For selftests, so a
+    /// test listener is never reachable from the network.
+    private let loopbackOnly: Bool
 
     private var listener: NWListener?
+    /// Decides which connections get in (see StreamLink.swift). Nothing in
+    /// this class runs for a connection the gate has not handed over.
+    private let gate: StreamGate
+    private let auth: HostAuth
+    /// The client being served, and its socket. `connection` doubles as the
+    /// identity of the session in the async paths below.
+    private var liveLink: StreamLink?
     private var connection: NWConnection?
-    private var parser: StreamMessageParser?
     private var stream: SCStream?
     /// Read from the capture queue for every frame and replaced on `queue` when
     /// the stream is resized in place, so access goes through a lock.
@@ -95,7 +104,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private let audioQueue = DispatchQueue(label: "clamshell.stream.audio")
 
     /// Serial queue owning all connection/session state.
-    private let queue = DispatchQueue(label: "clamshell.stream")
+    private let queue: DispatchQueue
     private let videoQueue = DispatchQueue(label: "clamshell.stream.video")
 
     /// Send backpressure: frames handed to NWConnection but not yet consumed.
@@ -145,14 +154,38 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var cursorTimer: DispatchSourceTimer?
     private var lastSentCursor: CGPoint?
 
-    init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
+    /// Clipboard text from the client larger than this is ignored.
+    static let maxClipboardBytes = 1 << 20
+
+    /// `displayIndex` is this listener's place among the host's displays
+    /// (0 = Display A), told to clients in HOST_INFO; nil for a window.
+    init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true,
+         auth: HostAuth = .shared, displayIndex: Int? = nil, loopbackOnly: Bool = false) {
         self.source = source
         self.port = port
         self.isPrimary = isPrimary
+        self.loopbackOnly = loopbackOnly
+        self.auth = auth
+        let queue = DispatchQueue(label: "clamshell.stream")
+        self.queue = queue
+        gate = StreamGate(auth: auth, queue: queue, label: "port \(port)")
+        super.init()
+        gate.displayIndex = displayIndex
+        gate.onAdmit = { [weak self] link in self?.admitted(link) }
+        gate.onMessage = { [weak self] link, type, payload in
+            guard let self, link === self.liveLink else { return }
+            self.handle(type: type, payload: payload)
+        }
+        gate.onClose = { [weak self] link in
+            guard let self, link === self.liveLink else { return }
+            self.teardownSession()
+        }
     }
 
-    convenience init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
-        self.init(source: .display(displayID), port: port, isPrimary: isPrimary)
+    convenience init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true,
+                     auth: HostAuth = .shared, displayIndex: Int? = nil) {
+        self.init(source: .display(displayID), port: port, isPrimary: isPrimary,
+                  auth: auth, displayIndex: displayIndex)
     }
 
     func start() throws {
@@ -162,12 +195,21 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         params.allowLocalEndpointReuse = true
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
+        // Nothing a client sends is anywhere near this size; the room above
+        // the largest message is for the SECURE wrapping.
+        ws.maximumMessageSize = StreamGate.sessionMaxPayload + 4096
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             clog("STREAM: invalid listen port \(port)")
             throw NWError.posix(.EINVAL)
         }
-        let listener = try NWListener(using: params, on: nwPort)
+        let listener: NWListener
+        if loopbackOnly {
+            params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: nwPort)
+            listener = try NWListener(using: params)
+        } else {
+            listener = try NWListener(using: params, on: nwPort)
+        }
         listener.newConnectionHandler = { [weak self] conn in
             self?.queue.async { self?.accept(conn) }
         }
@@ -177,7 +219,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
         listener.start(queue: queue)
         self.listener = listener
-        clog("STREAM: listening on port \(port) for \(source)")
+        auth.startWatchingSetting()
+        clog("STREAM: listening on port \(port)\(loopbackOnly ? " (this machine only)" : "") for \(source) — device approval is \(auth.requireApproval ? "on" : "OFF")")
     }
 
     // The bind happens after start() returns, so "port still in use" (the
@@ -218,6 +261,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         queue.async { [self] in
             stopped = true
             teardownSession()
+            gate.closeAll(why: "the listener is stopping")
             if let l = listener {
                 l.stateUpdateHandler = { state in
                     clog("STREAM: listener \(state)")
@@ -253,44 +297,22 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
 
     // MARK: - Connection lifecycle (on `queue`)
 
+    /// A connection arrived. It belongs to the gate until the gate lets it
+    /// in; until then it cannot disturb the client being served.
     private func accept(_ conn: NWConnection) {
-        if connection != nil {
+        listenRetries = 0 // a connection reached us, so the port is ours
+        gate.accept(conn)
+    }
+
+    /// The gate let this connection in: it is the client from now on.
+    private func admitted(_ link: StreamLink) {
+        if liveLink != nil || connection != nil {
             clog("STREAM: new client replaces existing connection")
             teardownSession()
         }
-        connection = conn
-        listenRetries = 0 // a client got through, so the port is ours
+        liveLink = link
+        connection = link.conn
         sessionRequested = false
-        let parser = StreamMessageParser()
-        parser.onMessage = { [weak self] type, payload in
-            self?.handle(type: type, payload: payload)
-        }
-        self.parser = parser
-        conn.stateUpdateHandler = { [weak self] state in
-            clog("STREAM: connection \(state)")
-            if case .failed = state { self?.queue.async { self?.teardownSession() } }
-            if case .cancelled = state { self?.queue.async { self?.teardownSession() } }
-        }
-        conn.start(queue: queue)
-        receiveLoop(conn)
-    }
-
-    private func receiveLoop(_ conn: NWConnection) {
-        conn.receiveMessage { [weak self] data, _, complete, error in
-            guard let self, self.connection === conn else { return }
-            if let data, !data.isEmpty { self.parser?.feed(data) }
-            if self.parser?.corrupt == true {
-                clog("STREAM: corrupt stream from client — disconnecting")
-                self.teardownSession()
-                return
-            }
-            if error != nil || (complete && data == nil) {
-                clog("STREAM: client disconnected (\(error.map(String.init(describing:)) ?? "eof"))")
-                self.teardownSession()
-                return
-            }
-            self.receiveLoop(conn)
-        }
     }
 
     private func teardownSession() {
@@ -299,9 +321,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             clientAnnounced = false
             scheduleRestorePost()
         }
-        connection?.cancel()
+        let link = liveLink
+        liveLink = nil
         connection = nil
-        parser = nil
+        if let link { gate.close(link, why: "the session ended") }
         pacer.reset()
         sessionRequested = false
         bitrate = VideoEncoder.minBitrate
@@ -360,10 +383,14 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             case let .text(data): injector?.text(data)
             }
         case .clipboard:
+            guard payload.count <= Self.maxClipboardBytes else {
+                clog("STREAM: ignored \(payload.count) bytes of clipboard text from the client (limit \(Self.maxClipboardBytes))")
+                return
+            }
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
         case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
              .devicePending, .deviceDecision, .secure:
-            break // the auth layer will handle these
+            break // the gate deals with these; here they mean nothing
         case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
         case .peripheralAttach, .peripheralStatus, .peripheralDetach, .peripheralInput, .peripheralOutput,
@@ -545,6 +572,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                         clipboard.onLocalChange = { [weak self] text in
                             self?.queue.async {
                                 guard self?.connection != nil else { return }
+                                // The same limit both ways: a client is not
+                                // sent more than the host would take from it.
+                                guard text.utf8.count <= Self.maxClipboardBytes else {
+                                    clog("STREAM: did not send \(text.utf8.count) bytes of clipboard text to the client (limit \(Self.maxClipboardBytes))")
+                                    return
+                                }
                                 self?.send(StreamMessage.clipboard(text: text))
                             }
                         }
@@ -785,16 +818,18 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         clog("STREAM: healthy for 5s — bitrate up to \(bitrate / 1_000_000) Mbps")
     }
 
+    /// Sends one message to the client being served, through the gate, which
+    /// encrypts it on a session that has a key. On `queue`.
     private func send(_ data: Data, completion: (() -> Void)? = nil) {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
-        let context = NWConnection.ContentContext(identifier: "msg", metadata: [metadata])
-        connection?.send(content: data, contentContext: context, isComplete: true,
-                         completion: .contentProcessed { [weak self] error in
+        guard let link = liveLink else { return }
+        gate.send(data, to: link) { [weak self] error in
             self?.queue.async {
                 completion?()
-                if error != nil { self?.teardownSession() }
+                // A late failure from a client that has since been replaced
+                // must not end its successor's session.
+                if error != nil, let self, self.liveLink === link { self.teardownSession() }
             }
-        })
+        }
     }
 
     // MARK: - SCStreamOutput / SCStreamDelegate (on `videoQueue`)
@@ -841,6 +876,9 @@ final class StreamFleet {
     static var shared: StreamFleet?
     
     private let basePort: UInt16
+    /// The host's key, device list and approval setting, shared by every
+    /// listener of this fleet.
+    private let auth: HostAuth
     private var servers: [StreamServer] = []
     private var currentIDs: [CGDirectDisplayID] = []
     private var pendingRebuild: DispatchWorkItem?
@@ -881,8 +919,9 @@ final class StreamFleet {
     /// `reportLockState: false` keeps HOST_LOCK_STATE at "unlocked" for good —
     /// for the login-window agent, where the lock screen is what's being
     /// served and the client must not fall back to VNC.
-    init(basePort: UInt16, reportLockState: Bool = true) {
+    init(basePort: UInt16, reportLockState: Bool = true, auth: HostAuth = .shared) {
         self.basePort = basePort
+        self.auth = auth
         CGDisplayRegisterReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
         callbackRegistered = true
         guard reportLockState else { return }
@@ -934,6 +973,7 @@ final class StreamFleet {
         for s in servers { s.stop() }
         servers = []
         currentIDs = []
+        auth.directory.setDisplays([])
         if callbackRegistered {
             CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
             callbackRegistered = false
@@ -989,18 +1029,31 @@ final class StreamFleet {
         // Wait for every old listener's port to actually release before
         // binding new ones on the same ports — see stop()'s doc comment.
         group.notify(queue: .main) { [self] in
+            var served: [HostDirectory.Display] = []
             for (i, id) in ids.enumerated() {
-                let server = StreamServer(displayID: id, port: basePort + UInt16(i), isPrimary: i == 0)
+                let port = basePort + UInt16(i)
+                let server = StreamServer(displayID: id, port: port, isPrimary: i == 0,
+                                          auth: auth, displayIndex: i)
                 do {
                     try server.start()
                     server.setLockState(screenLocked) // inherit current lock state
                     servers.append(server)
+                    served.append(HostDirectory.Display(index: i, name: Self.displayName(i),
+                                                        primary: i == 0, port: port))
                 } catch {
-                    clog("STREAM: failed to start server on port \(basePort + UInt16(i)): \(error)")
+                    clog("STREAM: failed to start server on port \(port): \(error)")
                 }
             }
+            // What HOST_INFO tells a client it can also connect to.
+            auth.directory.setDisplays(served)
             clog("STREAM: serving \(servers.count) display(s) on ports \(basePort)–\(basePort + UInt16(max(servers.count, 1) - 1))")
         }
+    }
+
+    /// "Display A", "Display B", …: the names the clients already use.
+    static func displayName(_ index: Int) -> String {
+        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        return letters.indices.contains(index) ? "Display \(letters[index])" : "Display \(index + 1)"
     }
 
     /// A display kept its ID but changed pixel size. Each server compares its

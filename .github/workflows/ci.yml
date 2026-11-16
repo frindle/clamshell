@@ -23,6 +23,7 @@ jobs:
           .build/debug/Clamshell self-heal-guard-selftest
           .build/debug/Clamshell confirmation-bridge-selftest
           .build/debug/Clamshell confirmation-coordinator-selftest
+          .build/debug/Clamshell auth-gate-selftest
       - uses: actions/setup-node@v4
         with:
           node-version: '20'

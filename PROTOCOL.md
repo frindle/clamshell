@@ -72,7 +72,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x24 | INPUT_MOUSE_RELATIVE | client → host | dx(Float32 BE), dy(Float32 BE) — pointer movement in points, for a captured pointer. Only to a host that advertises `relativeMouse` |
 | 0x25 | INPUT_TEXT       | client → host | UTF-8 text to type as-is (dictation, input-method text, emoji), at most 16 KB. Only to a host that advertises `textInput` |
 | 0x26 | INPUT_MOUSE_BUTTON_AT_CURSOR | client → host | button(1: as INPUT_MOUSE_BUTTON), down(1: 0/1) — a press or release where the host cursor is now, for a captured pointer. Only to a host that advertises `relativeMouse` |
-| 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
+| 0x30 | CLIPBOARD        | both          | UTF-8 plain text, at most 1 MB (1,048,576 bytes); a host from 0.12 on ignores more and sends no more |
 | 0x50 | PERIPHERAL_ATTACH | client → host | UTF-8 JSON — one peripheral the client offers; see "Peripherals attached to the client" |
 | 0x51 | PERIPHERAL_STATUS | host → client | id(4 BE), status(1) |
 | 0x52 | PERIPHERAL_DETACH | client → host | id(4 BE) |
@@ -473,6 +473,11 @@ After any status other than 0 or 1 the host closes the connection.
   `busy`. A waiting device nobody approves is dropped after 24 hours.
 - Approval while the device's connection is still open sends `accepted` on
   that connection, so the session starts without a reconnect.
+- Nothing a waiting connection sends is read. One that sends more than 64 KB
+  while it waits is closed; its device stays on the waiting list.
+- A connection that is let in replaces the session its listener was serving,
+  as a new connection always has. One that is waiting, or has not answered,
+  does not disturb that session.
 
 **Client rules**
 
@@ -528,6 +533,10 @@ could pass 2^48. Reconnecting runs the handshake again and gives fresh keys.
 
 HELLO and everything after it are unchanged; they simply travel inside SECURE.
 The first inner message from the host is HOST_INFO.
+
+The host reads SECURE payloads of at most 4 MB (4,194,304 bytes) from a
+client; a larger one closes the connection. Nothing a client sends comes near
+that: the largest are CLIPBOARD at 1 MB and FILE_DATA at 64 KB.
 
 **Reference vectors.** `tests/vectors/auth-v1.json` holds one complete
 exchange from fixed test keys: the three handshake payloads, both signature

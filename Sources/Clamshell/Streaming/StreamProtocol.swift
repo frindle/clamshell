@@ -297,6 +297,10 @@ final class StreamMessageParser {
     }
 
     var onMessage: ((StreamMessageType, Data) -> Void)?
+    /// A whole message whose type this build does not know. It is skipped
+    /// either way; a caller that must not skip one (an encrypted session, where
+    /// everything is SECURE) sets this to hear about it.
+    var onUnknown: ((UInt8) -> Void)?
     /// Set when the stream is unrecoverably corrupt; caller should disconnect.
     private(set) var corrupt = false
 
@@ -312,6 +316,8 @@ final class StreamMessageParser {
             buffer.removeFirst(5 + length)
             if let type = StreamMessageType(rawValue: typeByte) {
                 onMessage?(type, payload)
+            } else {
+                onUnknown?(typeByte)
             }
         }
     }

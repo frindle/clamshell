@@ -200,6 +200,11 @@ if args.count > 1 {
         // failed CGWindowID<->AXUIElement matching. Passive: reads the real
         // cursor position, no synthetic input. `clamshell window-at-cursor-selftest`.
         exit(WindowAtCursorSelfTest.run())
+    case "auth-gate-selftest":
+        // Device approval in front of the stream listeners: real loopback
+        // listeners and clients, a device list in a temporary directory.
+        // Captures nothing and types nothing.
+        exit(AuthGateSelfTest.run())
     case "confirmation-bridge-selftest":
         exit(ConfirmationBridgeSelfTest.run())
     case "confirmation-coordinator-selftest":
@@ -239,7 +244,7 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
+              "auth-gate-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
               "devices | approve | deny | revoke | forget]")
         exit(64)
     }

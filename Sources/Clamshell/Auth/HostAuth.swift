@@ -22,6 +22,8 @@ final class HostAuth {
 
     let identity: HostIdentity
     let store: DeviceTrustStore
+    /// Where this host's displays can be reached, for HOST_INFO.
+    let directory: HostDirectory
     /// What this host calls itself in the challenge. A label only.
     let hostName: String
 
@@ -50,6 +52,7 @@ final class HostAuth {
     init(directory: URL, requireApproval: Bool? = nil, watch: Bool = true) {
         identity = HostIdentity.load(in: directory)
         store = DeviceTrustStore(directory: directory, watch: watch)
+        self.directory = HostDirectory(directory: directory)
         approvalOverride = requireApproval
         hostName = Self.computerName()
         // Start from the setting as it is now, so the first change is noticed.
