@@ -4,6 +4,17 @@ import AppKit
 //   clamshell test-virtual-display   create the virtual display for 10s, then tear down
 //   clamshell test-detect            print current remote-session detection state
 //
+//
+// Device list, usable over SSH (see DeviceCommands):
+//   clamshell devices                 this Mac's fingerprint and every known device
+//   clamshell approve <fingerprint>   also: deny, revoke, forget
+
+// These touch only the state directory, so they run before anything that
+// wants a window server and work in a session that has none.
+if CommandLine.arguments.count > 1, DeviceCommands.names.contains(CommandLine.arguments[1]) {
+    exit(DeviceCommands.run(Array(CommandLine.arguments.dropFirst())))
+}
+
 // SCContentFilter(desktopIndependentWindow:) (window-capture-selftest) hits
 // "CGS_REQUIRE_INIT" without an active WindowServer connection, unlike the
 // display-based filter other capture paths use -- touching NSApplication.shared
@@ -228,7 +239,8 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent]")
+              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
+              "devices | approve | deny | revoke | forget]")
         exit(64)
     }
 }

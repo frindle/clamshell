@@ -134,7 +134,7 @@ final class DeviceTrustStore {
             clog("DEVICES: cannot keep the device list in \(directory.path) (\(error)) — it will last for this run only")
         }
         if canPersist {
-            records = readDisk()
+            records = readDisk() ?? []
             if watch { startWatching() }
         }
     }
@@ -182,39 +182,45 @@ final class DeviceTrustStore {
     /// approval is on. Unknown devices join the waiting list, within its
     /// limits. `hasOpenConnection` says whether a waiting device still has a
     /// connection open: when the list is full, only one without is replaced.
+    /// It is called with the store locked, so it must not call the store.
     func ask(publicKey: Data, name: String, address: String,
              hasOpenConnection: (String) -> Bool) -> Answer {
         guard DeviceIdentity.isValidPublicKey(publicKey) else { return .denied }
         let id = DeviceIdentity.id(ofPublicKey: publicKey)
         let name = AuthWire.cleanName(name)
         let address = AuthWire.cleanName(address)
-        return mutate(failure: .busy) { list, t in
+        return mutate { list, t in
             if let i = list.firstIndex(where: { $0.id == id }) {
+                // A known device gets the same answer whether or not the
+                // note of this visit could be saved.
                 switch list[i].state {
                 case .denied:
                     // Nothing is recorded, so a denied device cannot make the
                     // host write to disk by reconnecting.
-                    return .denied
+                    return (.denied, .denied)
                 case .trusted:
-                    Self.refresh(&list[i], name: name, address: address, now: t, atMostEvery: 60)
-                    return .trusted
+                    Self.refresh(&list[i], name: name, address: address, now: t,
+                                 atMostEvery: 60, soonerIfChanged: true)
+                    return (.trusted, .trusted)
                 case .waiting:
-                    Self.refresh(&list[i], name: name, address: address, now: t, atMostEvery: 10)
-                    return .waiting
+                    Self.refresh(&list[i], name: name, address: address, now: t,
+                                 atMostEvery: 10, soonerIfChanged: false)
+                    return (.waiting, .waiting)
                 }
             }
             self.recentAdds.removeAll { t - $0 >= 60 || t < $0 }
-            guard self.recentAdds.count < Self.maxNewPerMinute else { return .busy }
+            guard self.recentAdds.count < Self.maxNewPerMinute else { return (.busy, .busy) }
             let waiting = list.filter { $0.state == .waiting }.sorted { $0.firstSeen < $1.firstSeen }
             if waiting.count >= Self.maxWaiting {
-                guard let stale = waiting.first(where: { !hasOpenConnection($0.id) }) else { return .busy }
+                guard let stale = waiting.first(where: { !hasOpenConnection($0.id) }) else { return (.busy, .busy) }
                 list.removeAll { $0.id == stale.id }
             }
             self.recentAdds.append(t)
             list.append(DeviceRecord(id: id, publicKey: Hex.encode(publicKey), name: name, state: .waiting,
                                      firstSeen: t, lastSeen: t, address: address,
                                      decidedAt: nil, decidedBy: nil))
-            return .waiting
+            // A device that could not be listed cannot be approved either.
+            return (.waiting, .busy)
         }
     }
 
@@ -223,9 +229,11 @@ final class DeviceTrustStore {
     func noteConnected(id: String, name: String, address: String) {
         let name = AuthWire.cleanName(name)
         let address = AuthWire.cleanName(address)
-        mutate(failure: ()) { list, t in
-            guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .trusted else { return }
-            Self.refresh(&list[i], name: name, address: address, now: t, atMostEvery: 60)
+        mutate { list, t in
+            guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .trusted else { return ((), ()) }
+            Self.refresh(&list[i], name: name, address: address, now: t,
+                         atMostEvery: 60, soonerIfChanged: true)
+            return ((), ())
         }
     }
 
@@ -237,65 +245,76 @@ final class DeviceTrustStore {
     /// as it now stands, or nil if nothing changed.
     @discardableResult
     func decide(id: String, _ decision: Decision, by: String, onlyIfWaiting: Bool) -> DeviceRecord? {
-        mutate(failure: nil) { list, t in
-            guard let i = list.firstIndex(where: { $0.id == id }) else { return nil }
+        mutate { list, t in
+            guard let i = list.firstIndex(where: { $0.id == id }) else { return (nil, nil) }
+            if onlyIfWaiting && list[i].state != .waiting { return (nil, nil) }
             let target: DeviceState
             switch (decision, list[i].state) {
-            case (.approve, .waiting): target = .trusted
-            case (.approve, .denied): target = .trusted
+            case (.approve, .waiting), (.approve, .denied): target = .trusted
             case (.deny, .waiting): target = .denied
-            default: return nil
+            default: return (nil, nil)
             }
-            if onlyIfWaiting && list[i].state != .waiting { return nil }
             list[i].state = target
             list[i].decidedAt = t
             list[i].decidedBy = by
-            return list[i]
+            return (list[i], nil)
         }
     }
 
     /// Takes trust away from a device: it becomes denied.
     @discardableResult
     func revoke(id: String, by: String) -> DeviceRecord? {
-        mutate(failure: nil) { list, t in
-            guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .trusted else { return nil }
+        mutate { list, t in
+            guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .trusted else { return (nil, nil) }
             list[i].state = .denied
             list[i].decidedAt = t
             list[i].decidedBy = by
-            return list[i]
+            return (list[i], nil)
         }
     }
 
     /// Removes a device whatever its state, so it may ask again.
     @discardableResult
     func forget(id: String) -> DeviceRecord? {
-        mutate(failure: nil) { list, _ in
-            guard let i = list.firstIndex(where: { $0.id == id }) else { return nil }
-            return list.remove(at: i)
+        mutate { list, _ in
+            guard let i = list.firstIndex(where: { $0.id == id }) else { return (nil, nil) }
+            return (list.remove(at: i), nil)
         }
     }
 
     // MARK: the file
 
     /// Runs `body` on the freshest list under the file lock, saves what it
-    /// changed and tells observers. If the save fails nothing is changed and
-    /// `failure` is returned.
+    /// changed and tells observers. `body` returns its answer, and the answer
+    /// to give instead when the change could not be saved; in that case the
+    /// list stays as it was on disk.
     @discardableResult
-    private func mutate<T>(failure: T, _ body: (inout [DeviceRecord], TimeInterval) -> T) -> T {
+    private func mutate<T>(_ body: (inout [DeviceRecord], TimeInterval) -> (saved: T, unsaved: T)) -> T {
         lock.lock()
         let before = records
         let fileLock = canPersist ? FileLock(directory.appendingPathComponent(Self.lockName)) : nil
         let t = now().timeIntervalSince1970
-        let onDisk = canPersist ? readDisk() : records
-        var list = onDisk.filter { !Self.isExpired($0, now: t) }
-        var result = body(&list, t)
-        if canPersist, list != onDisk {
-            do {
-                try write(list)
-            } catch {
-                clog("DEVICES: could not save the device list (\(error)) — nothing was changed")
-                list = onDisk
-                result = failure
+        // nil: there is a list on disk and it cannot be read right now.
+        let disk: [DeviceRecord]? = canPersist ? readDisk() : records
+        let start = disk ?? []
+        var list = start.filter { !Self.isExpired($0, now: t) }
+        let answer = body(&list, t)
+        var result = answer.saved
+        if canPersist, list != start {
+            var saved = false
+            if disk == nil {
+                clog("DEVICES: the device list cannot be read, so nothing was changed")
+            } else {
+                do {
+                    try write(list)
+                    saved = true
+                } catch {
+                    clog("DEVICES: could not save the device list (\(error)) — nothing was changed")
+                }
+            }
+            if !saved {
+                list = start
+                result = answer.unsaved
             }
         }
         records = list
@@ -310,17 +329,17 @@ final class DeviceTrustStore {
         guard canPersist else { return }
         lock.lock()
         let before = records
-        let list = readDisk()
+        let list = readDisk() ?? []
         records = list
         lock.unlock()
         if list != before { NotificationCenter.default.post(name: Self.didChange, object: self) }
     }
 
-    /// The list on disk. No file means no devices. A file that cannot be read
-    /// also means no devices, so that an unreadable list never leaves a
-    /// revoked device trusted; one whose contents make no sense is moved
-    /// aside for the user to look at.
-    private func readDisk() -> [DeviceRecord] {
+    /// The list on disk. No file means no devices. A file whose contents make
+    /// no sense is moved aside for the user to look at and also means no
+    /// devices. nil means the file is there but could not be read: callers
+    /// then trust nobody and leave the file alone.
+    private func readDisk() -> [DeviceRecord]? {
         let url = fileURL
         let data: Data
         do {
@@ -332,7 +351,7 @@ final class DeviceTrustStore {
             return []
         } catch {
             clog("DEVICES: cannot read \(Self.fileName) (\(error)) — treating every device as unknown")
-            return []
+            return nil
         }
         guard let file = try? JSONDecoder().decode(DeviceFile.self, from: data), file.version == 1 else {
             setAside(url, why: "is not a version 1 device list")
@@ -392,14 +411,17 @@ final class DeviceTrustStore {
         r.state == .waiting && now - r.firstSeen > waitingLifetime
     }
 
-    /// Updates what a known device says about itself, but writes for a
-    /// last-seen time alone no more often than `atMostEvery` seconds.
+    /// Notes a visit by a known device: its name, address and the time. A
+    /// visit is written down at most every `atMostEvery` seconds, or at once
+    /// when the name or address changed and `soonerIfChanged` allows it. A
+    /// waiting device is not allowed that, so it cannot make the host write
+    /// to disk as fast as it can reconnect.
     private static func refresh(_ r: inout DeviceRecord, name: String, address: String,
-                                now: TimeInterval, atMostEvery: TimeInterval) {
-        let renamed = !name.isEmpty && name != r.name
-        let moved = address != r.address
-        guard renamed || moved || now - r.lastSeen >= atMostEvery || now < r.lastSeen else { return }
-        if renamed { r.name = name }
+                                now: TimeInterval, atMostEvery: TimeInterval, soonerIfChanged: Bool) {
+        let due = now - r.lastSeen >= atMostEvery || now < r.lastSeen
+        let changed = (!name.isEmpty && name != r.name) || address != r.address
+        guard due || (soonerIfChanged && changed) else { return }
+        if !name.isEmpty { r.name = name }
         r.address = address
         r.lastSeen = now
     }
