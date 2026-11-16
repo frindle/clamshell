@@ -595,6 +595,51 @@ final class DeviceTrustStoreTests: XCTestCase {
         XCTAssertFalse(auth.hostName.isEmpty)
     }
 
+    func testOpenSessionsAreCounted() {
+        let auth = HostAuth(directory: dir, requireApproval: true, watch: false)
+        XCTAssertEqual(auth.openSessions().devices, [:])
+        XCTAssertEqual(auth.openSessions().clear, 0)
+        auth.sessionOpened(deviceId: "a")
+        auth.sessionOpened(deviceId: "a")
+        auth.sessionOpened(deviceId: "b")
+        auth.sessionOpened(deviceId: nil)
+        XCTAssertEqual(auth.openSessions().devices, ["a": 2, "b": 1])
+        XCTAssertEqual(auth.openSessions().clear, 1)
+
+        auth.sessionClosed(deviceId: "a")
+        auth.sessionClosed(deviceId: "b")
+        // Closing more than were opened takes nothing from anyone else.
+        auth.sessionClosed(deviceId: "b")
+        auth.sessionClosed(deviceId: "never")
+        auth.sessionClosed(deviceId: nil)
+        auth.sessionClosed(deviceId: nil)
+        XCTAssertEqual(auth.openSessions().devices, ["a": 1])
+        XCTAssertEqual(auth.openSessions().clear, 0)
+    }
+
+    func testSessionsNoApprovalStandsBehindAreCounted() {
+        let auth = HostAuth(directory: dir, requireApproval: false, watch: false)
+        XCTAssertEqual(auth.unapprovedSessions(), 0)
+        let trusted = newKey()
+        let stranger = newKey()
+        XCTAssertEqual(ask(auth.store, trusted), .waiting)
+        XCTAssertNotNil(auth.store.decide(id: id(trusted), .approve, by: "host", onlyIfWaiting: true))
+
+        auth.sessionOpened(deviceId: id(trusted))
+        XCTAssertEqual(auth.unapprovedSessions(), 0)
+        auth.sessionOpened(deviceId: id(stranger))
+        auth.sessionOpened(deviceId: id(stranger))
+        auth.sessionOpened(deviceId: nil)
+        XCTAssertEqual(auth.unapprovedSessions(), 3)
+
+        // A session that is still open when its device is revoked is one of them.
+        XCTAssertNotNil(auth.store.revoke(id: id(trusted), by: "host"))
+        XCTAssertEqual(auth.unapprovedSessions(), 4)
+        auth.sessionClosed(deviceId: id(stranger))
+        auth.sessionClosed(deviceId: nil)
+        XCTAssertEqual(auth.unapprovedSessions(), 2)
+    }
+
     // MARK: commands
 
     func testDeviceCommands() throws {

@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// and the panel/icon below need no change when it does.
     private let confirmations = ConfirmationCoordinator()
     private var confirmationWC: ConfirmationWindowController?
+    /// The Devices menu and the window that asks before a new device may
+    /// connect (PROTOCOL.md "Approving a device").
+    private let devices = DevicesController()
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
     // Remote-session state is the OR of the two signals: polled VNC/Jump
@@ -122,6 +125,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.updateIcon()
             self.rebuildMenu()
         }
+        // Devices asking to connect. Started here, after the status item
+        // exists, because the first look at the device list already updates
+        // the icon. The menu itself is rebuilt whenever it opens.
+        devices.onChange = { [weak self] in self?.updateIcon() }
+        devices.start()
         monitor.onChange = { [weak self] connected, _ in
             guard let self else { return }
             self.vncSessionActive = connected
@@ -284,20 +292,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // the collapse/desk icon the moment it settles.
         let symbol: String
         let description: String
+        let usual = coordinator.state == .collapsed ? "rectangle.compress.vertical" : "rectangle.expand.vertical"
         if confirmations.isPending {
             symbol = "key.fill"
             description = "Clamshell — confirmation pending"
-        } else if coordinator.state == .collapsed {
-            symbol = "rectangle.compress.vertical"
-            description = "Clamshell Server"
+        } else if devices.waitingCount > 0 {
+            // A device waits until somebody answers, and the approval window
+            // can be closed: the icon is what still says so afterwards.
+            symbol = "person.crop.circle.badge.questionmark"
+            description = "Clamshell — a device is waiting for approval"
         } else {
-            symbol = "rectangle.expand.vertical"
+            symbol = usual
             description = "Clamshell Server"
         }
-        statusItem.button?.image = NSImage(
-            systemSymbolName: symbol,
-            accessibilityDescription: description
-        )
+        // Never leave the menu bar without an icon over a symbol name.
+        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
+            ?? NSImage(systemSymbolName: usual, accessibilityDescription: description)
     }
 
     private let menu = NSMenu()
@@ -319,6 +329,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self
             menu.addItem(item)
         }
+        // What needs the user: devices waiting for an answer, approval off.
+        for item in devices.attentionItems() { menu.addItem(item) }
         menu.addItem(.separator())
 
         // Grouped into Display / Streaming / System submenus so the
@@ -467,6 +479,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let streamingItem = NSMenuItem(title: "Streaming", action: nil, keyEquivalent: "")
         menu.addItem(streamingItem)
         menu.setSubmenu(streamingMenu, for: streamingItem)
+
+        // Who may connect: waiting, trusted and denied devices.
+        let devicesItem = NSMenuItem(title: "Devices", action: nil, keyEquivalent: "")
+        menu.addItem(devicesItem)
+        menu.setSubmenu(devices.makeMenu(), for: devicesItem)
 
         let systemMenu = NSMenu()
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")

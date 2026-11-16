@@ -8,13 +8,15 @@ import AppKit
 // window is built not to be answered by accident:
 // - It never takes keyboard focus and no key presses a button, so typing
 //   that was meant for another app cannot approve anything.
-// - Approve stays disabled for a moment after a device is shown, so a click
-//   that was already on its way to something else cannot land on it.
+// - Both buttons stay disabled for a moment whenever the window shows
+//   something new, so a click that was already on its way to something else
+//   cannot land on them.
 // - There is one window and it asks about one device at a time.
 // - Closing it decides nothing. The device keeps waiting in the Devices menu.
 
 final class DeviceApprovalPanelController: NSWindowController {
-    /// How long Approve stays disabled after a device is shown.
+    /// How long the buttons stay disabled after the window shows something
+    /// new.
     static let approveDelay: TimeInterval = 1.5
     /// How long a decision made somewhere else stays on screen.
     static let noticeTime: TimeInterval = 10
@@ -150,9 +152,10 @@ final class DeviceApprovalPanelController: NSWindowController {
     // MARK: what the window shows
 
     /// Asks about `device`. `position` of `total` devices are waiting.
+    /// `nameIsTaken` says a trusted device already goes by the same name.
     /// Showing the same device again only refreshes the small print; it does
-    /// not restart the wait before Approve can be pressed.
-    func ask(_ device: DeviceRecord, position: Int, of total: Int, connectedNow: Bool) {
+    /// not restart the wait before a button can be pressed.
+    func ask(_ device: DeviceRecord, position: Int, of total: Int, connectedNow: Bool, nameIsTaken: Bool) {
         let sameDevice = askingId == device.id
         content = .asking(device)
         noticeTimer?.invalidate()
@@ -161,26 +164,41 @@ final class DeviceApprovalPanelController: NSWindowController {
         caption.stringValue = "A new device is asking to see and control this Mac. It calls itself:"
         nameLabel.stringValue = device.label
         fingerprintLabel.stringValue = device.fingerprint
-        hintLabel.stringValue = "Approve it only if this code is the one on the device’s own screen."
+        hintLabel.stringValue = "Approve it only if the device shows this same fingerprint on its own screen."
         hintLabel.isHidden = false
         let from = device.address.isEmpty ? "an unknown address" : device.address
         let asked = DeviceCommands.ago(device.firstSeen, now: Date().timeIntervalSince1970)
         detailLabel.stringValue = "Asked \(asked) from \(from)."
             + (connectedNow ? "" : " It is not connected right now.")
+            + (nameIsTaken ? " A device you already trust has the same name; this one has a different key." : "")
         queueLabel.stringValue = total > 1 ? "\(position) of \(total) waiting" : ""
         leftButton.title = "Deny"
         leftButton.isHidden = false
         rightButton.title = "Approve"
 
-        if !sameDevice {
-            rightButton.isEnabled = false
-            armTimer?.invalidate()
-            armTimer = Timer.scheduledTimer(withTimeInterval: Self.approveDelay, repeats: false) { [weak self] _ in
-                guard let self, case .asking = self.content else { return }
-                self.rightButton.isEnabled = true
-            }
-        }
+        if !sameDevice { disarmBriefly() }
         present()
+    }
+
+    /// Turns both buttons off and back on after `approveDelay`.
+    private func disarmBriefly() {
+        leftButton.isEnabled = false
+        rightButton.isEnabled = false
+        armTimer?.invalidate()
+        armTimer = Self.timer(after: Self.approveDelay) { [weak self] in
+            guard let self else { return }
+            if case .nothing = self.content { return }
+            self.leftButton.isEnabled = true
+            self.rightButton.isEnabled = true
+        }
+    }
+
+    /// A timer that also runs while a menu is open or an alert is up, so the
+    /// window does not freeze behind them.
+    private static func timer(after delay: TimeInterval, _ body: @escaping () -> Void) -> Timer {
+        let timer = Timer(timeInterval: delay, repeats: false) { _ in body() }
+        RunLoop.main.add(timer, forMode: .common)
+        return timer
     }
 
     /// Shows a decision that was made somewhere else. `text` is the whole
@@ -201,10 +219,10 @@ final class DeviceApprovalPanelController: NSWindowController {
         leftButton.title = "Revoke"
         leftButton.isHidden = !canRevoke
         rightButton.title = "OK"
-        rightButton.isEnabled = true
+        disarmBriefly()
 
         noticeTimer?.invalidate()
-        noticeTimer = Timer.scheduledTimer(withTimeInterval: Self.noticeTime, repeats: false) { [weak self] _ in
+        noticeTimer = Self.timer(after: Self.noticeTime) { [weak self] in
             guard let self, case .notice = self.content else { return }
             self.content = .nothing
             self.onNoticeDone?()
@@ -248,6 +266,7 @@ final class DeviceApprovalPanelController: NSWindowController {
     // MARK: buttons
 
     @objc private func leftPressed() {
+        guard leftButton.isEnabled else { return }
         switch content {
         case .asking(let device):
             content = .nothing
@@ -264,9 +283,9 @@ final class DeviceApprovalPanelController: NSWindowController {
     }
 
     @objc private func rightPressed() {
+        guard rightButton.isEnabled else { return }
         switch content {
         case .asking(let device):
-            guard rightButton.isEnabled else { return }
             content = .nothing
             onDecision?(device, .approve)
         case .notice:

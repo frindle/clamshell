@@ -43,6 +43,7 @@ final class StreamLink {
     fileprivate var pendingTimer: DispatchSourceTimer?
     fileprivate var pendingResult: Data?
     fileprivate var countedAsWaiting = false
+    fileprivate var countedAsSession = false
     fileprivate var bytesWhilePending = 0
     fileprivate var lastWaitingList: Data?
     fileprivate var toldClientInfo = false
@@ -93,7 +94,12 @@ final class StreamGate {
 
     deinit {
         observers.forEach(NotificationCenter.default.removeObserver)
-        for link in links { link.conn.cancel() }
+        for link in links {
+            // Give back what the link was counted for, so the host does not
+            // go on showing a device as connected or waiting.
+            release(link)
+            link.conn.cancel()
+        }
     }
 
     // MARK: - A new connection
@@ -335,6 +341,8 @@ final class StreamGate {
             link.parser.maxPayload = Self.sessionMaxPayload
         }
         link.phase = .accepted
+        auth.sessionOpened(deviceId: device.id)
+        link.countedAsSession = true
         let trusted = auth.store.isTrusted(device.id)
         clog("DEVICES: \(label): let in \(device.fingerprint) (\(device.name)) from \(link.address)\(trusted ? "" : " — not on the trusted list; device approval is off")")
 
@@ -355,6 +363,8 @@ final class StreamGate {
         link.handshake = nil
         link.parser.maxPayload = Self.sessionMaxPayload
         link.phase = .open
+        auth.sessionOpened(deviceId: nil)
+        link.countedAsSession = true
         clog("STREAM: \(label): clear session from \(link.address) — device approval is off")
         onAdmit(link)
     }
@@ -442,6 +452,10 @@ final class StreamGate {
         if link.countedAsWaiting, let id = link.device?.id {
             auth.releaseWaiting(deviceId: id)
             link.countedAsWaiting = false
+        }
+        if link.countedAsSession {
+            auth.sessionClosed(deviceId: link.device?.id)
+            link.countedAsSession = false
         }
     }
 

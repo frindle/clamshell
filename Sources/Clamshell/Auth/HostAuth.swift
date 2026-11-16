@@ -45,6 +45,8 @@ final class HostAuth {
     private var approvalOverride: Bool?
     private var unanswered: [Unanswered] = []
     private var waitingConnections: [String: Int] = [:]
+    private var sessions: [String: Int] = [:]
+    private var clearSessions = 0
     private var lastSeenApproval: Bool?
     private var settingTimer: DispatchSourceTimer?
 
@@ -162,6 +164,50 @@ final class HostAuth {
         lock.lock()
         defer { lock.unlock() }
         return waitingConnections[deviceId] != nil
+    }
+
+    // MARK: sessions that are open now
+
+    /// Counts a session a device was let into, so the host can show who is
+    /// connected. `deviceId` nil is a clear session, which has no device.
+    func sessionOpened(deviceId: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let deviceId {
+            sessions[deviceId, default: 0] += 1
+        } else {
+            clearSessions += 1
+        }
+    }
+
+    func sessionClosed(deviceId: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let deviceId else {
+            clearSessions = max(0, clearSessions - 1)
+            return
+        }
+        guard let n = sessions[deviceId] else { return }
+        sessions[deviceId] = n > 1 ? n - 1 : nil
+    }
+
+    /// How many sessions each device has open in this process now, by device
+    /// id, and how many clear sessions are open besides. With approval off a
+    /// device in here need not be a trusted one.
+    func openSessions() -> (devices: [String: Int], clear: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        return (sessions, clearSessions)
+    }
+
+    /// How many open sessions no approval stands behind: the clear ones, and
+    /// those of devices that are not on the trusted list. Only a host with
+    /// approval off has any.
+    func unapprovedSessions() -> Int {
+        let open = openSessions()
+        guard !open.devices.isEmpty else { return open.clear }
+        let trusted = Set(store.all().filter { $0.state == .trusted }.map(\.id))
+        return open.clear + open.devices.reduce(0) { $0 + (trusted.contains($1.key) ? 0 : $1.value) }
     }
 
     // MARK: -
