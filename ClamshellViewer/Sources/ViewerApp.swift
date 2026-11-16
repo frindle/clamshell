@@ -674,6 +674,14 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .overlay {
+            // Questions and refusals from the connection flow, for either
+            // client (the one for Display B connects separately).
+            ZStack {
+                AuthPromptView(client: primaryClient)
+                AuthPromptView(client: externalClient)
+            }
+        }
         .onAppear {
             preselectLastUsed()
             windowCount.refresh()
