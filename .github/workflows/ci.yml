@@ -53,6 +53,15 @@ jobs:
             cp "$f" "$RUNNER_TEMP/check.mjs"
             node --check "$RUNNER_TEMP/check.mjs" || { echo "syntax error in $f"; exit 1; }
           done
+      # The interop check needs a global WebSocket, which Node 20 does not have
+      # without a flag. It runs the web client's auth.js against the real host
+      # (`Clamshell auth-interop-host`, loopback only, temporary state directory).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Web client auth against the real host
+        timeout-minutes: 3
+        run: node tests/test-webclient-auth-interop.js .build/debug/Clamshell 5994
       - name: Lint probe plists
         run: plutil -lint scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist
       - name: Lint login-window agent scripts
