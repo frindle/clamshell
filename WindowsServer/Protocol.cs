@@ -22,7 +22,48 @@ internal enum MessageType : byte
     MouseButton = 0x21,
     Key = 0x22,
     Scroll = 0x23,
+    MouseRelative = 0x24,
+    Text = 0x25,
+    MouseButtonAtCursor = 0x26,
     Clipboard = 0x30,
+}
+
+/// <summary>A decoded client-to-host input message (types 0x20-0x26). Pure data:
+/// no Win32, no clamping. Mirrors InputMessage in StreamProtocol.swift.</summary>
+internal abstract record InputMessage
+{
+    public sealed record MouseMove(float X, float Y) : InputMessage;
+    public sealed record MouseButton(byte Button, bool Down, float X, float Y) : InputMessage;
+    public sealed record Key(ushort MacKeyCode, bool Down, ulong Flags) : InputMessage;
+    public sealed record Scroll(float Dx, float Dy) : InputMessage;
+    public sealed record MouseRelative(float Dx, float Dy) : InputMessage;
+    public sealed record ButtonAtCursor(byte Button, bool Down) : InputMessage;
+    public sealed record Text(byte[] Data) : InputMessage;
+
+    /// <summary>Null for a payload shorter than its layout needs and for any other
+    /// message type. Extra trailing bytes are skipped.</summary>
+    public static InputMessage? Decode(MessageType type, ReadOnlySpan<byte> p)
+    {
+        switch (type)
+        {
+            case MessageType.MouseMove:
+                return p.Length >= 8 ? new MouseMove(Be.F32(p, 0), Be.F32(p, 4)) : null;
+            case MessageType.MouseButton:
+                return p.Length >= 10 ? new MouseButton(p[0], p[1] == 1, Be.F32(p, 2), Be.F32(p, 6)) : null;
+            case MessageType.Key:
+                return p.Length >= 11 ? new Key(Be.U16(p, 0), p[2] == 1, Be.U64(p, 3)) : null;
+            case MessageType.Scroll:
+                return p.Length >= 8 ? new Scroll(Be.F32(p, 0), Be.F32(p, 4)) : null;
+            case MessageType.MouseRelative:
+                return p.Length >= 8 ? new MouseRelative(Be.F32(p, 0), Be.F32(p, 4)) : null;
+            case MessageType.MouseButtonAtCursor:
+                return p.Length >= 2 ? new ButtonAtCursor(p[0], p[1] == 1) : null;
+            case MessageType.Text:
+                return new Text(p.ToArray());
+            default:
+                return null;
+        }
+    }
 }
 
 internal enum StreamCodec : byte
