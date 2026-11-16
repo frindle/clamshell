@@ -20,6 +20,7 @@
 		BB0000000000000000000061 /* KnownHosts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000061 /* KnownHosts.swift */; };
 		BB0000000000000000000062 /* ClientAuthFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000062 /* ClientAuthFlow.swift */; };
 		BB0000000000000000000063 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000063 /* DeviceKeyStore.swift */; };
+		BB0000000000000000000064 /* KnownHostsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000064 /* KnownHostsStore.swift */; };
 		BB0000000000000000000054 /* PointerLock.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000054 /* PointerLock.swift */; };
 		BB0000000000000000000005 /* AudioPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000005 /* AudioPlayer.swift */; };
 		BB0000000000000000000006 /* KeyMap.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000006 /* KeyMap.swift */; };
@@ -57,6 +58,7 @@
 		FF0000000000000000000061 /* KnownHosts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KnownHosts.swift; path = ../Sources/Clamshell/Streaming/KnownHosts.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000062 /* ClientAuthFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ClientAuthFlow.swift; path = ../Sources/Clamshell/Streaming/ClientAuthFlow.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000063 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
+		FF0000000000000000000064 /* KnownHostsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnownHostsStore.swift; sourceTree = "<group>"; };
 		FF0000000000000000000056 /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 		FF0000000000000000000055 /* Shortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = Shortcuts.swift; path = ../Sources/Clamshell/Streaming/Shortcuts.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000054 /* PointerLock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PointerLock.swift; sourceTree = "<group>"; };
@@ -99,6 +101,7 @@
 				FF0000000000000000000001 /* ViewerApp.swift */,
 				FF0000000000000000000007 /* StreamClient.swift */,
 				FF0000000000000000000063 /* DeviceKeyStore.swift */,
+				FF0000000000000000000064 /* KnownHostsStore.swift */,
 				FF0000000000000000000008 /* VideoView.swift */,
 				FF0000000000000000000020 /* SharedUI.swift */,
 				FF0000000000000000000005 /* AudioPlayer.swift */,
@@ -222,6 +225,7 @@
 				BB0000000000000000000011 /* ControlApp.swift in Sources */,
 				BB0000000000000000000007 /* StreamClient.swift in Sources */,
 				BB0000000000000000000063 /* DeviceKeyStore.swift in Sources */,
+				BB0000000000000000000064 /* KnownHostsStore.swift in Sources */,
 				BB0000000000000000000008 /* VideoView.swift in Sources */,
 				BB0000000000000000000020 /* SharedUI.swift in Sources */,
 				BB0000000000000000000005 /* AudioPlayer.swift in Sources */,
