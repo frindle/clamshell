@@ -92,6 +92,117 @@ export function modifierFlags(state, ctrlAsCmd) {
   return f;
 }
 
+// ── Host capabilities ──────────────────────────────────────────────────
+// Bits of the host's capability value (PROTOCOL.md). It is 0 until the
+// handshake code calls setHostCapabilities(); at 0 the client sends only what
+// every host understands.
+export const CAP = {
+  approvalRequired: 1 << 0,
+  relativeMouse: 1 << 1,
+  textInput: 1 << 2,
+  extraButtons: 1 << 3,
+  deviceApproval: 1 << 4,
+  fileTransfer: 1 << 5,
+  peripherals: 1 << 6,
+};
+
+let hostCaps = 0;
+export function setHostCapabilities(bits) {
+  hostCaps = Number.isInteger(bits) && bits > 0 ? bits >>> 0 : 0;
+}
+export function hostCapabilities() { return hostCaps; }
+export function hostHas(bit) { return (hostCaps & bit) !== 0; }
+
+// ── Message encoders (PROTOCOL.md "Input mapping") ─────────────────────
+export const INPUT = {
+  MOUSE_MOVE: 0x20, MOUSE_BUTTON: 0x21, KEY: 0x22, SCROLL: 0x23,
+  MOUSE_RELATIVE: 0x24, TEXT: 0x25, MOUSE_BUTTON_AT_CURSOR: 0x26,
+};
+export const MAX_TEXT_BYTES = 16384;
+
+function f32(v) {
+  const b = new Uint8Array(4);
+  new DataView(b.buffer).setFloat32(0, v, false);
+  return b;
+}
+
+function concatBytes(...parts) {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let o = 0;
+  for (const p of parts) { out.set(p, o); o += p.length; }
+  return out;
+}
+
+/// [type][4-byte big-endian length][payload]
+export function frameMessage(type, payload = new Uint8Array(0)) {
+  const buf = new Uint8Array(5 + payload.length);
+  buf[0] = type;
+  new DataView(buf.buffer).setUint32(1, payload.length, false);
+  buf.set(payload, 5);
+  return buf;
+}
+
+export function encodeMouseMove(x, y) {
+  return frameMessage(INPUT.MOUSE_MOVE, concatBytes(f32(x), f32(y)));
+}
+
+export function encodeMouseButton(button, down, x, y) {
+  return frameMessage(INPUT.MOUSE_BUTTON,
+    concatBytes(new Uint8Array([button, down ? 1 : 0]), f32(x), f32(y)));
+}
+
+export function encodeKey(macVK, down, flags) {
+  const b = new Uint8Array(11);
+  const v = new DataView(b.buffer);
+  v.setUint16(0, macVK, false);
+  b[2] = down ? 1 : 0;
+  v.setBigUint64(3, BigInt(flags), false);
+  return frameMessage(INPUT.KEY, b);
+}
+
+export function encodeScroll(dx, dy) {
+  return frameMessage(INPUT.SCROLL, concatBytes(f32(dx), f32(dy)));
+}
+
+/// Pointer movement in points, for a captured pointer. Host needs relativeMouse.
+export function encodeMouseRelative(dx, dy) {
+  return frameMessage(INPUT.MOUSE_RELATIVE, concatBytes(f32(dx), f32(dy)));
+}
+
+/// A press or release where the host cursor is. Host needs relativeMouse.
+export function encodeButtonAtCursor(button, down) {
+  return frameMessage(INPUT.MOUSE_BUTTON_AT_CURSOR, new Uint8Array([button, down ? 1 : 0]));
+}
+
+/// Text to type as-is. Returns null when it is longer than the limit (the host
+/// would ignore it). Host needs textInput; nothing in the client sends it yet.
+export function encodeText(text) {
+  const bytes = new TextEncoder().encode(text);
+  if (bytes.length > MAX_TEXT_BYTES) return null;
+  return frameMessage(INPUT.TEXT, bytes);
+}
+
+// ── Mouse buttons ──────────────────────────────────────────────────────
+// Browser MouseEvent.button: 0 left, 1 middle, 2 right, 3 back, 4 forward.
+// Protocol: 0 left, 1 right, 2 middle, 3 back, 4 forward.
+const BROWSER_TO_PROTOCOL = [0, 2, 1, 3, 4];
+
+/// The protocol button for a browser button, or null if this host should not
+/// be sent it. Without extraButtons only left and right go out, as before.
+export function protocolButton(browserButton, caps = hostCaps) {
+  const b = BROWSER_TO_PROTOCOL[browserButton];
+  if (b === undefined) return null;
+  if (b >= 2 && (caps & CAP.extraButtons) === 0) return null;
+  return b;
+}
+
+/// Whether the browser's own action for this button (back/forward navigation,
+/// middle-click autoscroll) must be stopped because the host takes the button.
+export function claimsButton(browserButton, caps = hostCaps) {
+  const b = protocolButton(browserButton, caps);
+  return b !== null && b >= 2;
+}
+
 // ── Keepalive ──────────────────────────────────────────────────────────
 // The host drops a connection whose sends stall for 15 s (SendPacer), which
 // is about the host's own sends and does not look at the client being quiet.
