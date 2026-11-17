@@ -10,9 +10,6 @@ enum HostDeviceSettings {
     static let filesKey = "receiveFilesEnabled"
     static let peripheralsKey = "peripheralsEnabled"
 
-    /// Posted (on the thread that changed it) when `peripheralsEnabled` changes.
-    static let peripheralsDidChange = Notification.Name("com.frindle.clamshell.peripheralsEnabledChanged")
-
     private static func flag(_ key: String) -> Bool {
         (UserDefaults.standard.object(forKey: key) as? Bool) ?? true
     }
@@ -27,10 +24,7 @@ enum HostDeviceSettings {
     /// attached are removed with status 4.
     static var peripheralsEnabled: Bool {
         get { flag(peripheralsKey) }
-        set {
-            UserDefaults.standard.set(newValue, forKey: peripheralsKey)
-            NotificationCenter.default.post(name: HostDeviceSettings.peripheralsDidChange, object: nil)
-        }
+        set { UserDefaults.standard.set(newValue, forKey: peripheralsKey) }
     }
 }
 

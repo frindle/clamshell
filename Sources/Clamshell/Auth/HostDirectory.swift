@@ -104,6 +104,8 @@ final class HostDirectory {
             "version": Self.version,
             "hostId": hostId,
             "displays": list,
+            // Game controllers become keys and pointer (status 1); no MIDI.
+            "peripherals": HostPeripheralSession.support.kinds,
         ]
         if let display { info["display"] = display }
         let json = try? JSONSerialization.data(withJSONObject: info, options: [.sortedKeys, .withoutEscapingSlashes])
