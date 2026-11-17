@@ -252,8 +252,8 @@ jobs:
         # Proves the viewer's own decode pipeline (VideoDecoder.cs, a real
         # Media Foundation H.264 decoder MFT -- software path, since this
         # runner has no GPU) against a real H.264 stream from an
-        # independent, known-good encoder (ffmpeg/libx264), sidestepping
-        # the WindowsServer encoder gap noted above entirely. PASS requires
+        # independent, known-good encoder (ffmpeg/libx264), so it checks the
+        # viewer's decoder independently of the host's encoder. PASS requires
         # an actual decoded frame with non-uniform pixel content (the
         # ffmpeg testsrc pattern is not a flat color), not just "it didn't
         # throw".
