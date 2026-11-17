@@ -74,16 +74,24 @@ final class HostAuth {
     private var clearSessions = 0
     private var lastSeenApproval: Bool?
     private var settingTimer: DispatchSourceTimer?
+    private let settingPollInterval: TimeInterval
+    /// Where the stored value is read from: the user's preferences, or a test.
+    private let readStored: () -> Any?
 
     /// `requireApproval` nil reads the user's setting; selftests pass a value.
-    init(directory: URL, requireApproval: Bool? = nil, watch: Bool = true) {
+    /// `settingPollInterval` is how often a change made from outside is looked
+    /// for; `readStored` replaces the read of the user's preferences, for tests.
+    init(directory: URL, requireApproval: Bool? = nil, watch: Bool = true,
+         settingPollInterval: TimeInterval = 5, readStored: (() -> Any?)? = nil) {
+        self.settingPollInterval = settingPollInterval
+        self.readStored = readStored ?? Self.storedPreference
         identity = HostIdentity.load(in: directory)
         store = DeviceTrustStore(directory: directory, watch: watch)
         self.directory = HostDirectory(directory: directory)
         approvalOverride = requireApproval
         hostName = Self.computerName()
         // Start from the setting as it is now, so the first change is noticed.
-        lastSeenApproval = requireApproval ?? Self.storedRequireApproval()
+        lastSeenApproval = requireApproval ?? Self.approval(fromStored: self.readStored())
     }
 
     deinit { settingTimer?.cancel() }
@@ -95,7 +103,7 @@ final class HostAuth {
         lock.lock()
         let override = approvalOverride
         lock.unlock()
-        return override ?? Self.storedRequireApproval()
+        return override ?? Self.approval(fromStored: readStored())
     }
 
     /// Saves the user's choice and tells the listeners.
@@ -122,7 +130,7 @@ final class HostAuth {
         defer { lock.unlock() }
         guard settingTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.schedule(deadline: .now() + settingPollInterval, repeating: settingPollInterval)
         timer.setEventHandler { [weak self] in self?.noteApproval() }
         timer.resume()
         settingTimer = timer
@@ -140,10 +148,18 @@ final class HostAuth {
         }
     }
 
-    private static func storedRequireApproval() -> Bool {
+    private static func storedPreference() -> Any? {
         CFPreferencesAppSynchronize(defaultsDomain as CFString)
-        let value = CFPreferencesCopyAppValue(approvalDefaultsKey as CFString, defaultsDomain as CFString)
-        return (value as? Bool) ?? true
+        return CFPreferencesCopyAppValue(approvalDefaultsKey as CFString, defaultsDomain as CFString)
+    }
+
+    /// Only the boolean false and the integer 0 turn approval off. Anything
+    /// else, of any type, and no value at all, leave it on.
+    static func approval(fromStored value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return true }
+        if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue }
+        if CFNumberIsFloatType(number) { return true }
+        return number.int64Value != 0
     }
 
     // MARK: connections that have not got in yet

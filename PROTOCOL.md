@@ -551,6 +551,8 @@ After any status other than 0 or 1 the host closes the connection.
 - Every AUTH_RESULT's signature is checked against the `hostIdentity` from the
   challenge. A result that does not verify is treated as a failed connection,
   whatever its status says.
+  The repeats sent while a device waits are the same signed bytes each time;
+  the client verifies every one and does not treat a repeat as a replay.
 - While `pending`, the client shows the host's name and both fingerprints so
   the user can compare them with what the host shows before approving.
 
@@ -602,6 +604,15 @@ whatever its key and gets the encrypted session; a client that sends HELLO in
 the clear instead is served the way hosts before 0.12 served it. Such a host
 is only as safe as its network, as before.
 
+With approval off, a clear HELLO is accepted in place of the AUTH_RESPONSE, and
+a device that is denied is let in like any other; the denial is kept and counts
+again when approval is turned back on. The AUTH_RESPONSE may be at most 4096
+bytes; a connection that is waiting for approval may send up to 64 KB, which is
+ignored, before it is closed. Approval is on unless the stored setting
+`requireDeviceApproval` is the boolean false or the integer 0: any other value
+or type, or none, leaves it on. A change made from outside (`defaults write`) is
+noticed within 5 s; the switch in the host's Devices menu takes effect at once.
+
 A host with approval on never answers a HELLO in the clear: the connection is
 closed when the 10 s response deadline passes. Clients older than this section
 therefore cannot use it.
@@ -614,8 +625,14 @@ usable over SSH), or from a connected trusted device with the two messages
 below. Revoking a trusted device makes it `denied` and closes its live
 connections; forgetting a device removes it, so it may ask again.
 
+A device that is denied can be approved after all in two places only: the
+Devices menu's "Approve…" on the host and `clamshell approve`. A
+DEVICE_DECISION acts on waiting devices only.
+
 Both messages travel inside SECURE and only when both sides set capability bit
-4.
+4. The host sets bit 4 in every challenge, so the bit does not say who may
+decide; the rule that counts is that the host acts on a DEVICE_DECISION only
+from a device that is trusted at that moment (see below).
 
 - **DEVICE_PENDING** (host → trusted client), UTF-8 JSON, sent after
   `accepted` when devices are waiting and again whenever the list changes

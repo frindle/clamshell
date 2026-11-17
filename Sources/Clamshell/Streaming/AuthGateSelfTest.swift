@@ -8,8 +8,10 @@ import Foundation
 //
 // It checks who gets in, and that a connection which has not got in starts
 // nothing and cannot disturb the client being served. It captures nothing and
-// types nothing: the listeners are not primary, and no client sends a HELLO
-// long enough to start a session.
+// types nothing: no admitted client sends a HELLO long enough to start a
+// session. The first listener is marked primary, and the last step shows that
+// a connection that has not got in cannot make it collapse the display (the
+// notification is swapped for a local list) or start a session.
 //
 // `clamshell auth-gate-selftest`, run in CI.
 
@@ -390,7 +392,7 @@ enum AuthGateSelfTest {
         auth.pendingRepeat = 0.2
 
         let servers = [
-            StreamServer(source: .display(CGMainDisplayID()), port: port0, isPrimary: false,
+            StreamServer(source: .display(CGMainDisplayID()), port: port0, isPrimary: true,
                          auth: auth, displayIndex: 0, loopbackOnly: true),
             StreamServer(source: .display(CGMainDisplayID()), port: port1, isPrimary: false,
                          auth: auth, displayIndex: 1, loopbackOnly: true),
@@ -636,5 +638,29 @@ enum AuthGateSelfTest {
         _ = (h1, i1)
         try a7.expectPing()
         print("PASS a device waits once per listener; an address group holds three waiting connections; a denial reaches every one and stays")
+
+        // 12. On a listener marked primary, a connection that has not got in
+        //     starts nothing, however complete the HELLO it sends: no request
+        //     to collapse the display (which is where a session, capture and
+        //     the clipboard bridge would begin). That a HELLO from a client
+        //     that is let in does post it is hello-collapse-selftest's job.
+        let originalPost = StreamServer.postCollapse
+        var collapses: [[String: String]] = []
+        StreamServer.postCollapse = { collapses.append($0) }
+        defer { StreamServer.postCollapse = originalPost }
+        let fullHello = StreamMessage.hello(requestedCodec: .hevc, displayInfo: (1600, 1200, true),
+                                            secondSize: (1920, 1080))
+        let unanswered = bench.connect(port0, "unanswered, primary listener")
+        try unanswered.readChallenge()
+        unanswered.send(fullHello)
+        unanswered.send(StreamMessage.clientDisplays(widthPx: 1600, heightPx: 1200, secondDisplay: false))
+        let w = Device(name: "Selftest W")
+        let w1 = try bench.knock(port0, w, "W, primary listener")
+        w1.send(fullHello)
+        w1.send(StreamMessage.clientDisplays(widthPx: 1600, heightPx: 1200, secondDisplay: false))
+        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+        try expect(collapses.isEmpty, "a connection that is not let in cannot make the primary listener collapse the display (got \(collapses))")
+        try expect(store.state(of: w.id) == .waiting, "the device is still only waiting")
+        print("PASS on a primary listener nothing starts before a device is let in")
     }
 }

@@ -600,6 +600,75 @@ final class DeviceTrustStoreTests: XCTestCase {
         XCTAssertEqual(DeviceTrustStore.fileVersion, 1)
     }
 
+    /// The menu's "Approve…" on a denied device: decide(.approve) from the host,
+    /// not only for waiting devices, and the device is let in after it.
+    func testApproveOnADeniedDeviceThroughTheMenusPath() throws {
+        let s = DeviceTrustStore(directory: dir, watch: false, now: { [unowned self] in self.clock })
+        let key = newKey()
+        XCTAssertEqual(ask(s, key), .waiting)
+        s.decide(id: id(key), .deny, by: DeviceTrustStore.decidedOnHost, onlyIfWaiting: true)
+        XCTAssertEqual(ask(s, key), .denied)
+        // A decision relayed by a device cannot undo it...
+        XCTAssertNil(s.decide(id: id(key), .approve, by: id(newKey()), onlyIfWaiting: true))
+        XCTAssertEqual(s.state(of: id(key)), .denied)
+        // ...the menu's call can.
+        let saved = s.decide(id: id(key), .approve, by: DeviceTrustStore.decidedOnHost, onlyIfWaiting: false)
+        XCTAssertEqual(saved?.state, .trusted)
+        XCTAssertEqual(saved?.decidedBy, DeviceTrustStore.decidedOnHost)
+        XCTAssertEqual(ask(s, key), .trusted)
+        XCTAssertEqual(store().state(of: id(key)), .trusted, "and it was saved")
+    }
+
+    func testOnlyBooleanFalseAndIntegerZeroTurnApprovalOff() {
+        XCTAssertFalse(HostAuth.approval(fromStored: false))
+        XCTAssertFalse(HostAuth.approval(fromStored: 0))
+        XCTAssertFalse(HostAuth.approval(fromStored: NSNumber(value: false)))
+        XCTAssertFalse(HostAuth.approval(fromStored: NSNumber(value: 0)))
+        XCTAssertTrue(HostAuth.approval(fromStored: nil))
+        XCTAssertTrue(HostAuth.approval(fromStored: true))
+        XCTAssertTrue(HostAuth.approval(fromStored: 1))
+        XCTAssertTrue(HostAuth.approval(fromStored: 2))
+        XCTAssertTrue(HostAuth.approval(fromStored: -1))
+        XCTAssertTrue(HostAuth.approval(fromStored: 0.0))
+        XCTAssertTrue(HostAuth.approval(fromStored: "false"))
+        XCTAssertTrue(HostAuth.approval(fromStored: "0"))
+        XCTAssertTrue(HostAuth.approval(fromStored: "NO"))
+        XCTAssertTrue(HostAuth.approval(fromStored: Data([0])))
+        XCTAssertTrue(HostAuth.approval(fromStored: [false]))
+        XCTAssertTrue(HostAuth.approval(fromStored: ["requireDeviceApproval": false]))
+    }
+
+    func testAChangeMadeFromOutsideIsNoticedWithinThePollInterval() {
+        final class Setting { var value: Any? = true }
+        let setting = Setting()
+        let auth = HostAuth(directory: dir, watch: false, settingPollInterval: 0.05,
+                            readStored: { setting.value })
+        XCTAssertTrue(auth.requireApproval)
+        let changed = expectation(description: "approval switched off")
+        let token = NotificationCenter.default.addObserver(forName: HostAuth.approvalDidChange, object: auth,
+                                                           queue: nil) { _ in
+            if !auth.requireApproval { changed.fulfill() }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        auth.startWatchingSetting()
+        auth.startWatchingSetting()
+        // Nothing yet: the value did not change.
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertTrue(auth.requireApproval)
+        setting.value = 0
+        wait(for: [changed], timeout: 5)
+        XCTAssertFalse(auth.requireApproval)
+        // A value that does not turn it off turns it on again.
+        let back = expectation(description: "approval switched on")
+        let token2 = NotificationCenter.default.addObserver(forName: HostAuth.approvalDidChange, object: auth,
+                                                            queue: nil) { _ in
+            if auth.requireApproval { back.fulfill() }
+        }
+        defer { NotificationCenter.default.removeObserver(token2) }
+        setting.value = "false"
+        wait(for: [back], timeout: 5)
+    }
+
     func testCommandLineSaysTheListIsFromANewerClamshell() throws {
         try makeDirectory(dir)
         let bytes = Data(#"{"version": 3, "devices": []}"#.utf8)
