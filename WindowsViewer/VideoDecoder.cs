@@ -108,7 +108,7 @@ internal sealed class VideoDecoder : IDisposable
     private const int MFT_ENUM_FLAG_SYNCMFT = 0x00000001;
     private const int MFT_ENUM_FLAG_SORTANDFILTER = 0x00000040;
 
-    private static IMFActivate[] Enumerate(Guid category, int flags, RegisterTypeInfo? inputType)
+    internal static IMFActivate[] Enumerate(Guid category, int flags, RegisterTypeInfo? inputType)
     {
         MediaFactory.MFTEnumEx(category, (uint)flags, inputType, null, out nint pActs, out uint count);
         var result = new IMFActivate[count];
