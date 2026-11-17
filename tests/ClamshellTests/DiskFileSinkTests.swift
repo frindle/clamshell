@@ -179,6 +179,31 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(names(in: folder), [])
     }
 
+    func testOpenTransfersCountAgainstFreeSpace() {
+        // 5000 free, 1000 reserve: 4000 may be taken. Two offers of 3000 each fit alone, not together.
+        let s = sink(free: 5000)
+        let r = FileReceiver(store: s)
+        let first = FileTransfer.offer(id: 1, name: "a.bin", size: 3000)
+        XCTAssertEqual(r.receive(type: first.type, payload: first.payload, now: 0), [FileTransfer.answer(id: 1, status: 0)])
+        let second = FileTransfer.offer(id: 2, name: "b.bin", size: 3000)
+        // The existing full-disk status.
+        XCTAssertEqual(r.receive(type: second.type, payload: second.payload, now: 1), [FileTransfer.answer(id: 2, status: 2)])
+        XCTAssertEqual(r.openCount, 1)
+        // Something that fits next to the first one is still accepted.
+        let small = FileTransfer.offer(id: 3, name: "c.bin", size: 1000)
+        XCTAssertEqual(r.receive(type: small.type, payload: small.payload, now: 2), [FileTransfer.answer(id: 3, status: 0)])
+        // Once they are over, their sizes no longer count.
+        r.closeAll()
+        let again = FileTransfer.offer(id: 4, name: "d.bin", size: 3000)
+        XCTAssertEqual(r.receive(type: again.type, payload: again.payload, now: 3), [FileTransfer.answer(id: 4, status: 0)])
+        r.closeAll()
+        // The sum cannot wrap around.
+        let t = sink(free: UInt64.max)
+        XCTAssertTrue(t.begin(id: 1, storedName: "x", size: UInt64.max - 1000))
+        XCTAssertFalse(t.hasRoom(forBytes: 2000))
+        t.discard(id: 1)
+    }
+
     func testRealFreeSpaceCheckWorks() {
         let s = DiskFileSink(folder: folder)
         _ = s.hasRoom(forBytes: 0) // the folder does not exist yet: the check walks up to a folder that does

@@ -24,6 +24,9 @@ final class DiskFileSink: FileTransferStore {
         var fd: Int32
         let tempURL: URL
         let storedName: String
+        /// The size the sender declared; counted against free space until the
+        /// transfer ends, because the bytes have not all arrived yet.
+        let declaredSize: UInt64
     }
 
     private let folder: URL
@@ -49,8 +52,16 @@ final class DiskFileSink: FileTransferStore {
 
     func hasRoom(forBytes size: UInt64) -> Bool {
         guard let free = freeSpace(nearestExistingAncestor(of: folder)) else { return false }
-        let (needed, overflow) = size.addingReportingOverflow(reserveBytes)
-        return !overflow && free >= needed
+        // The reserve is kept back after every open transfer has also taken its
+        // declared size, so two offers that each fit alone are not both accepted
+        // when they do not fit together.
+        var needed = reserveBytes
+        for declared in [size] + parts.values.map(\.declaredSize) {
+            let (sum, overflow) = needed.addingReportingOverflow(declared)
+            if overflow { return false }
+            needed = sum
+        }
+        return free >= needed
     }
 
     func begin(id: UInt32, storedName: String, size: UInt64) -> Bool {
@@ -62,7 +73,7 @@ final class DiskFileSink: FileTransferStore {
         guard let tempURL = childURL(tempName) else { return false }
         let fd = open(tempURL.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return false }
-        parts[id] = Part(fd: fd, tempURL: tempURL, storedName: storedName)
+        parts[id] = Part(fd: fd, tempURL: tempURL, storedName: storedName, declaredSize: size)
         return true
     }
 
