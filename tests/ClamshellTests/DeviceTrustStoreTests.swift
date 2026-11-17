@@ -139,9 +139,37 @@ final class DeviceTrustStoreTests: XCTestCase {
         clock += 10
         XCTAssertEqual(ask(s, key, name: "Second"), .waiting)
         let record = try XCTUnwrap(s.record(id: id(key)))
-        XCTAssertEqual(record.name, "Second")
+        // A waiting device keeps the name it was first listed with.
+        XCTAssertEqual(record.name, "First")
         XCTAssertEqual(record.lastSeen, clock.timeIntervalSince1970)
         XCTAssertEqual(record.firstSeen, clock.timeIntervalSince1970 - 11)
+    }
+
+    func testWaitingDeviceKeepsItsFirstNameUntilApproved() throws {
+        let s = store()
+        let key = newKey()
+        _ = ask(s, key, name: "First")
+        clock += 30
+        XCTAssertEqual(ask(s, key, name: "Other"), .waiting)
+        XCTAssertEqual(s.record(id: id(key))?.name, "First")
+        // Once approved, a visit may change the name as before.
+        s.decide(id: id(key), .approve, by: "host", onlyIfWaiting: true)
+        clock += 61
+        XCTAssertEqual(ask(s, key, name: "Other"), .trusted)
+        XCTAssertEqual(s.record(id: id(key))?.name, "Other")
+    }
+
+    func testStoredNamesLoseTheCharactersThatDrawNothing() throws {
+        let s = store()
+        let key = newKey()
+        _ = ask(s, key, name: "Pad\u{3164}\u{200B}\u{2800}\u{FFA0}")
+        XCTAssertEqual(s.record(id: id(key))?.name, "Pad")
+        let blank = newKey()
+        _ = ask(s, blank, name: "\u{3164}\u{1160}")
+        XCTAssertEqual(s.record(id: id(blank))?.name, "")
+        XCTAssertEqual(s.record(id: id(blank))?.label, "Unnamed device")
+        // AuthWire.cleanName itself is unchanged: it keeps U+3164.
+        XCTAssertEqual(AuthWire.cleanName("Pad\u{3164}"), "Pad\u{3164}")
     }
 
     func testTrustedDeviceKeepsItsNameAndAddressFresh() throws {
@@ -354,7 +382,8 @@ final class DeviceTrustStoreTests: XCTestCase {
         _ = ask(first, key)
         first.decide(id: id(key), .approve, by: "host", onlyIfWaiting: true)
 
-        for damage in ["not json", "{\"version\":2,\"devices\":[]}", "{\"version\":1,\"devices\":[{\"id\":7}]}"] {
+        // (A higher version is not damage: see the newer-version test.)
+        for damage in ["not json", "{\"version\":0,\"devices\":[]}", "{\"version\":1,\"devices\":[{\"id\":7}]}"] {
             try Data(damage.utf8).write(to: listFile)
             let s = store()
             XCTAssertTrue(s.all().isEmpty, damage)
@@ -443,6 +472,215 @@ final class DeviceTrustStoreTests: XCTestCase {
         XCTAssertEqual(ask(other, key), .waiting)
         wait(for: [noticed], timeout: 10)
         XCTAssertEqual(watching.state(of: id(key)), .waiting)
+    }
+
+    func testDecisionFromADeviceRevokedOnDiskAMomentEarlierChangesNothing() throws {
+        let s = store()
+        let other = store()
+        let relayer = newKey(), waiting = newKey()
+        _ = ask(s, relayer)
+        s.decide(id: id(relayer), .approve, by: "host", onlyIfWaiting: true)
+        _ = ask(s, waiting)
+        // A relayed decision from a trusted device is applied.
+        let applied = s.decideRelayed(id: id(waiting), .approve, by: id(relayer))
+        guard case .applied(let record) = applied else { return XCTFail("\(applied)") }
+        XCTAssertEqual(record.state, .trusted)
+        XCTAssertEqual(record.decidedBy, id(relayer))
+
+        // Revoked by another process: `s` has not heard of it yet.
+        let third = newKey()
+        _ = ask(s, third)
+        XCTAssertNotNil(other.revoke(id: id(relayer), by: "cli"))
+        let before = try Data(contentsOf: listFile)
+        XCTAssertEqual(s.decideRelayed(id: id(third), .approve, by: id(relayer)), .relayerNotTrusted)
+        XCTAssertEqual(s.decideRelayed(id: id(third), .deny, by: id(relayer)), .relayerNotTrusted)
+        XCTAssertEqual(try Data(contentsOf: listFile), before)
+        XCTAssertEqual(s.state(of: id(third)), .waiting)
+        // A device that is not on the list at all cannot relay either.
+        XCTAssertEqual(s.decideRelayed(id: id(third), .approve, by: id(newKey())), .relayerNotTrusted)
+    }
+
+    func testRelayedDecisionOnlyTouchesWaitingDevices() throws {
+        let s = store()
+        let relayer = newKey(), denied = newKey()
+        _ = ask(s, relayer)
+        s.decide(id: id(relayer), .approve, by: "host", onlyIfWaiting: true)
+        _ = ask(s, denied)
+        s.decide(id: id(denied), .deny, by: "host", onlyIfWaiting: true)
+        XCTAssertEqual(s.decideRelayed(id: id(denied), .approve, by: id(relayer)), .unchanged)
+        XCTAssertEqual(s.state(of: id(denied)), .denied)
+    }
+
+    func testWithoutAWatcherTheListIsReadAgainOnATimer() throws {
+        let first = DeviceTrustStore(directory: dir, watch: true, now: { [unowned self] in self.clock },
+                                     watchFails: true, reloadInterval: 0.1)
+        let second = store()
+        let key = newKey()
+        _ = ask(second, key)
+        second.decide(id: id(key), .approve, by: "host", onlyIfWaiting: true)
+        // Wait for the timer to bring the trusted device in…
+        var waited = 0.0
+        while first.state(of: id(key)) != .trusted, waited < 5 {
+            Thread.sleep(forTimeInterval: 0.05)
+            waited += 0.05
+        }
+        XCTAssertEqual(first.state(of: id(key)), .trusted)
+        // …and then the revoke.
+        XCTAssertNotNil(second.revoke(id: id(key), by: "cli"))
+        waited = 0
+        while first.state(of: id(key)) != .denied, waited < 5 {
+            Thread.sleep(forTimeInterval: 0.05)
+            waited += 0.05
+        }
+        XCTAssertEqual(first.state(of: id(key)), .denied)
+    }
+
+    /// Holds the list's lock from another descriptor, as another process would.
+    private func holdLock() throws -> Int32 {
+        let fd = open(dir.appendingPathComponent(DeviceTrustStore.lockName).path,
+                      O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+        return fd
+    }
+
+    func testChangesFailAndWriteNothingWhileTheLockIsHeldElsewhere() throws {
+        let s = DeviceTrustStore(directory: dir, watch: false, now: { [unowned self] in self.clock },
+                                 lockTimeout: 0.1)
+        let known = newKey(), trusted = newKey()
+        _ = ask(s, known)
+        _ = ask(s, trusted)
+        s.decide(id: id(trusted), .approve, by: "host", onlyIfWaiting: true)
+        let before = try Data(contentsOf: listFile)
+
+        let fd = try holdLock()
+        // Even a trusted device is turned away for now, and a new one too.
+        XCTAssertEqual(ask(s, trusted), .busy)
+        XCTAssertEqual(ask(s, newKey()), .busy)
+        XCTAssertEqual(s.lastProblem, .lockNotTaken)
+        XCTAssertNil(s.decide(id: id(known), .approve, by: "cli", onlyIfWaiting: false))
+        XCTAssertEqual(s.lastProblem, .lockNotTaken)
+        XCTAssertNil(s.revoke(id: id(trusted), by: "cli"))
+        XCTAssertNil(s.forget(id: id(known)))
+        XCTAssertEqual(try Data(contentsOf: listFile), before)
+        // What it knew in memory is not thrown away.
+        XCTAssertEqual(s.state(of: id(trusted)), .trusted)
+        // The tries left no trace in the new-device count.
+        flock(fd, LOCK_UN)
+        close(fd)
+        for _ in 0 ..< DeviceTrustStore.maxNewPerMinute - 2 { XCTAssertEqual(ask(s, newKey()), .waiting) }
+
+        // And it works again once the lock is free.
+        XCTAssertEqual(ask(s, trusted), .trusted)
+        XCTAssertNil(s.lastProblem)
+        XCTAssertNotNil(s.revoke(id: id(trusted), by: "cli"))
+    }
+
+    func testListWrittenByANewerVersionIsLeftAloneAndNobodyIsLetIn() throws {
+        try makeDirectory(dir)
+        let key = newKey()
+        // A shape this build could not read, with a device in it.
+        let text = """
+            {"version": 2, "devices": [{"id": "\(id(key))", "publicKey": 12, "state": "paused"}],
+             "extra": true}
+            """
+        let bytes = Data(text.utf8)
+        try bytes.write(to: listFile)
+        let s = store()
+        XCTAssertTrue(s.listIsFromNewerVersion)
+        XCTAssertEqual(ask(s, key), .busy)
+        XCTAssertEqual(ask(s, newKey()), .busy)
+        XCTAssertEqual(s.lastProblem, .newerVersion)
+        XCTAssertNil(s.decide(id: id(key), .approve, by: "cli", onlyIfWaiting: false))
+        XCTAssertNil(s.forget(id: id(key)))
+        s.reload()
+        XCTAssertEqual(try Data(contentsOf: listFile), bytes)
+        // Not moved aside either.
+        XCTAssertFalse(try names().contains { $0.hasPrefix(DeviceTrustStore.fileName + ".") })
+        XCTAssertEqual(DeviceTrustStore.fileVersion, 1)
+    }
+
+    /// The menu's "Approve…" on a denied device: decide(.approve) from the host,
+    /// not only for waiting devices, and the device is let in after it.
+    func testApproveOnADeniedDeviceThroughTheMenusPath() throws {
+        let s = DeviceTrustStore(directory: dir, watch: false, now: { [unowned self] in self.clock })
+        let key = newKey()
+        XCTAssertEqual(ask(s, key), .waiting)
+        s.decide(id: id(key), .deny, by: DeviceTrustStore.decidedOnHost, onlyIfWaiting: true)
+        XCTAssertEqual(ask(s, key), .denied)
+        // A decision relayed by a device cannot undo it...
+        XCTAssertNil(s.decide(id: id(key), .approve, by: id(newKey()), onlyIfWaiting: true))
+        XCTAssertEqual(s.state(of: id(key)), .denied)
+        // ...the menu's call can.
+        let saved = s.decide(id: id(key), .approve, by: DeviceTrustStore.decidedOnHost, onlyIfWaiting: false)
+        XCTAssertEqual(saved?.state, .trusted)
+        XCTAssertEqual(saved?.decidedBy, DeviceTrustStore.decidedOnHost)
+        XCTAssertEqual(ask(s, key), .trusted)
+        XCTAssertEqual(store().state(of: id(key)), .trusted, "and it was saved")
+    }
+
+    func testOnlyBooleanFalseAndIntegerZeroTurnApprovalOff() {
+        XCTAssertFalse(HostAuth.approval(fromStored: false))
+        XCTAssertFalse(HostAuth.approval(fromStored: 0))
+        XCTAssertFalse(HostAuth.approval(fromStored: NSNumber(value: false)))
+        XCTAssertFalse(HostAuth.approval(fromStored: NSNumber(value: 0)))
+        XCTAssertTrue(HostAuth.approval(fromStored: nil))
+        XCTAssertTrue(HostAuth.approval(fromStored: true))
+        XCTAssertTrue(HostAuth.approval(fromStored: 1))
+        XCTAssertTrue(HostAuth.approval(fromStored: 2))
+        XCTAssertTrue(HostAuth.approval(fromStored: -1))
+        XCTAssertTrue(HostAuth.approval(fromStored: 0.0))
+        XCTAssertTrue(HostAuth.approval(fromStored: "false"))
+        XCTAssertTrue(HostAuth.approval(fromStored: "0"))
+        XCTAssertTrue(HostAuth.approval(fromStored: "NO"))
+        XCTAssertTrue(HostAuth.approval(fromStored: Data([0])))
+        XCTAssertTrue(HostAuth.approval(fromStored: [false]))
+        XCTAssertTrue(HostAuth.approval(fromStored: ["requireDeviceApproval": false]))
+    }
+
+    func testAChangeMadeFromOutsideIsNoticedWithinThePollInterval() {
+        final class Setting { var value: Any? = true }
+        let setting = Setting()
+        let auth = HostAuth(directory: dir, watch: false, settingPollInterval: 0.05,
+                            readStored: { setting.value })
+        XCTAssertTrue(auth.requireApproval)
+        let changed = expectation(description: "approval switched off")
+        let token = NotificationCenter.default.addObserver(forName: HostAuth.approvalDidChange, object: auth,
+                                                           queue: nil) { _ in
+            if !auth.requireApproval { changed.fulfill() }
+        }
+        defer { NotificationCenter.default.removeObserver(token) }
+        auth.startWatchingSetting()
+        auth.startWatchingSetting()
+        // Nothing yet: the value did not change.
+        Thread.sleep(forTimeInterval: 0.2)
+        XCTAssertTrue(auth.requireApproval)
+        setting.value = 0
+        wait(for: [changed], timeout: 5)
+        XCTAssertFalse(auth.requireApproval)
+        // A value that does not turn it off turns it on again.
+        let back = expectation(description: "approval switched on")
+        let token2 = NotificationCenter.default.addObserver(forName: HostAuth.approvalDidChange, object: auth,
+                                                            queue: nil) { _ in
+            if auth.requireApproval { back.fulfill() }
+        }
+        defer { NotificationCenter.default.removeObserver(token2) }
+        setting.value = "false"
+        wait(for: [back], timeout: 5)
+    }
+
+    func testCommandLineSaysTheListIsFromANewerClamshell() throws {
+        try makeDirectory(dir)
+        let bytes = Data(#"{"version": 3, "devices": []}"#.utf8)
+        try bytes.write(to: listFile)
+        let auth = HostAuth(directory: dir, watch: false)
+        var lines: [String] = []
+        XCTAssertEqual(DeviceCommands.run(["devices"], auth: auth, out: { lines.append($0) }), 1)
+        XCTAssertTrue(lines.joined().contains("newer Clamshell"), "\(lines)")
+        lines = []
+        XCTAssertEqual(DeviceCommands.run(["approve", "AB12-CD34-EF56-7890"], auth: auth, out: { lines.append($0) }), 1)
+        XCTAssertTrue(lines.joined().contains("newer Clamshell"), "\(lines)")
+        XCTAssertEqual(try Data(contentsOf: listFile), bytes)
     }
 
     func testListLastsForOneRunWhenTheDirectoryCannotBeUsed() throws {

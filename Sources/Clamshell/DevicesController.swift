@@ -156,9 +156,9 @@ final class DevicesController: NSObject {
         made.onNoticeDone = { [weak self] in
             DispatchQueue.main.async { self?.updatePanel() }
         }
-        made.onSetAside = { [weak self] in
+        made.onSetAside = { [weak self] id in
             guard let self else { return }
-            self.prompts.setAsideAll(in: self.records, now: Date().timeIntervalSince1970)
+            self.prompts.questionEnded(id, .closed, in: self.records, now: Date().timeIntervalSince1970)
             DispatchQueue.main.async {
                 self.updatePanel()
                 self.announceWaiting()
@@ -186,7 +186,8 @@ final class DevicesController: NSObject {
 
     /// The user pressed Approve or Deny in the window.
     private func decided(_ device: DeviceRecord, _ decision: DeviceTrustStore.Decision) {
-        prompts.userIsAnswering()
+        prompts.questionEnded(device.id, decision == .approve ? .approved : .denied, in: records,
+                              now: Date().timeIntervalSince1970)
         prompts.expect(device.id, decision == .approve ? .trusted : .denied)
         let saved = auth.store.decide(id: device.id, decision, by: DeviceTrustStore.decidedOnHost,
                                       onlyIfWaiting: true)
@@ -365,7 +366,6 @@ final class DevicesController: NSObject {
             return
         }
         for device in waiting { prompts.bringBack(device.id) }
-        prompts.userIsAnswering()
         // A question that is already on screen stays; the others follow it.
         refresh(picked: panel?.askingId ?? first.id)
     }
@@ -373,7 +373,6 @@ final class DevicesController: NSObject {
     @objc private func showWaiting(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
         prompts.bringBack(id)
-        prompts.userIsAnswering()
         refresh(picked: id)
     }
 

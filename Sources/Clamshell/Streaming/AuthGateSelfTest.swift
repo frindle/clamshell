@@ -8,8 +8,10 @@ import Foundation
 //
 // It checks who gets in, and that a connection which has not got in starts
 // nothing and cannot disturb the client being served. It captures nothing and
-// types nothing: the listeners are not primary, and no client sends a HELLO
-// long enough to start a session.
+// types nothing: no admitted client sends a HELLO long enough to start a
+// session. The first listener is marked primary, and the last step shows that
+// a connection that has not got in cannot make it collapse the display (the
+// notification is swapped for a local list) or start a session.
 //
 // `clamshell auth-gate-selftest`, run in CI.
 
@@ -390,7 +392,7 @@ enum AuthGateSelfTest {
         auth.pendingRepeat = 0.2
 
         let servers = [
-            StreamServer(source: .display(CGMainDisplayID()), port: port0, isPrimary: false,
+            StreamServer(source: .display(CGMainDisplayID()), port: port0, isPrimary: true,
                          auth: auth, displayIndex: 0, loopbackOnly: true),
             StreamServer(source: .display(CGMainDisplayID()), port: port1, isPrimary: false,
                          auth: auth, displayIndex: 1, loopbackOnly: true),
@@ -560,6 +562,9 @@ enum AuthGateSelfTest {
         // 9. A trusted device that did not say it can show the prompt cannot
         //    decide. A waiting connection that sends too much is closed; its
         //    device stays on the waiting list.
+        // Everything here comes from one address, which may list three new
+        // devices a minute; start the count again.
+        store.forgetRecentAdds()
         let f1 = try bench.knock(port0, f, "F")
         try a6.expectWaitingList([f])
         try d1.decide(f, "approve")
@@ -599,32 +604,67 @@ enum AuthGateSelfTest {
         try expect(store.state(of: f.id) == .waiting, "turning approval off and on approves nobody")
         print("PASS approval off serves any client; turning it on closes the ones nobody approved")
 
-        // 11. One device may wait on several connections; one more than the
-        //     host allows is told the host is busy. When a trusted device
-        //     denies it, every waiting connection is told and closed, and
+        // 11. One device may wait on one connection per listener; a second
+        //     on the same listener takes the place of the first, which is
+        //     told the host is busy. Everything here comes from one address,
+        //     so the group may hold three waiting connections and a fourth
+        //     takes the place of the oldest. When a trusted device denies a
+        //     device, every waiting connection of it is told and closed, and
         //     the denial cannot be undone from a device.
+        let h = Device(name: "Selftest H"), i = Device(name: "Selftest I")
         let a7 = try bench.enter(port0, a, "A seventh time", capabilities: .deviceApproval, display: 0)
         try a7.expectWaitingList([f])
-        var waiting: [Client] = []
-        for n in 1 ... HostAuth.maxWaitingConnections {
-            waiting.append(try bench.knock(port1, f, "F, waiting connection \(n)"))
-        }
-        let extra = bench.connect(port1, "F, one connection too many")
-        try extra.readChallenge()
-        try extra.answer(as: f)
-        try extra.expectStatus(.busy)
-        try extra.expectClosed("too many connections were waiting")
+        let f2 = try bench.knock(port0, f, "F, first listener")
+        let f3 = try bench.knock(port1, f, "F, second listener")
+        let f4 = try bench.knock(port1, f, "F, second listener again")
+        try f3.expectStatus(.busy, skippingPending: true)
+        try f3.expectClosed("the same device connected again on its listener")
+        let h1 = try bench.knock(port0, h, "H")
+        try a7.expectWaitingList([f, h])
+        let i1 = try bench.knock(port1, i, "I")
+        try a7.expectWaitingList([f, h, i])
+        try f2.expectStatus(.busy, skippingPending: true)
+        try f2.expectClosed("its address group had its share and the oldest gave way")
         try a7.decide(f, "deny")
-        try a7.expectWaitingList([])
-        for client in waiting {
-            try client.expectStatus(.denied, skippingPending: true)
-            try client.expectClosed("its device was denied")
-        }
+        try a7.expectWaitingList([h, i])
+        try f4.expectStatus(.denied, skippingPending: true)
+        try f4.expectClosed("its device was denied")
         try a7.decide(f, "approve")
-        try a7.expectWaitingList([])
+        try a7.expectWaitingList([h, i])
         try expect(store.state(of: f.id) == .denied && store.record(id: f.id)?.decidedBy == a.id,
                    "a device cannot approve one that was already denied")
+        try expect(auth.hasWaitingConnection(deviceId: h.id) && auth.hasWaitingConnection(deviceId: i.id)
+                   && !auth.hasWaitingConnection(deviceId: f.id), "the waiting connections left are H's and I's")
+        _ = (h1, i1)
         try a7.expectPing()
-        print("PASS waiting connections are capped; a denial reaches every one and stays")
+        print("PASS a device waits once per listener; an address group holds three waiting connections; a denial reaches every one and stays")
+
+        // 12. On a listener marked primary, a connection that has not got in
+        //     starts nothing, however complete the HELLO it sends: no request
+        //     to collapse the display (which is where a session, capture and
+        //     the clipboard bridge would begin). That a HELLO from a client
+        //     that is let in does post it is hello-collapse-selftest's job.
+        // The waiting list and the count of new devices a minute are used up
+        // by now; make room for one more.
+        store.forgetRecentAdds()
+        for record in store.all() where record.state == .waiting { _ = store.forget(id: record.id) }
+        let originalPost = StreamServer.postCollapse
+        var collapses: [[String: String]] = []
+        StreamServer.postCollapse = { collapses.append($0) }
+        defer { StreamServer.postCollapse = originalPost }
+        let fullHello = StreamMessage.hello(requestedCodec: .hevc, displayInfo: (1600, 1200, true),
+                                            secondSize: (1920, 1080))
+        let unanswered = bench.connect(port0, "unanswered, primary listener")
+        try unanswered.readChallenge()
+        unanswered.send(fullHello)
+        unanswered.send(StreamMessage.clientDisplays(widthPx: 1600, heightPx: 1200, secondDisplay: false))
+        let w = Device(name: "Selftest W")
+        let w1 = try bench.knock(port0, w, "W, primary listener")
+        w1.send(fullHello)
+        w1.send(StreamMessage.clientDisplays(widthPx: 1600, heightPx: 1200, secondDisplay: false))
+        RunLoop.main.run(until: Date().addingTimeInterval(1.0))
+        try expect(collapses.isEmpty, "a connection that is not let in cannot make the primary listener collapse the display (got \(collapses))")
+        try expect(store.state(of: w.id) == .waiting, "the device is still only waiting")
+        print("PASS on a primary listener nothing starts before a device is let in")
     }
 }
