@@ -5,8 +5,11 @@ import AVFoundation
 // AVAudioConverter -> AVAudioEngine player node. The wire format is the fixed
 // 48 kHz stereo AAC-LC the Mac's AudioEncoder produces, so no cookie is needed.
 //
-// ponytail: a small scheduled-buffer jitter buffer is all a LAN/tunnel
-// remote-desktop stream needs — no PLL, no sample-rate drift correction.
+// Buffers are scheduled as they arrive and counted until they have played. When
+// about 200 ms is already waiting (a host sending faster than real time), the
+// new buffer is dropped so latency and memory stay bounded. There is no PLL and
+// no sample-rate drift correction. If the engine has stopped (for example after
+// an audio interruption) it is started again on the next packet.
 
 final class AudioPlayer {
     private let engine = AVAudioEngine()
@@ -15,6 +18,14 @@ final class AudioPlayer {
     private let aacFormat: AVAudioFormat
     private let pcmFormat: AVAudioFormat
     private var started = false
+    /// Each buffer is 1024 frames at 48 kHz, about 21 ms: 9 of them is about 192 ms.
+    private static let maxQueued = 9
+    private let queueLock = NSLock()
+    private var queued = 0
+    /// Bumped when the player is stopped, so completions of buffers it threw
+    /// away do not lower the count of the next run.
+    private var generation = 0
+    private var dropped = 0
 
     init?() {
         var desc = AudioStreamBasicDescription(
@@ -39,6 +50,11 @@ final class AudioPlayer {
     }
 
     private func startIfNeeded() {
+        if started, !engine.isRunning {
+            // Stopped under us (an interruption, a route change): start again.
+            started = false
+            resetQueue()
+        }
         guard !started else { return }
         started = true
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
@@ -81,7 +97,30 @@ final class AudioPlayer {
             }
             return
         }
-        player.scheduleBuffer(pcm, completionHandler: nil)
+        queueLock.lock()
+        if queued >= Self.maxQueued {
+            dropped += 1
+            let n = dropped
+            queueLock.unlock()
+            if n <= 5 || n % 500 == 0 { clogViewer("audio: queue full, dropped a buffer (#\(n))") }
+            return
+        }
+        queued += 1
+        let mine = generation
+        queueLock.unlock()
+        player.scheduleBuffer(pcm, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+            guard let self else { return }
+            self.queueLock.lock()
+            if self.generation == mine, self.queued > 0 { self.queued -= 1 }
+            self.queueLock.unlock()
+        }
+    }
+
+    private func resetQueue() {
+        queueLock.lock()
+        generation += 1
+        queued = 0
+        queueLock.unlock()
     }
     private var decodeErrors = 0
 
@@ -89,5 +128,6 @@ final class AudioPlayer {
         player.stop()
         engine.stop()
         started = false
+        resetQueue()
     }
 }
