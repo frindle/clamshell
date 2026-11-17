@@ -17,7 +17,7 @@ final class ClientAuthFlowTests: XCTestCase {
     private let resultType = StreamMessageType.authResult.rawValue
     private let secureType = StreamMessageType.secure.rawValue
 
-    private func config(url: String? = nil, name: String = "Alex's iPad") -> ClientAuthConfig {
+    private func config(url: String? = nil, name: String = "Example iPad") -> ClientAuthConfig {
         let frame = helloFrame
         return ClientAuthConfig(deviceKey: devicePub, sign: AuthSignature.signer(deviceKey), deviceName: name,
                                 appVersion: "0.1.0", dialledURL: url ?? self.url, makeHello: { frame })
@@ -229,7 +229,7 @@ final class ClientAuthFlowTests: XCTestCase {
         XCTAssertFalse(hello.capabilities.contains(.deviceApproval))
         XCTAssertFalse(hello.capabilities.contains(.fileTransfer))
         XCTAssertFalse(hello.capabilities.contains(.peripherals))
-        XCTAssertEqual(hello.displayName, "Alex's iPad")
+        XCTAssertEqual(hello.displayName, "Example iPad")
         XCTAssertEqual(hello.identityKey, devicePub)
     }
 
@@ -249,7 +249,7 @@ final class ClientAuthFlowTests: XCTestCase {
         let pending = try h.result(.pending, response: device.response, sign: hostSigner())
         let hostId = DeviceIdentity.id(ofPublicKey: hostPub)
         let shown = FlowState.waitingForApproval(hostName: "Studio", hostFingerprint: DeviceIdentity.fingerprint(ofId: hostId),
-                                                 deviceName: "Alex's iPad", deviceFingerprint: flow.deviceFingerprint)
+                                                 deviceName: "Example iPad", deviceFingerprint: flow.deviceFingerprint)
         let first = flow.received(type: resultType, payload: pending)
         XCTAssertEqual(states(first), [shown])
         XCTAssertTrue(sent(first).isEmpty)
