@@ -179,8 +179,10 @@ internal sealed class ViewerClient : IDisposable
             using var link = CancellationTokenSource.CreateLinkedTokenSource(outer, _cts.Token);
             await _ws.ConnectAsync(uri, link.Token);
             _ = SendLoopAsync();
-            _ = ReceiveLoopAsync();
+            // The flow hears "open" before anything is read, or a fast host's
+            // challenge could reach it first.
             Handle(f => f.Opened());
+            _ = ReceiveLoopAsync();
         }
 
         /// <summary>Feeds the flow one event and does what it says, in order.

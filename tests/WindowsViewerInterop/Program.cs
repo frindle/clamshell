@@ -62,8 +62,10 @@ static class Interop
         public async Task Start(string url)
         {
             await _ws.ConnectAsync(new Uri(url), _cts.Token);
-            _ = ReceiveLoop();
+            // Tell the flow the socket is open before reading, or a fast host's
+            // challenge can reach the flow first.
             Step(f => f.Opened());
+            _ = ReceiveLoop();
         }
 
         void Step(Func<ClientAuthFlow, List<FlowAction>> go)
