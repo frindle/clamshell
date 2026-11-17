@@ -22,9 +22,11 @@ jobs:
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-encoder
 
       - name: Host key self-test (real Windows key store, throwaway key)
+        if: ${{ !cancelled() }}
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-hostkey
 
       - name: Device list self-test (real DPAPI and file system, throwaway folder)
+        if: ${{ !cancelled() }}
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-store
 
       - name: Live smoke test (real display enum, encoder probe, listener bind)
