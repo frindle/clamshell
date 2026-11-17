@@ -78,6 +78,20 @@ internal sealed class ViewerClient : IDisposable
         attempt?.Handle(f => f.Answered(yes));
     }
 
+    /// <summary>Ends the connection and does not connect again. The window stays.</summary>
+    public void Stop()
+    {
+        _disposed = true;
+        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        lock (_gate)
+        {
+            _attempt?.Dispose();
+            _attempt = null;
+        }
+        HostCapabilities = 0;
+        OnDisconnected?.Invoke("stopped");
+    }
+
     private Task SendApp(byte[] message)
     {
         // Before accepted (and after the end) the flow returns nothing: the input is dropped.
@@ -359,12 +373,14 @@ internal sealed class ViewerClient : IDisposable
                         if (msg.Length > 32 << 20) { Closed("oversize message"); return; }
                     } while (!r.EndOfMessage);
 
-                    var frame = msg.GetBuffer().AsSpan(0, (int)msg.Length);
+                    // No Span here: this is an async method.
+                    var frame = msg.ToArray();
                     if (frame.Length < 5) { Closed("message too short"); return; }
                     byte type = frame[0];
-                    int len = (int)Be.U32(frame, 1);
-                    if (len < 0 || frame.Length != 5 + len) { Closed("message length does not match"); return; }
-                    var payload = frame.Slice(5, len).ToArray();
+                    long len = ((long)frame[1] << 24) | ((long)frame[2] << 16) | ((long)frame[3] << 8) | frame[4];
+                    if (frame.Length != 5 + len) { Closed("message length does not match"); return; }
+                    var payload = new byte[len];
+                    Array.Copy(frame, 5, payload, 0, (int)len);
                     Handle(f => f.Received(type, payload));
                 }
             }
