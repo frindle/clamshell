@@ -115,6 +115,24 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(names(in: folder), [])
     }
 
+    func testNamesThatStillMisleadAreCleaned() {
+        // Line and paragraph separators and the Hangul filler are removed.
+        XCTAssertEqual(FileTransfer.storedName(for: "a\u{2028}b\u{2029}c\u{3164}.txt"), "abc.txt")
+        // Unicode blanks at both ends go, like spaces do; inside they stay.
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{00A0}\u{3000}report one.pdf\u{3000}\u{00A0}"), "report one.pdf")
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{3000}\u{00A0}"), "file")
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{00A0}.hidden"), "hidden")
+        // Look-alike dots and slashes become `_`, so no extension is faked and no path is hinted at.
+        XCTAssertEqual(FileTransfer.storedName(for: "photo\u{FF0E}jpg"), "photo_jpg")
+        XCTAssertEqual(FileTransfer.storedName(for: "a\u{2215}b\u{FF0F}c"), "a_b_c")
+        XCTAssertEqual(FileTransfer.storedName(for: "x\u{2024}y\u{FE52}z\u{FF3C}w"), "x_y_z_w")
+        // A name made only of such characters is not empty any more, and is still a plain child.
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{FF0E}\u{FF0E}"), "__")
+        // Trailing dots stay (the shared vectors say so); ordinary dots and a real slash are unchanged.
+        XCTAssertEqual(FileTransfer.storedName(for: "trailing.dot."), "trailing.dot.")
+        XCTAssertEqual(FileTransfer.storedName(for: "dir/scan.pdf"), "scan.pdf")
+    }
+
     func testHostileNamesStayInsideFolder() throws {
         let s = sink()
         receive(s, id: 1, name: "../../evil.txt", bytes: Data("x".utf8))

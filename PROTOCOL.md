@@ -869,8 +869,10 @@ receiver → sender     FILE_END      id, 0          stored
 device.
 
 - The name is never used as a path. The receiver keeps what follows the last
-  `/` or `\`, removes control characters and `:`, then removes dots and
-  spaces from the start and spaces from the end, and uses `file` if nothing
+  `/` or `\`, removes control characters, `:` and invisible format
+  characters (including U+2028, U+2029 and U+3164), replaces look-alike dots
+  and slashes (such as U+FF0E and U+2215) with `_`, then removes dots and
+  blanks from the start and blanks from the end, and uses `file` if nothing
   is left. A receiver also changes whatever its own file system refuses (on
   Windows the characters `< > " | ? *`, trailing dots, and device names such
   as `CON`).
