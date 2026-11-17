@@ -85,26 +85,54 @@ internal sealed class VideoEncoder : IDisposable
 
     private void Build()
     {
-        _mft = ActivateEncoder(Codec, _hardware);
-
-        // Encoders: output type MUST be set before input type.
-        using (var outType = MediaFactory.MFCreateMediaType())
+        // Encoders: output type MUST be set before input type. The software
+        // encoder on the CI runner answered E_FAIL to the full output type in a
+        // session's build while the same attributes worked in the self-test's
+        // matrix, so a refusal is retried on a fresh MFT, first unchanged and then
+        // with the optional attributes left out one at a time. Each attempt is
+        // logged, so the log says which one the machine accepts.
+        var attempts = new (string Name, bool Profile, bool Spacing, bool Aspect)[]
         {
+            ("full", true, true, true),
+            ("full, again", true, true, true),
+            ("without profile", false, true, true),
+            ("without keyframe spacing", true, false, true),
+            ("without pixel aspect", true, true, false),
+            ("required attributes only", false, false, false),
+        };
+        Exception? last = null;
+        foreach (var a in attempts)
+        {
+            _mft = ActivateEncoder(Codec, _hardware);
+            using var outType = MediaFactory.MFCreateMediaType();
             outType.Set(MFAttr.MajorType, MFAttr.Video);
             outType.Set(MFAttr.Subtype, Codec == StreamCodec.Hevc ? MFAttr.Hevc : MFAttr.H264);
             outType.Set(MFAttr.AvgBitrate, _bitrate);
             outType.Set(MFAttr.InterlaceMode, 2 /* Progressive */);
-            if (Codec == StreamCodec.H264) outType.Set(MFAttr.Mpeg2Profile, 100 /* High */);
-            outType.Set(MFAttr.MaxKeyframeSpacing, 120);
+            if (Codec == StreamCodec.H264 && a.Profile) outType.Set(MFAttr.Mpeg2Profile, 100 /* High */);
+            if (a.Spacing) outType.Set(MFAttr.MaxKeyframeSpacing, 120);
             MediaFactory.MFSetAttributeSize(outType, MFAttr.FrameSize, (uint)_width, (uint)_height);
             MediaFactory.MFSetAttributeRatio(outType, MFAttr.FrameRate, Fps, 1);
-            MediaFactory.MFSetAttributeRatio(outType, MFAttr.PixelAspectRatio, 1, 1);
-            _mft.SetOutputType(0, outType, 0);
+            if (a.Aspect) MediaFactory.MFSetAttributeRatio(outType, MFAttr.PixelAspectRatio, 1, 1);
+            try
+            {
+                _mft.SetOutputType(0, outType, 0);
+                if (last != null) Log.Line($"encoder: output type accepted ({a.Name}) after a refusal");
 
-            // Cache the codec-private sequence header (SPS/PPS[/VPS]) as AVCC to
-            // prepend on keyframes. It comes back as an Annex-B blob.
-            _paramSetsAvcc = TryGetSequenceHeaderAvcc(outType);
+                // Cache the codec-private sequence header (SPS/PPS[/VPS]) as AVCC to
+                // prepend on keyframes. It comes back as an Annex-B blob.
+                _paramSetsAvcc = TryGetSequenceHeaderAvcc(outType);
+                last = null;
+                break;
+            }
+            catch (Exception e)
+            {
+                last = e;
+                Log.Line($"encoder: output type refused ({a.Name}, {_width}x{_height}): 0x{(uint)e.HResult:X8}");
+                try { _mft.Dispose(); } catch (Exception) { /* nothing more to do */ }
+            }
         }
+        if (last != null) throw last;
 
         using (var inType = MediaFactory.MFCreateMediaType())
         {
