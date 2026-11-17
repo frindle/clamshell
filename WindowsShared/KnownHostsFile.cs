@@ -1,3 +1,4 @@
+using System.IO;
 namespace Clamshell.Auth;
 
 /// <summary>The saved Macs file cannot be used. The message is for the person

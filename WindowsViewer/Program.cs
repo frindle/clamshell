@@ -24,6 +24,7 @@ internal static class Program
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
         if (args.Length > 0 && args[0] == "selftest-auth") return AuthSelfTestMain(args[1..]);
+        if (args.Length > 0 && args[0] == "selftest-keystore") return KeyStoreSelfTest.Run();
         if (args.Length > 0 && args[0] == "--verify") return VerifyMain(args[1..]);
         if (args.Length > 0 && args[0] == "decode-file") return DecodeFileMain(args[1..]);
 

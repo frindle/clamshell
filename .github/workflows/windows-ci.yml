@@ -60,6 +60,8 @@ jobs:
         run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest
       - name: Viewer device-auth self-test (vectors, handshakes, tampered frames)
         run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest-auth tests/vectors/auth-v1.json
+      - name: Viewer key store self-test (real Windows key store, throwaway key)
+        run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest-keystore
 
       - name: Viewer GUI smoke test (real WPF Application/Window on a real virtual display)
         # The `--verify`/`decode-file` steps below never construct MainWindow
