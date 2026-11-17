@@ -1135,7 +1135,10 @@ export class AuthFlow {
     if (!(await isValidPublicKey(challenge.identity, this.cr))) return this.#fail('the challenge is not valid');
     const id = await keyId(challenge.identity, this.cr);
     if (this.phase === 'ended') return;
-    if (this.standing.kind === 'host' && this.standing.id !== id) {
+    // Rule 4, unless the key that answered is another saved Mac's: that one passes
+    // its own pin, and the result step decides what to do (the address moves, and
+    // the attempt ends so a caller with more addresses can try the next).
+    if (this.standing.kind === 'host' && this.standing.id !== id && this.known.host(id) === null) {
       return this.#finish({ kind: 'stop' }, 'identity changed', {
         kind: 'changedIdentity', address: this.address || '',
         savedFingerprint: fingerprintOfId(this.standing.id), nowFingerprint: fingerprintOfId(id),
@@ -1196,6 +1199,15 @@ export class AuthFlow {
       }
     }
     const name = h.hostName;
+    // A different saved Mac answered at an address that was another saved Mac's.
+    // It passes its own pin, so it is not a success for the one picked: the
+    // address has moved (the change above) and this attempt ends.
+    const picked = this.config.expectedHostId || (this.standing.kind === 'host' ? this.standing.id : null);
+    if (hostKnown && picked && picked !== h.hostId && this.known.host(picked) !== null) {
+      const now = this.known.host(h.hostId)?.name || name;
+      return this.#finish({ kind: 'nextAddress' }, 'the address reached a different saved Mac',
+        { kind: 'failed', reason: `This address now reaches ${now}` });
+    }
     switch (status) {
       case STATUS.pending:
         this.phase = 'pending';

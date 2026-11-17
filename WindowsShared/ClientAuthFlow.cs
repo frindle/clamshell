@@ -47,6 +47,10 @@ public enum FlowEndKind
     Failure,
     /// <summary>Close and connect again after After seconds, carrying Carry.</summary>
     Reconnect,
+    /// <summary>Close; this address reached a different saved Mac than the one picked.
+    /// A caller that has more addresses for the picked Mac tries the next at once;
+    /// one that dials a single address treats this as a failure.</summary>
+    NextAddress,
 }
 
 public sealed class FlowEnd
@@ -60,6 +64,7 @@ public sealed class FlowEnd
     public static FlowEnd Stop() => new(FlowEndKind.Stop, 0, new FlowCarry());
     public static FlowEnd Failure() => new(FlowEndKind.Failure, 0, new FlowCarry());
     public static FlowEnd Reconnect(double after, FlowCarry carry) => new(FlowEndKind.Reconnect, after, carry.Clone());
+    public static FlowEnd NextAddress() => new(FlowEndKind.NextAddress, 0, new FlowCarry());
 
     public override string ToString() => Kind == FlowEndKind.Reconnect ? $"Reconnect({After})" : Kind.ToString();
 }
@@ -180,6 +185,9 @@ public sealed class ClientAuthConfig
     public string AppVersion { get; set; } = "";
     /// <summary>The WebSocket URL actually dialled.</summary>
     public string DialledUrl { get; set; } = "";
+    /// <summary>The saved Mac the user picked, when the caller knows it. When it is null
+    /// the saved Mac the dialled address belonged to is taken as the pick.</summary>
+    public string? ExpectedHostId { get; set; }
     /// <summary>A whole HELLO message (framed). Called when HELLO is sent.</summary>
     public Func<byte[]> MakeHello { get; set; } = () => Array.Empty<byte>();
     /// <summary>For tests: response extensions, a fixed ephemeral key and a fixed nonce.
@@ -415,7 +423,10 @@ public sealed class ClientAuthFlow
         if (!DeviceIdentity.IsValidPublicKey(challenge.Hello.IdentityKey)) return Fail("the challenge is not valid");
 
         var id = DeviceIdentity.Id(challenge.Hello.IdentityKey);
-        if (_standing.Kind == StandingKind.Host && _standing.HostId != id)
+        // Rule 4, unless the key that answered is another saved Mac's: that one
+        // passes its own pin, and the result step decides what to do (the address
+        // moves, and the attempt ends so the next address can be tried).
+        if (_standing.Kind == StandingKind.Host && _standing.HostId != id && _known.Host(id) is null)
         {
             var saved = DeviceIdentity.Fingerprint(_standing.HostId);
             return Finish(FlowEnd.Stop(), "identity changed", FlowState.ChangedIdentity(
@@ -470,6 +481,19 @@ public sealed class ClientAuthFlow
             }
         }
         var name = h.HostName;
+        // A different saved Mac answered at an address that was another saved
+        // Mac's. It passes its own pin, so it is not a success for the one
+        // picked: the address has moved (the change above), and this attempt
+        // ends so a caller with more addresses can try the next.
+        var picked = _config.ExpectedHostId;
+        if (picked is null && _standing.Kind == StandingKind.Host) picked = _standing.HostId;
+        if (hostKnown && picked is not null && picked != h.HostId && _known.Host(picked) is not null)
+        {
+            var now = _known.Host(h.HostId)?.Name ?? name;
+            actions.AddRange(Finish(FlowEnd.NextAddress(), "the address reached a different saved Mac",
+                FlowState.Failed($"This address now reaches {now}")));
+            return actions;
+        }
         switch (status)
         {
             case AuthStatus.Pending:

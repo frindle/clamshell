@@ -259,6 +259,43 @@ test('rule 9: a verified result from a known host at a new address binds it with
   assert.strictEqual(t.changes().length, 1);
 });
 
+// ── An address that now reaches a different saved Mac ──────────────────
+test('an address that now reaches a different saved Mac is not a success: it moves, and the attempt ends', async () => {
+  const first = await TestHost.create();
+  const other = await TestHost.create();
+  const known = await savedHostKnown(first);
+  known.recordVerified({ key: other.identity.publicRaw, id: other.id, name: 'Other Mac', address: 'ws://192.0.2.21:5903' }, 2);
+  const t = await setup({ known });
+  await handshake(t, other);
+  assert.deepStrictEqual(t.changes(), []); // nothing moves before a result verifies
+  await t.feed(await other.resultMessage(A.STATUS.accepted));
+  assert.deepStrictEqual(t.changes(), [{ kind: 'bind', hostId: other.id, address: ADDRESS }]);
+  assert.deepStrictEqual(t.lastState(), { kind: 'failed', reason: 'This address now reaches Other Mac' });
+  assert.deepStrictEqual(t.ends().map((e) => e.end.kind), ['nextAddress']);
+  assert.strictEqual(t.sends().length, 1); // only the response: no HELLO, no session
+});
+
+test('the Mac the caller picked is the one that must answer, even at an address no saved Mac owns', async () => {
+  const first = await TestHost.create();
+  const other = await TestHost.create();
+  const known = await savedHostKnown(first, '192.0.2.20:5903');
+  known.recordVerified({ key: other.identity.publicRaw, id: other.id, name: 'Other Mac', address: 'ws://192.0.2.21:5903' }, 2);
+  const device = await newSigningIdentity();
+  const log = [];
+  const flow = new A.AuthFlow({
+    deviceKey: device, deviceName: 'Safari on Mac', dialledURL: 'ws://192.0.2.99:5903', known,
+    expectedHostId: other.id, makeHello: hello, emit: (a) => log.push(a), cr,
+  });
+  await flow.opened(); await flow.settled();
+  { const { type, payload } = unframe(first.challengeMessage()); await flow.received(type, payload); await flow.settled(); }
+  const response = unframe(log.filter((a) => a.do === 'send').at(-1).data).payload;
+  await first.verifyResponse(response);
+  { const { type, payload } = unframe(await first.resultMessage(A.STATUS.accepted)); await flow.received(type, payload); await flow.settled(); }
+  assert.deepStrictEqual(log.filter((a) => a.do === 'end').map((e) => e.end.kind), ['nextAddress']);
+  assert.deepStrictEqual(log.filter((a) => a.do === 'state').at(-1).state,
+    { kind: 'failed', reason: 'This address now reaches Studio' });
+});
+
 // ── 10 and 11: pending, then accepted ──────────────────────────────────
 test('rules 10 and 11: pending, a repeated pending, then accepted: the host is remembered', async () => {
   const host = await TestHost.create();

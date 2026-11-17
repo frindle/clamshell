@@ -497,6 +497,38 @@ public static class FlowTests
             t.Check(res.Any(x => x.Kind == FlowActionKind.Change && x.Change!.Kind == ChangeKind.Bind), "R9: the address is bound once a result verifies");
             t.Equal(Shown(res)?.Kind, FlowStateKind.Connected, "R9: and it connects");
         }
+        using (var first = new Rig())
+        using (var other = TestKey.Random())
+        {
+            // Two saved Macs; the address of the first now reaches the second.
+            var known = KnowHost(first.HostKey);
+            known.RecordVerified(other.Public, "Other Mac", "ws://192.0.2.21:5903", 1001);
+            using var r = new Rig(known, hostKey: other);
+            r.Flow.Opened();
+            r.Challenge();
+            var res = r.Result(AuthStatus.Accepted);
+            t.Equal(Ended(res)?.Kind, FlowEndKind.NextAddress, "a different saved Mac at this address is not a success");
+            t.Equal(Shown(res)?.Message, "This address now reaches Other Mac", "and says which Mac it reaches now");
+            t.Check(res.Any(x => x.Kind == FlowActionKind.Change && x.Change!.Kind == ChangeKind.Bind
+                && x.Change.HostId == DeviceIdentity.Id(other.Public)), "the address moves to the Mac that answered");
+            t.Equal(Sends(res), 0, "no HELLO and no session");
+            t.Check(!r.Flow.IsSecure && r.Flow.IsEnded, "the attempt is over");
+        }
+        using (var first = new Rig())
+        using (var other = TestKey.Random())
+        {
+            // The caller says which Mac it picked; that holds for an address no saved Mac owns yet.
+            var known = KnowHost(first.HostKey, "ws://192.0.2.20:5903");
+            known.RecordVerified(other.Public, "Other Mac", "ws://192.0.2.21:5903", 1001);
+            using var r = new Rig(known, url: "ws://192.0.2.99:5903", hostKey: first.HostKey);
+            r.Config.ExpectedHostId = DeviceIdentity.Id(other.Public);
+            r.Flow = new ClientAuthFlow(r.Config, known);
+            r.Flow.Opened();
+            r.Challenge();
+            var res = r.Result(AuthStatus.Accepted);
+            t.Equal(Ended(res)?.Kind, FlowEndKind.NextAddress, "the Mac the caller picked is the one that must answer");
+            t.Equal(Shown(res)?.Message, "This address now reaches Test Mac", "and the saved name of the Mac that answered is shown");
+        }
     }
 
     // MARK: Retries

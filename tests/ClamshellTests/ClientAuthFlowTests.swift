@@ -544,6 +544,52 @@ final class ClientAuthFlowTests: XCTestCase {
         XCTAssertTrue(sent(a).isEmpty)
     }
 
+    // MARK: an address that now reaches a different saved Mac
+
+    /// Two saved Macs; the address of the first now reaches the second.
+    private func swapped(expected: String? = nil) throws -> (flow: ClientAuthFlow, actions: [FlowAction], otherId: String) {
+        let otherKey = P256.Signing.PrivateKey()
+        let otherPub = otherKey.publicKey.x963Representation
+        var k = known()
+        k.recordVerified(key: otherPub, name: "Other Mac", address: "192.168.1.21:5903", now: 2)
+        var c = config()
+        c.expectedHostId = expected
+        var flow = ClientAuthFlow(config: c, known: k)
+        let h = try HostHandshake(identityKey: otherPub, capabilities: [.relativeMouse], name: "Other Mac")
+        let (_, response) = challenge(&flow, h)
+        let device = try h.verify(responsePayload: try XCTUnwrap(response))
+        let result = try h.result(.accepted, response: device.response, sign: AuthSignature.signer(otherKey))
+        return (flow, flow.received(type: resultType, payload: result), DeviceIdentity.id(ofPublicKey: otherPub))
+    }
+
+    func testAnAddressThatNowReachesADifferentSavedMacIsNotASuccess() throws {
+        var s = try swapped()
+        // The address moves to the Mac that answered, and the attempt ends so
+        // the caller can try the next address. No session, no HELLO.
+        XCTAssertEqual(changes(s.actions), [.bind(hostId: s.otherId, address: url)])
+        XCTAssertEqual(states(s.actions), [.failed("This address now reaches Other Mac")])
+        XCTAssertEqual(end(s.actions), .nextAddress)
+        XCTAssertTrue(sent(s.actions).isEmpty)
+        XCTAssertFalse(s.flow.isSecure)
+        XCTAssertTrue(s.flow.isEnded)
+        XCTAssertTrue(s.flow.socketClosed().isEmpty)
+    }
+
+    func testThePickedMacCountsEvenWhenTheAddressWasMovedAlready() throws {
+        // The caller says it picked the first Mac (its pick is kept across
+        // attempts even after the address moved). Still not a success.
+        let firstId = DeviceIdentity.id(ofPublicKey: hostPub)
+        let s = try swapped(expected: firstId)
+        XCTAssertEqual(end(s.actions), .nextAddress)
+        XCTAssertEqual(states(s.actions), [.failed("This address now reaches Other Mac")])
+    }
+
+    func testTheSameMacAtTheSameAddressStillConnects() throws {
+        let l = try live()
+        XCTAssertEqual(states(l.up), [.connected(verified: true, hostName: "Studio")])
+        XCTAssertTrue(l.flow.isSecure)
+    }
+
     func testNothingTheAppSendsBeforeAcceptedGoesOut() throws {
         var flow = ClientAuthFlow(config: config(), known: KnownHosts())
         let key = StreamMessage.frame(type: .ping)

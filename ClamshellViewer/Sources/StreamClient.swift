@@ -153,6 +153,10 @@ final class StreamClient: ObservableObject {
     /// Which of the saved Mac's addresses the next attempt dials (0 is the
     /// address the user picked). Moves on only when a socket never opened.
     private var dialIndex = 0
+    /// The addresses to dial for the current `connect`, and the saved Mac the
+    /// user picked (nil when the address is not a saved Mac's).
+    private var dialPlan: [String] = []
+    private var pickedHostId: String?
 
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
@@ -163,6 +167,9 @@ final class StreamClient: ObservableObject {
         flowCarry = FlowCarry()
         dialIndex = 0
         connectHost = host
+        let plan = makeDialPlan(for: host)
+        dialPlan = plan.urls
+        pickedHostId = plan.hostId
         openSocket()
     }
 
@@ -170,14 +177,16 @@ final class StreamClient: ObservableObject {
     /// then the others its key is known at, last successful first. Each one
     /// goes through the same flow against the same saved key, so another
     /// address can never stand in for a different Mac.
-    private func dialURLs(for host: String) -> [String] {
+    /// Worked out once per `connect`, so an address that moves to another saved
+    /// Mac while the attempts run cannot change which Mac was picked.
+    private func makeDialPlan(for host: String) -> (urls: [String], hostId: String?) {
         let primary = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
         let known = KnownHostsStore.shared.hosts
         guard let normalized = KnownHosts.normalizeAddress(primary),
-              case let .host(id) = known.standing(of: normalized) else { return [primary] }
+              case let .host(id) = known.standing(of: normalized) else { return ([primary], nil) }
         // Every fallback is for the same display as the one picked: the same
         // port for a direct address, the same /ws/<letter> path for a tunnel.
-        return [primary] + known.fallbackURLs(hostId: id, picked: primary)
+        return ([primary] + known.fallbackURLs(hostId: id, picked: primary), id)
     }
 
     /// The user's answer to a question the connection flow asked ("Connect"
@@ -233,7 +242,12 @@ final class StreamClient: ObservableObject {
             status = .failed(damage)
             return
         }
-        let urls = dialURLs(for: host)
+        if dialPlan.isEmpty {
+            let plan = makeDialPlan(for: host)
+            dialPlan = plan.urls
+            pickedHostId = plan.hostId
+        }
+        let urls = dialPlan
         if dialIndex >= urls.count { dialIndex = 0 }
         let urlString = urls[dialIndex]
         guard let url = URL(string: urlString) else {
@@ -268,6 +282,7 @@ final class StreamClient: ObservableObject {
                                           return DispatchQueue.main.sync { self.makeHelloMessage() }
                                       })
         config.fallbackDeviceName = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        config.expectedHostId = pickedHostId
         let flow = ClientAuthFlow(config: config, known: KnownHostsStore.shared.hosts, carry: flowCarry)
 
         socketDelegate.onOpen = { [weak self] task in self?.socketOpened(task) }
@@ -410,13 +425,17 @@ final class StreamClient: ObservableObject {
             default:
                 status = .failed(Self.describe(shown) ?? reason)
             }
-        case .failure:
-            if !opened, wantConnection, let host = connectHost {
-                // The socket never opened: try the Mac's next saved address
-                // at once; only after the last one does the back-off apply.
-                if dialIndex + 1 < dialURLs(for: host).count {
+        case .failure, .nextAddress:
+            // The socket never opened, or the address reached a different saved
+            // Mac than the one picked: try the Mac's next saved address at
+            // once; only after the last one does the back-off apply.
+            var wrongMac = false
+            if case .nextAddress = end { wrongMac = true }
+            if (!opened || wrongMac), wantConnection, connectHost != nil {
+                if dialIndex + 1 < dialPlan.count {
                     dialIndex += 1
-                    clogViewer("that address did not answer; trying the next saved one")
+                    clogViewer(wrongMac ? "that address reaches a different saved Mac; trying the next saved one"
+                                        : "that address did not answer; trying the next saved one")
                     teardownSocket()
                     openSocket()
                     return

@@ -34,6 +34,10 @@ enum FlowEnd: Equatable {
     case failure
     /// Close and connect again after this many seconds, carrying this.
     case reconnect(after: Double, carry: FlowCarry)
+    /// Close; this address reached a different saved Mac than the one picked.
+    /// The caller tries the picked Mac's next saved address at once, and uses
+    /// its own back-off after the last one.
+    case nextAddress
 }
 
 /// What the screen shows. Values only: no key, signature or message content.
@@ -87,6 +91,9 @@ struct ClientAuthConfig {
     var appVersion: String
     /// The WebSocket URL actually dialled.
     var dialledURL: String
+    /// The saved Mac the user picked, when the caller knows it. When it is nil
+    /// the saved Mac the dialled address belonged to is taken as the pick.
+    var expectedHostId: String?
     /// A whole HELLO message (framed). Called when HELLO is sent.
     var makeHello: () -> Data
     /// For tests: response extensions, a fixed ephemeral key and a fixed nonce.
@@ -292,7 +299,10 @@ struct ClientAuthFlow {
             return fail("the challenge is not valid")
         }
         let id = DeviceIdentity.id(ofPublicKey: challenge.hello.identityKey)
-        if case let .host(savedId) = standing, savedId != id {
+        // Rule 4, unless the key that answered is another saved Mac's: that one
+        // passes its own pin, and the result step below decides what to do
+        // (the address moves, and the attempt ends so the next address is tried).
+        if case let .host(savedId) = standing, savedId != id, known.host(id: id) == nil {
             let saved = DeviceIdentity.fingerprint(ofId: savedId)
             return finish(.stop, "identity changed", state: .changedIdentity(
                 address: address ?? "", savedFingerprint: saved,
@@ -332,6 +342,17 @@ struct ClientAuthFlow {
             }
         }
         let name = h.hostName
+        // A different saved Mac answered at an address that was another saved
+        // Mac's. It passes its own pin, so it is not a success for the one
+        // picked: the address has moved (the change above), and this attempt
+        // ends so the caller can try the picked Mac's next address.
+        var picked = config.expectedHostId
+        if picked == nil, case let .host(id) = standing { picked = id }
+        if hostKnown, let picked, picked != h.hostId, known.host(id: picked) != nil {
+            let now = known.host(id: h.hostId)?.name ?? name
+            let text = "This address now reaches \(now)"
+            return actions + finish(.nextAddress, "the address reached a different saved Mac", state: .failed(text))
+        }
         switch status {
         case .pending:
             phase = .pending
