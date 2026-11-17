@@ -210,6 +210,30 @@ internal sealed class ViewerClient : IDisposable
             foreach (var (type, payload) in delivered) Deliver(type, payload);
         }
 
+        // The outbox is unbounded and a send cannot be cancelled, so a host that stops
+        // reading would let input pile up. Past the cap the connection is closed with one
+        // log line (the receive loop then ends and the flow hears the socket closed);
+        // nothing is dropped silently.
+        private const int MaxOutboxMessages = 4096;
+        private int _outboxDepth;
+        private bool _outboxOverflowLogged;
+
+        private void Enqueue(byte[] bytes)
+        {
+            if (Interlocked.Increment(ref _outboxDepth) > MaxOutboxMessages)
+            {
+                Interlocked.Decrement(ref _outboxDepth);
+                if (!_outboxOverflowLogged)
+                {
+                    _outboxOverflowLogged = true;
+                    Log.Line($"send backlog passed {MaxOutboxMessages} messages (the host is not reading); closing the connection");
+                }
+                try { _ws.Abort(); } catch { }
+                return;
+            }
+            if (!_outbox.Writer.TryWrite(bytes)) Interlocked.Decrement(ref _outboxDepth);
+        }
+
         private (List<(byte, byte[])> Delivered, bool AnswerYes) Run(List<FlowAction> actions)
         {
             var delivered = new List<(byte, byte[])>();
@@ -219,7 +243,7 @@ internal sealed class ViewerClient : IDisposable
                 switch (a.Kind)
                 {
                     case FlowActionKind.Send:
-                        _outbox.Writer.TryWrite(a.Bytes);
+                        Enqueue(a.Bytes!);
                         break;
                     case FlowActionKind.StartTimer:
                         StartTimer(a.Timer, a.Seconds);
@@ -348,6 +372,7 @@ internal sealed class ViewerClient : IDisposable
                     // abstract WebSocket base) and a Memory<byte> overload of its own --
                     // an unqualified byte[] argument is ambiguous between the two.
                     await _ws.SendAsync(new ArraySegment<byte>(data), WebSocketMessageType.Binary, true, CancellationToken.None);
+                    Interlocked.Decrement(ref _outboxDepth);
                 }
             }
             catch (OperationCanceledException) { }
