@@ -79,7 +79,19 @@ internal sealed class MainWindow : Window
         catch (Exception e) { Dispatcher.Invoke(() => Title = $"Clamshell -- connect failed ({e.Message})"); }
     }
 
-    private void OnState(FlowState state)
+    /// <summary>What is on screen over the stream (null when none). For the self-test.</summary>
+    internal UIElement? ScreenForTest => _screen.Content as UIElement;
+
+    /// <summary>Stop on one of the screens. The viewer has no start screen to go
+    /// back to, so a stopped connection would leave an empty window: the app
+    /// closes instead, as the window's own close button does.</summary>
+    private void StopAndClose()
+    {
+        _client?.Stop();
+        Close();
+    }
+
+    internal void OnState(FlowState state)
     {
         Title = $"Clamshell -- {AuthScreens.Title(state)}";
         // While a session runs without proof of who answers, say so.
@@ -87,7 +99,7 @@ internal sealed class MainWindow : Window
             ? Visibility.Visible : Visibility.Collapsed;
         if (AuthScreens.IsScreen(state))
         {
-            _screen.Content = AuthScreens.Build(state, yes => _client?.Answer(yes), () => _client?.Stop());
+            _screen.Content = AuthScreens.Build(state, yes => _client?.Answer(yes), StopAndClose);
             _screen.Visibility = Visibility.Visible;
         }
         else

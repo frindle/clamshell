@@ -197,6 +197,20 @@ internal static class AuthScreens
         ((Button)cs.Children[0]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         Check(stops == 1000, "Close stops and does not answer");
 
+        // Stop on a final screen closes the window (the viewer has no start screen).
+        var window = new MainWindow();
+        bool windowClosed = false;
+        window.Closed += (_, _) => windowClosed = true;
+        window.OnState(states[5]); // denied
+        var wc = window.ScreenForTest as Border;
+        Check(wc != null, "the window shows the denied screen");
+        if (wc != null)
+        {
+            var ws = (StackPanel)((StackPanel)((ScrollViewer)wc.Child).Content).Children[^1];
+            ((Button)ws.Children[0]).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        }
+        Check(windowClosed, "Close on a final screen closes the window");
+
         var badge = BuildNotVerifiedBadge();
         badge.Measure(new Size(400, 100));
         Check(badge.DesiredSize.Width > 0, "Not verified label has a size");
