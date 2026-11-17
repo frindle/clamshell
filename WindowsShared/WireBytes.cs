@@ -13,6 +13,7 @@ public static class WireType
     public const byte Hello = 0x01;
     public const byte HelloAck = 0x02;
     public const byte ClientDisplays = 0x03;
+    public const byte Ping = 0x07;
     public const byte AuthChallenge = 0x08;
     public const byte AuthResponse = 0x09;
     public const byte AuthResult = 0x0A;

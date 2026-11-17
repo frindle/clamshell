@@ -18,6 +18,7 @@ public static class AuthTests
         t.Group("host refuses bad responses", () => HostRefuses(t));
         t.Group("client refuses bad challenges and results", () => ClientRefuses(t));
         t.Group("secure frames", () => SecureFrames(t));
+        FlowTests.Run(t);
     }
 
     private static byte[] H(JsonElement e, string name)
@@ -44,10 +45,10 @@ public static class AuthTests
 
         t.Equal(AuthWire.CleanName("  Studio  "), "Studio", "name: spaces at both ends go");
         t.Equal(AuthWire.CleanName("Stu\u0000di\u0007o"), "Studio", "name: control characters go");
-        t.Equal(AuthWire.CleanName("‮oiduTS"), "oiduTS", "name: a bidirectional override goes");
-        t.Equal(AuthWire.CleanName("Stu​dio"), "Studio", "name: a zero-width space goes");
-        t.Equal(AuthWire.CleanName("A B C"), "ABC", "name: line and paragraph separators go");
-        t.Equal(AuthWire.CleanName("AB"), "AB", "name: private-use characters go");
+        t.Equal(AuthWire.CleanName("\u202EoiduTS"), "oiduTS", "name: a bidirectional override goes");
+        t.Equal(AuthWire.CleanName("Stu\u200Bdio"), "Studio", "name: a zero-width space goes");
+        t.Equal(AuthWire.CleanName("A\u2028B\u2029C"), "ABC", "name: line and paragraph separators go");
+        t.Equal(AuthWire.CleanName("A\uE000B"), "AB", "name: private-use characters go");
         t.Equal(AuthWire.CleanName("   "), "", "name: only spaces leaves nothing");
         var twoByte = new string('é', 40);
         t.Equal(Encoding.UTF8.GetByteCount(AuthWire.CleanName(twoByte)), 64, "name: cut at 64 bytes (2-byte characters)");
