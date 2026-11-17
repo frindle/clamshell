@@ -112,3 +112,28 @@ final class DialPlanFlowTests: XCTestCase {
                        .showError(restartPlan: false, held: nil))
     }
 }
+
+// MARK: a picked address that opens and then drops
+
+extension DialPlanFlowTests {
+    func testPickedAddressThatOpensThenFailsShowsTheHeldAlarmNamingTheFirstAddress() throws {
+        let first = try stranger(at: home, falls: true)
+        let a = decide(first, at: home, picked: tunnel, isLast: false)
+        let dropped = Attempt(end: .failure, shown: .connecting, opened: true)
+        let b = decide(dropped, at: tunnel, picked: tunnel, isLast: true, held: a.held)
+        XCTAssertEqual(b, .showAlarm(try alarm(first, at: home)))
+    }
+
+    func testPickedAddressThatOpensThenFailsWithNoAlarmRestartsThePlan() {
+        let dropped = Attempt(end: .failure, shown: .connecting, opened: true)
+        XCTAssertEqual(decide(dropped, at: tunnel, picked: tunnel, isLast: true),
+                       .showError(restartPlan: true, held: nil))
+    }
+
+    func testPickedAddressThatReachedASessionKeepsItsPlace() {
+        let dropped = Attempt(end: .failure, shown: .waitingForApproval(
+            hostName: "Example Mac", hostFingerprint: "", deviceName: "Example iPad", deviceFingerprint: ""), opened: true)
+        XCTAssertEqual(decide(dropped, at: tunnel, picked: tunnel, isLast: true),
+                       .showError(restartPlan: false, held: nil))
+    }
+}

@@ -554,16 +554,22 @@ enum DialPlanFlow {
             if wrongMac, held == nil, let shown { held = DialAlarm(state: shown, address: address) }
         default: break
         }
+        var reachedSession = false
+        switch shown {
+        case .connected?, .waitingForApproval?, .busy?: reachedSession = true
+        default: break
+        }
         // An address this client chose that opened but never got as far as a
         // session (not connected, not waiting for approval) also moves on.
-        var failedEarly = false
-        if opened, !isPicked {
-            switch shown {
-            case .connected?, .waitingForApproval?, .busy?: break
-            default: failedEarly = true
-            }
+        let failedEarly = opened && !isPicked && !reachedSession
+        // The address the user picked opened and dropped before any session, on
+        // the last address of the plan: a held alarm from an earlier address
+        // must not be lost behind a plain error, and with none held the whole
+        // plan is tried again.
+        let pickedDropped = opened && isPicked && isLast && !reachedSession
+        guard !opened || wrongMac || failedEarly || pickedDropped else {
+            return .showError(restartPlan: false, held: held)
         }
-        guard !opened || wrongMac || failedEarly else { return .showError(restartPlan: false, held: held) }
         if !isLast { return .tryNext(held: held) }
         if let held { return .showAlarm(held) }
         return .showError(restartPlan: true, held: nil)
