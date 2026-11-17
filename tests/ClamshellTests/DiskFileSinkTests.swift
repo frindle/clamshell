@@ -204,6 +204,50 @@ final class DiskFileSinkTests: XCTestCase {
         t.discard(id: 1)
     }
 
+    func testLeftoverPartFilesAreRemovedBeforeTheFirstTransfer() throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let elsewhere = root.appendingPathComponent("elsewhere.txt")
+        try Data("keep me".utf8).write(to: elsewhere)
+        func put(_ name: String, in dir: URL? = nil) throws {
+            try Data("x".utf8).write(to: (dir ?? folder).appendingPathComponent(name))
+        }
+        try put(".clamshell-OLD1.part")
+        try put(".clamshell-OLD2.part")
+        try put(".clamshell-notapart.txt")          // wrong ending
+        try put("clamshell-visible.part")           // wrong start
+        try put("received.pdf")                     // a real received file
+        try fm.createSymbolicLink(at: folder.appendingPathComponent(".clamshell-LINK.part"), withDestinationURL: elsewhere)
+        try fm.createDirectory(at: folder.appendingPathComponent(".clamshell-DIR.part"), withIntermediateDirectories: false)
+        let sub = folder.appendingPathComponent("sub", isDirectory: true)
+        try fm.createDirectory(at: sub, withIntermediateDirectories: false)
+        try put(".clamshell-NESTED.part", in: sub)
+
+        let s = sink()
+        XCTAssertTrue(s.begin(id: 1, storedName: "live.bin", size: 3)) // sweeps first, then opens its own part
+        let afterBegin = names(in: folder)
+        XCTAssertFalse(afterBegin.contains(".clamshell-OLD1.part"))
+        XCTAssertFalse(afterBegin.contains(".clamshell-OLD2.part"))
+        for kept in [".clamshell-notapart.txt", "clamshell-visible.part", "received.pdf", ".clamshell-LINK.part", ".clamshell-DIR.part", "sub"] {
+            XCTAssertTrue(afterBegin.contains(kept), kept)
+        }
+        XCTAssertTrue(fm.fileExists(atPath: elsewhere.path), "a link is never followed")
+        XCTAssertTrue(fm.fileExists(atPath: sub.appendingPathComponent(".clamshell-NESTED.part").path), "only the folder itself is swept")
+
+        // A second sink on the same folder (another connection) must not delete the first one's open part.
+        let other = sink()
+        XCTAssertEqual(other.removeLeftovers(), 0)
+        let livePart = names(in: folder).filter { $0.hasPrefix(".clamshell-") && $0.hasSuffix(".part") && $0 != ".clamshell-LINK.part" && $0 != ".clamshell-DIR.part" }
+        XCTAssertEqual(livePart.count, 1, "the open transfer's own part is still there")
+        XCTAssertTrue(s.write(id: 1, bytes: Data([1, 2, 3])))
+        XCTAssertTrue(s.finish(id: 1))
+        XCTAssertTrue(names(in: folder).contains("live.bin"))
+
+        // After the transfer is over its temporary name is no longer protected, but nothing is left of it anyway.
+        try put(".clamshell-OLD3.part")
+        XCTAssertEqual(s.removeLeftovers(), 1)
+    }
+
     func testRealFreeSpaceCheckWorks() {
         let s = DiskFileSink(folder: folder)
         _ = s.hasRoom(forBytes: 0) // the folder does not exist yet: the check walks up to a folder that does
