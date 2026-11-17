@@ -45,6 +45,19 @@ internal static class EncoderProbe
             HardwareEverAvailable = false;
             Log.Line($"hardware encoder probe failed ({e.Message}) — assuming software-only");
         }
+
+        // Build an encoder through the same code a session uses, so a startup log line says
+        // whether sessions can encode at all. This only reports: it does not change
+        // HardwareEverAvailable, so the HELLO_ACK warning bit is decided as before.
+        try
+        {
+            using var enc = VideoEncoder.Create(1280, 720, StreamCodec.H264);
+            Log.Line($"encoder probe: a session encoder builds ({enc.Codec}, {enc.Status})");
+        }
+        catch (Exception e)
+        {
+            Log.Line($"encoder probe: a session encoder does NOT build ({e.GetType().Name}: {e.Message.Trim()})");
+        }
     }
 
     /// <summary>Count of hardware video-encoder MFTs (any subtype). A non-zero
