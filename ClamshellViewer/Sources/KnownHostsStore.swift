@@ -4,44 +4,57 @@ import Foundation
 // its external-display client and the iPhone surface all connect to the same
 // Macs). It holds public keys and addresses only, so UserDefaults is fine.
 // Main thread only.
+//
+// A saved copy that cannot be read is refused, never replaced (see
+// KnownHostsKeeper): `damage` is then set, connections stop with a plain
+// message, nothing is written, and "Reset saved Macs..." is the way out.
+
+private final class UserDefaultsBlobs: KnownHostsBlobStore {
+    func read(_ name: String) -> Data? { UserDefaults.standard.data(forKey: name) }
+    func write(_ data: Data, as name: String) { UserDefaults.standard.set(data, forKey: name) }
+    func remove(_ name: String) { UserDefaults.standard.removeObject(forKey: name) }
+}
 
 final class KnownHostsStore: ObservableObject {
     static let shared = KnownHostsStore()
 
-    private static let key = "clamshell.knownHosts.v1"
+    private let keeper = KnownHostsKeeper(blobs: UserDefaultsBlobs())
 
     @Published private(set) var hosts: KnownHosts
+    /// Non-nil when the saved Macs could not be read: what to tell the person.
+    @Published private(set) var damage: String?
 
     private init() {
-        let (loaded, damaged) = KnownHosts.decode(UserDefaults.standard.data(forKey: Self.key))
-        hosts = loaded
-        if damaged {
-            clogViewer("the saved Mac identities could not all be read; kept \(loaded.hosts.count)")
+        hosts = keeper.hosts
+        damage = keeper.damage
+        if damage != nil {
+            clogViewer("the saved Mac identities could not be read; refusing to connect and leaving them as they are")
         }
     }
 
     /// Applies one change with the app clock and saves.
     func apply(_ change: KnownHostsChange) {
-        var next = hosts
-        change.apply(to: &next, now: Date().timeIntervalSince1970)
-        guard next != hosts else { return }
-        hosts = next
-        save()
+        guard keeper.apply(change, now: Date().timeIntervalSince1970) else { return }
+        hosts = keeper.hosts
     }
 
     /// Records that an address was dialled, for the order addresses are tried in.
     func markDialled(address: String) {
-        var next = hosts
-        next.markDialled(address: address, now: Date().timeIntervalSince1970)
-        hosts = next
-        save()
+        keeper.markDialled(address: address, now: Date().timeIntervalSince1970)
+        hosts = keeper.hosts
     }
 
     func forget(hostId: String) {
         apply(.forget(hostId: hostId))
     }
 
-    private func save() {
-        UserDefaults.standard.set(hosts.encoded(), forKey: Self.key)
+    /// Puts a damaged saved copy aside (under `known-hosts.damaged-<UTC
+    /// timestamp>.json`, nothing is deleted) and starts with no saved Macs.
+    func resetDamaged() {
+        if let kept = keeper.reset(at: Date()) {
+            clogViewer("the damaged saved Macs were kept as \(kept); starting with none")
+        }
+        hosts = keeper.hosts
+        damage = keeper.damage
     }
 }

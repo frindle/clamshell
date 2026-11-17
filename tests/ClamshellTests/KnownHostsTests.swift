@@ -137,6 +137,84 @@ final class KnownHostsTests: XCTestCase {
         XCTAssertTrue(KnownHosts.decode(Data(#"{"version":1}"#.utf8)).damaged)
     }
 
+    // MARK: A damaged saved copy is refused, not replaced
+
+    private final class MemoryBlobs: KnownHostsBlobStore {
+        var blobs: [String: Data] = [:]
+        var writes: [String] = []
+        func read(_ name: String) -> Data? { blobs[name] }
+        func write(_ data: Data, as name: String) { blobs[name] = data; writes.append(name) }
+        func remove(_ name: String) { blobs[name] = nil }
+    }
+
+    func testAMissingSavedCopyIsAnEmptyListAndWritesNothing() {
+        let blobs = MemoryBlobs()
+        let keeper = KnownHostsKeeper(blobs: blobs)
+        XCTAssertNil(keeper.damage)
+        XCTAssertEqual(keeper.hosts, KnownHosts())
+        XCTAssertTrue(blobs.writes.isEmpty)
+        XCTAssertNil(keeper.reset(at: Date()), "nothing is damaged, so there is nothing to put aside")
+        // And it saves like any other.
+        XCTAssertTrue(keeper.apply(.recordVerified(key: key(), name: "Example Mac", address: "10.0.0.1"), now: 1))
+        XCTAssertNotNil(blobs.blobs[KnownHostsKeeper.blobName])
+    }
+
+    func testADamagedSavedCopyIsRefusedAndNeverWrittenOver() throws {
+        let blobs = MemoryBlobs()
+        let damaged = Data("{\"version\":1, \"hosts\": [".utf8)
+        blobs.blobs[KnownHostsKeeper.blobName] = damaged
+        let keeper = KnownHostsKeeper(blobs: blobs)
+        XCTAssertNotNil(keeper.damage)
+        XCTAssertEqual(keeper.hosts, KnownHosts(), "a damaged copy is not used")
+        // What a connection attempt would do: it reports changes and dialled addresses.
+        XCTAssertFalse(keeper.apply(.recordVerified(key: key(), name: "Example Mac", address: "10.0.0.1"), now: 1))
+        XCTAssertFalse(keeper.apply(.allowUnverified(address: "10.0.0.2"), now: 2))
+        keeper.markDialled(address: "10.0.0.1", now: 3)
+        XCTAssertEqual(blobs.blobs, [KnownHostsKeeper.blobName: damaged], "the damaged bytes are exactly as they were")
+        XCTAssertTrue(blobs.writes.isEmpty)
+    }
+
+    func testAnEntryThatCannotBeReadAlsoRefusesLikeTheWindowsFile() throws {
+        var k = KnownHosts()
+        k.recordVerified(key: key(), name: "A", address: "10.0.0.1", now: 1)
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(with: k.encoded()) as? [String: Any])
+        var hosts = try XCTUnwrap(obj["hosts"] as? [[String: Any]])
+        hosts.append(["name": "broken"])
+        obj["hosts"] = hosts
+        let blobs = MemoryBlobs()
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        blobs.blobs[KnownHostsKeeper.blobName] = data
+        let keeper = KnownHostsKeeper(blobs: blobs)
+        XCTAssertNotNil(keeper.damage)
+        XCTAssertEqual(blobs.blobs[KnownHostsKeeper.blobName], data)
+    }
+
+    func testResetKeepsTheDamagedCopyUnderANewNameAndStartsEmpty() throws {
+        let blobs = MemoryBlobs()
+        let damaged = Data("not json".utf8)
+        blobs.blobs[KnownHostsKeeper.blobName] = damaged
+        let keeper = KnownHostsKeeper(blobs: blobs)
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        let moment = try XCTUnwrap(utc.date(from: DateComponents(year: 2026, month: 11, day: 17,
+                                                                  hour: 10, minute: 15, second: 0)))
+        let kept = try XCTUnwrap(keeper.reset(at: moment))
+        XCTAssertEqual(kept, "known-hosts.damaged-20261117T101500Z.json")
+        XCTAssertEqual(blobs.blobs[kept], damaged, "the damaged bytes are kept, not deleted")
+        XCTAssertNil(blobs.blobs[KnownHostsKeeper.blobName])
+        XCTAssertNil(keeper.damage)
+        XCTAssertEqual(keeper.hosts, KnownHosts())
+        // Now a change saves, and the kept copy is still there.
+        XCTAssertTrue(keeper.apply(.recordVerified(key: key(), name: "Example Mac", address: "10.0.0.1"), now: 1))
+        XCTAssertEqual(blobs.blobs[kept], damaged)
+        XCTAssertFalse(KnownHosts.decode(blobs.blobs[KnownHostsKeeper.blobName]).damaged)
+        // A second damaged copy in the same second does not overwrite the first.
+        blobs.blobs[KnownHostsKeeper.blobName] = Data("also not json".utf8)
+        let again = KnownHostsKeeper(blobs: blobs)
+        XCTAssertEqual(again.reset(at: moment), "known-hosts.damaged-20261117T101500Z-2.json")
+        XCTAssertEqual(blobs.blobs[kept], damaged)
+    }
+
     func testADamagedEntryNeverThrowsAwayTheEntriesThatCanBeRead() throws {
         var k = KnownHosts()
         let a = key(), b = key()

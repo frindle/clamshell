@@ -279,6 +279,105 @@ struct KnownHosts: Equatable {
     }
 }
 
+/// Somewhere the encoded list is kept by name: a UserDefaults entry in the iOS
+/// app, a dictionary in tests.
+protocol KnownHostsBlobStore: AnyObject {
+    func read(_ name: String) -> Data?
+    func write(_ data: Data, as name: String)
+    func remove(_ name: String)
+}
+
+/// Keeps the list in a `KnownHostsBlobStore`, with the same rule as the Windows
+/// file (WindowsShared/KnownHostsFile.cs): nothing saved is an empty list, but a
+/// saved copy that cannot be read in full is never treated as empty and never
+/// written over. While `damage` is set no change is saved and a connection must
+/// be refused. The only way out is `reset`, which keeps the damaged copy under
+/// another name and starts empty. Main thread only.
+final class KnownHostsKeeper {
+    static let blobName = "clamshell.knownHosts.v1"
+    /// What a person is told when the saved copy is damaged.
+    static let damagedMessage = "The saved Macs on this device could not be read, so nothing was connected "
+        + "and nothing was changed. Choose \"Reset saved Macs\u{2026}\" to put the damaged copy aside and start "
+        + "again; every Mac will then have to be confirmed again."
+
+    private let blobs: KnownHostsBlobStore
+    /// The list in use. Empty (and not to be used) while `damage` is set.
+    private(set) var hosts = KnownHosts()
+    /// Non-nil when a saved copy exists and cannot be read in full.
+    private(set) var damage: String?
+
+    init(blobs: KnownHostsBlobStore) {
+        self.blobs = blobs
+        let (loaded, damaged) = KnownHosts.decode(blobs.read(Self.blobName))
+        if damaged {
+            damage = Self.damagedMessage
+        } else {
+            hosts = loaded
+        }
+    }
+
+    /// Applies one change and saves. False (and nothing saved) while damaged
+    /// or when the change alters nothing.
+    @discardableResult
+    func apply(_ change: KnownHostsChange, now: Double) -> Bool {
+        guard damage == nil else { return false }
+        var next = hosts
+        change.apply(to: &next, now: now)
+        guard next != hosts else { return false }
+        hosts = next
+        save()
+        return true
+    }
+
+    /// Records that an address was dialled. Nothing is saved while damaged.
+    func markDialled(address: String, now: Double) {
+        guard damage == nil else { return }
+        var next = hosts
+        next.markDialled(address: address, now: now)
+        hosts = next
+        save()
+    }
+
+    /// The deliberate way out of a damaged copy: keeps it, unchanged, under
+    /// `known-hosts.damaged-<UTC timestamp>.json`, then starts with an empty
+    /// list. Returns the name it was kept under; nil when nothing was damaged.
+    @discardableResult
+    func reset(at date: Date) -> String? {
+        guard damage != nil else { return nil }
+        var kept: String?
+        if let data = blobs.read(Self.blobName) {
+            let name = Self.damagedName(at: date) { blobs.read($0) != nil }
+            blobs.write(data, as: name)
+            blobs.remove(Self.blobName)
+            kept = name
+        }
+        hosts = KnownHosts()
+        damage = nil
+        return kept
+    }
+
+    /// `known-hosts.damaged-20261117T101500Z.json`, with `-2`, `-3`... before
+    /// the extension when that name is taken.
+    static func damagedName(at date: Date, isTaken: (String) -> Bool) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        let stamp = formatter.string(from: date)
+        var name = "known-hosts.damaged-\(stamp).json"
+        var n = 2
+        while isTaken(name) {
+            name = "known-hosts.damaged-\(stamp)-\(n).json"
+            n += 1
+        }
+        return name
+    }
+
+    private func save() {
+        blobs.write(hosts.encoded(), as: Self.blobName)
+    }
+}
+
 /// One change to the store. The connection flow reports these instead of a
 /// whole store, so two connections that run side by side cannot overwrite each
 /// other's changes: the caller applies each one to the one shared store.

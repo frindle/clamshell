@@ -234,6 +234,16 @@ final class StreamClient: ObservableObject {
     private func openSocket() {
         teardownSocket()
         guard let host = connectHost else { return }
+        // A saved Macs list that cannot be read stops the connection: it is
+        // never treated as empty (every Mac would be trusted on first use
+        // again) and never written over. "Reset saved Macs..." is the way out.
+        if let damage = KnownHostsStore.shared.damage {
+            clogViewer("connect FAILED: the saved Macs could not be read")
+            wantConnection = false
+            authState = .failed(damage)
+            status = .failed(damage)
+            return
+        }
         let urls = dialURLs(for: host)
         if dialIndex >= urls.count { dialIndex = 0 }
         let urlString = urls[dialIndex]

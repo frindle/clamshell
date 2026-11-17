@@ -718,6 +718,7 @@ struct ContentView: View {
 
                 // Both protocols' saved lists are always visible together —
                 // no more page-wide toggle gating one or the other.
+                SavedMacsDamagedView()
                 SavedMachinesView(store: store, onSelect: select, selectedHost: store.lastUsedHost)
 
                 if !nearby.hosts.isEmpty {
