@@ -69,7 +69,7 @@ internal static class EncoderSelfTest
         }
         catch (Exception e)
         {
-            Console.Error.WriteLine($"encoder-selftest [{label}]: could not build the encoder: {Describe(e)}");
+            Console.Error.WriteLine($"encoder-selftest [{label}]: could not build the encoder: {Describe(e)}{Environment.NewLine}{e.StackTrace}");
             return false;
         }
     }
