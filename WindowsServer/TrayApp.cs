@@ -11,6 +11,7 @@ internal sealed class TrayApp : ApplicationContext
     private ushort _basePort;
     private List<StreamServer> _servers = new();
     private bool _encoderProbed;
+    private HostAuth? _auth;
 
     private readonly NotifyIcon? _icon;
     private SettingsForm? _settingsForm;
@@ -75,7 +76,22 @@ internal sealed class TrayApp : ApplicationContext
             _encoderProbed = true;
         }
 
-        _servers = displays.Select(d => new StreamServer(d, _basePort)).ToList();
+        // The host key and the device list are opened once and shared by every display's
+        // listener. If either cannot be opened nothing is served: there is no way to say who
+        // may connect, and that is never answered with "anyone".
+        if (_auth is null)
+        {
+            try { _auth = new HostAuth(); }
+            catch (Exception e) when (e is DeviceKeyException or IOException or UnauthorizedAccessException)
+            {
+                Log.Line($"not serving: the host key or the device list could not be opened ({e.Message})");
+                return;
+            }
+        }
+        _auth.Directory.SetDisplays(displays.Select(d =>
+            new HostDirectory.DisplayEntry(d.Index, $"Display {d.Index + 1}", d.IsPrimary, d.Port(_basePort))));
+
+        _servers = displays.Select(d => new StreamServer(d, _basePort, _auth)).ToList();
         foreach (var s in _servers) s.Start();
         Log.Line("serving — use the tray icon to stop or exit");
     }
