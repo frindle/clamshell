@@ -115,6 +115,24 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(names(in: folder), [])
     }
 
+    func testNamesThatStillMisleadAreCleaned() {
+        // Line and paragraph separators and the Hangul filler are removed.
+        XCTAssertEqual(FileTransfer.storedName(for: "a\u{2028}b\u{2029}c\u{3164}.txt"), "abc.txt")
+        // Unicode blanks at both ends go, like spaces do; inside they stay.
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{00A0}\u{3000}report one.pdf\u{3000}\u{00A0}"), "report one.pdf")
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{3000}\u{00A0}"), "file")
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{00A0}.hidden"), "hidden")
+        // Look-alike dots and slashes become `_`, so no extension is faked and no path is hinted at.
+        XCTAssertEqual(FileTransfer.storedName(for: "photo\u{FF0E}jpg"), "photo_jpg")
+        XCTAssertEqual(FileTransfer.storedName(for: "a\u{2215}b\u{FF0F}c"), "a_b_c")
+        XCTAssertEqual(FileTransfer.storedName(for: "x\u{2024}y\u{FE52}z\u{FF3C}w"), "x_y_z_w")
+        // A name made only of such characters is not empty any more, and is still a plain child.
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{FF0E}\u{FF0E}"), "__")
+        // Trailing dots stay (the shared vectors say so); ordinary dots and a real slash are unchanged.
+        XCTAssertEqual(FileTransfer.storedName(for: "trailing.dot."), "trailing.dot.")
+        XCTAssertEqual(FileTransfer.storedName(for: "dir/scan.pdf"), "scan.pdf")
+    }
+
     func testHostileNamesStayInsideFolder() throws {
         let s = sink()
         receive(s, id: 1, name: "../../evil.txt", bytes: Data("x".utf8))
@@ -202,6 +220,67 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertTrue(t.begin(id: 1, storedName: "x", size: UInt64.max - 1000))
         XCTAssertFalse(t.hasRoom(forBytes: 2000))
         t.discard(id: 1)
+    }
+
+    /// An offer of `size` to a second sink on the same folder, answered the way the host would.
+    private func answer(of s: DiskFileSink, id: UInt32, size: UInt64) -> [FileTransferMessage] {
+        let r = FileReceiver(store: s)
+        let o = FileTransfer.offer(id: id, name: "n\(id).bin", size: size)
+        return r.receive(type: o.type, payload: o.payload, now: 0)
+    }
+
+    func testReserveCoversEverySinkOnTheSameFolder() {
+        // 5000 free, 1000 reserve: 4000 may be taken in total, over all sinks.
+        let s1 = sink(free: 5000)
+        let s2 = sink(free: 5000)
+        XCTAssertTrue(s1.begin(id: 1, storedName: "a.bin", size: 3000))
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 3000)
+        XCTAssertFalse(s2.hasRoom(forBytes: 3000))
+        XCTAssertEqual(answer(of: s2, id: 1, size: 3000), [FileTransfer.answer(id: 1, status: 2)])
+        XCTAssertFalse(s2.begin(id: 2, storedName: "b.bin", size: 3000))
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 3000)
+        // What fits next to the first transfer is still accepted by the other sink.
+        XCTAssertTrue(s2.begin(id: 3, storedName: "c.bin", size: 1000))
+        s2.discard(id: 3)
+        s1.discard(id: 1)
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+    }
+
+    func testOtherSinkIsAcceptedAfterTheFirstTransferIsCancelled() {
+        let s1 = sink(free: 5000)
+        let s2 = sink(free: 5000)
+        XCTAssertTrue(s1.begin(id: 1, storedName: "a.bin", size: 3000))
+        XCTAssertEqual(answer(of: s2, id: 1, size: 3000), [FileTransfer.answer(id: 1, status: 2)])
+        s1.discard(id: 1)
+        // A second end of the same transfer takes nothing away again.
+        s1.discard(id: 1)
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+        let r2 = FileReceiver(store: s2)
+        let o = FileTransfer.offer(id: 2, name: "b.bin", size: 3000)
+        XCTAssertEqual(r2.receive(type: o.type, payload: o.payload, now: 1), [FileTransfer.answer(id: 2, status: 0)])
+        r2.closeAll()
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+    }
+
+    func testOtherSinkIsAcceptedAfterTheFirstSinkIsReleased() {
+        let s2 = sink(free: 5000)
+        var s1: DiskFileSink? = sink(free: 5000)
+        XCTAssertTrue(s1!.begin(id: 1, storedName: "a.bin", size: 3000))
+        XCTAssertFalse(s2.hasRoom(forBytes: 3000))
+        // No cancel: the sink's deinit ends the transfer.
+        s1 = nil
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+        XCTAssertTrue(s2.begin(id: 2, storedName: "b.bin", size: 3000))
+        s2.discard(id: 2)
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+    }
+
+    func testFinishedTransferReleasesItsSize() {
+        let s1 = sink(free: 5000)
+        XCTAssertTrue(s1.begin(id: 1, storedName: "a.bin", size: 3))
+        XCTAssertTrue(s1.write(id: 1, bytes: Data([1, 2, 3])))
+        XCTAssertTrue(s1.finish(id: 1))
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
     }
 
     func testLeftoverPartFilesAreRemovedBeforeTheFirstTransfer() throws {

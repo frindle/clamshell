@@ -223,6 +223,35 @@ enum AuthGateSelfTest {
             }
         }
 
+        /// Reads for `seconds` while the device waits: only `pending` may
+        /// arrive (so no FILE_ANSWER). Returns true when the host closed the
+        /// connection instead, which is also fine.
+        func waitQuietly(for seconds: TimeInterval) throws -> Bool {
+            let end = Date().addingTimeInterval(seconds)
+            while true {
+                let left = end.timeIntervalSinceNow
+                guard left > 0, let event = next(within: left) else { return false }
+                if case .closed = event { return true }
+                guard case .message(.authResult, let payload) = event, try checkedStatus(payload) == .pending else {
+                    throw Failure("\(label): while it waited for approval the host sent \(Self.describe(event))")
+                }
+            }
+        }
+
+        /// The next encrypted message must be the FILE_ANSWER to `id`. An
+        /// answer to `neverAnswered` (an offer sent before approval) is a
+        /// failure. Returns the status.
+        func expectFileAnswer(id: UInt32, neverAnswered: UInt32) throws -> UInt8 {
+            guard let answer = FileTransfer.decodeStatus(try expectSecure(.fileAnswer)) else {
+                throw Failure("\(label): the FILE_ANSWER does not decode")
+            }
+            guard answer.id != neverAnswered else {
+                throw Failure("\(label): the offer sent before approval was answered after it")
+            }
+            guard answer.id == id else { throw Failure("\(label): the FILE_ANSWER names transfer \(answer.id), not \(id)") }
+            return answer.status
+        }
+
         func expectNothing(for seconds: TimeInterval, _ why: String) throws {
             if let event = next(within: seconds) {
                 throw Failure("\(label): \(why), but the host sent \(Self.describe(event))")
@@ -718,5 +747,36 @@ enum AuthGateSelfTest {
         try y1.expectClosed("a newer connection of the same device took its place")
         _ = y3
         print("PASS a connection that is turned away leaves the device's earlier waiting connection alone")
+
+        // 15. A device that set the file bit and is still waiting gets no
+        //     answer to a FILE_OFFER. After the host approves it, a second
+        //     offer (another transfer id) is answered, and the first one never
+        //     is. Both offers are for the largest size the protocol carries,
+        //     which no disk has room for, so the host answers "no room" (or
+        //     "off", when the menu switch is off) and writes nothing: the
+        //     receive folder is never created or touched.
+        store.forgetRecentAdds()
+        let z = Device(name: "Selftest Z")
+        let firstId: UInt32 = 71, secondId: UInt32 = 72
+        let size = FileTransfer.maxSize
+        var z1 = try bench.knock(port1, z, "Z, waiting", capabilities: .fileTransfer)
+        let first = FileTransfer.offer(id: firstId, name: "selftest-first.bin", size: size)
+        z1.send(StreamMessage.frame(type: .fileOffer, payload: first.payload))
+        let closedWhileWaiting = try z1.waitQuietly(for: 3.0)
+        try expect(store.state(of: z.id) == .waiting, "the device is still only waiting after its offer")
+        try expect(store.decide(id: z.id, .approve, by: onHost, onlyIfWaiting: false) != nil,
+                   "the host can approve the device that offered a file")
+        if closedWhileWaiting {
+            z1 = try bench.enter(port1, z, "Z, back after approval", capabilities: .fileTransfer, display: 1)
+        } else {
+            try z1.expectStatus(.accepted, skippingPending: true)
+            try z1.beginSession(display: 1)
+        }
+        let second = FileTransfer.offer(id: secondId, name: "selftest-second.bin", size: size)
+        try z1.sendSecure(.fileOffer, second.payload)
+        let status = try z1.expectFileAnswer(id: secondId, neverAnswered: firstId)
+        try expect(status != FileTransfer.Answer.accept, "the host did not accept an offer larger than any disk (status \(status))")
+        try z1.expectPing()
+        print("PASS a waiting device's file offer is not answered; after approval an offer is answered (the first, sent while waiting, never was; the host closed the waiting connection: \(closedWhileWaiting))")
     }
 }

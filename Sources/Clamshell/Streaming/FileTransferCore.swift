@@ -162,12 +162,24 @@ enum FileTransfer {
 
     // MARK: names
 
+    /// Characters that look like `.`, `/` or `\` but are none of them: the
+    /// full-width and small full stops, the one dot leader, the division,
+    /// fraction, full-width and big solidus, the box diagonal, and the set
+    /// minus and full-width reverse solidus.
+    private static let lookAlikeSeparators: Set<UInt32> = [
+        0xFF0E, 0xFE52, 0x2024, 0x2215, 0x2044, 0xFF0F, 0x29F8, 0x2571, 0x2216, 0xFF3C, 0xFE68, 0x29F5,
+    ]
+
     /// The name a receiver stores for an offered name: what follows the last
     /// `/` or `\`, without control characters, `:` or Unicode format characters
     /// (category Cf: the bidirectional overrides and isolates U+202A..202E and
     /// U+2066..2069, the zero-width and direction marks U+200B..200F, U+FEFF and
-    /// the like, which can make a name read as another one), without dots and
-    /// spaces at the start or spaces at the end; `file` when nothing is left.
+    /// the like, which can make a name read as another one), without the line
+    /// and paragraph separators U+2028 and U+2029 and the blank filler U+3164,
+    /// with look-alike dots and slashes (U+FF0E, U+2215 and the like) replaced
+    /// by `_`, without dots and blanks (Unicode spaces such as U+00A0 and
+    /// U+3000 included) at the start or blanks at the end; `file` when nothing
+    /// is left. Trailing dots are kept, as the shared test vectors say.
     static func storedName(for offered: String) -> String {
         var scalars = Array(offered.unicodeScalars)
         if let cut = scalars.lastIndex(where: { $0 == "/" || $0 == "\\" }) {
@@ -175,12 +187,16 @@ enum FileTransfer {
         }
         scalars.removeAll { u in
             switch u.value {
-            case 0x00...0x1F, 0x7F...0x9F, 0x3A: return true
+            case 0x00...0x1F, 0x7F...0x9F, 0x3A, 0x2028, 0x2029, 0x3164: return true
             default: return u.properties.generalCategory == .format
             }
         }
-        while let first = scalars.first, first == "." || first == " " { scalars.removeFirst() }
-        while let last = scalars.last, last == " " { scalars.removeLast() }
+        scalars = scalars.map { lookAlikeSeparators.contains($0.value) ? "_" : $0 }
+        func isBlank(_ u: Unicode.Scalar) -> Bool {
+            u == " " || u.properties.isWhitespace || u.properties.generalCategory == .spaceSeparator
+        }
+        while let first = scalars.first, first == "." || isBlank(first) { scalars.removeFirst() }
+        while let last = scalars.last, isBlank(last) { scalars.removeLast() }
         if scalars.isEmpty { return "file" }
         var s = String.UnicodeScalarView()
         s.append(contentsOf: scalars)
