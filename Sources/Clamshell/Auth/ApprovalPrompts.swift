@@ -34,6 +34,12 @@ struct ApprovalPrompts {
     /// deciding, the first time. Doubles each time it is closed again.
     static let firstQuiet: TimeInterval = 20
     static let longestQuiet: TimeInterval = 15 * 60
+    /// n starts over after this long without a question the window raised.
+    static let resetAfter: TimeInterval = 3600
+    /// Three questions in a row that ended in Deny or closing within this long
+    /// keep the window away for `lockout`.
+    static let lockoutWithin: TimeInterval = 10 * 60
+    static let lockout: TimeInterval = 12 * 3600
     /// Decisions made elsewhere that may wait their turn on screen.
     static let maxQueuedNotices = 16
 
@@ -56,7 +62,16 @@ struct ApprovalPrompts {
     private(set) var setAside: Set<String> = []
     /// Seconds since 1970. The window does not open by itself before this.
     private(set) var quietUntil: TimeInterval = 0
+    /// How long the quiet time that ends at `quietUntil` was meant to be.
+    private var quietSpan: TimeInterval = 0
+    /// n: how many questions the window raised by itself ended since the last
+    /// hour with none.
     private var timesClosed = 0
+    private var lastEnded: TimeInterval?
+    /// When the last questions in a row ended in Deny or closing.
+    private var badEnds: [TimeInterval] = []
+    /// The device the user picked in the menu, while its question is up.
+    private var pickedAsking: String?
 
     /// This app is about to put `id` into `state` itself.
     mutating func expect(_ id: String, _ state: DeviceState) {
@@ -132,10 +147,13 @@ struct ApprovalPrompts {
             // The notice this interrupts comes back afterwards.
             if noticeVisible, let interrupted = onScreen { queue.insert(interrupted, at: 0) }
             onScreen = nil
+            // Already asking about it: the window raised it, the user did not.
+            if asking != device.id { pickedAsking = device.id }
             return .ask(device)
         }
         if let asking, let device = waiting.first(where: { $0.id == asking }) { return .ask(device) }
         if noticeVisible { return .keep }
+        pickedAsking = nil
         onScreen = nil
         while !queue.isEmpty {
             let notice = queue.removeFirst()
@@ -158,27 +176,57 @@ struct ApprovalPrompts {
     }
 
     /// True while the window should not open by itself. A clock that was set
-    /// back cannot stretch this beyond the longest quiet time.
+    /// back cannot stretch this beyond the longest quiet time, or beyond the
+    /// length of the quiet time that was set if that was longer.
     func isQuiet(now: TimeInterval) -> Bool {
-        now < quietUntil && quietUntil - now <= Self.longestQuiet
+        now < quietUntil && quietUntil - now <= max(Self.longestQuiet, quietSpan)
     }
 
-    /// The user closed the window without deciding: stop asking about every
-    /// device that is waiting now, and stay away for a while even if a new
-    /// device asks. Otherwise anything that can reach the host could bring
-    /// the window back as fast as it can invent devices, until it gets a yes.
+    /// How a question ended.
+    enum Outcome: Equatable { case approved, denied, closed }
+
+    /// The user closed the window without deciding: see `questionEnded`.
     mutating func setAsideAll(in records: [DeviceRecord], now: TimeInterval) {
-        for r in records where r.state == .waiting { setAside.insert(r.id) }
-        let quiet = min(Self.longestQuiet, Self.firstQuiet * pow(2, Double(min(timesClosed, 12))))
-        timesClosed += 1
-        quietUntil = now + quiet
+        questionEnded(nil, .closed, in: records, now: now)
     }
 
-    /// The user answered in the window or picked a device in the menu, so
-    /// they are looking at it: no reason to stay away.
-    mutating func userIsAnswering() {
-        timesClosed = 0
-        quietUntil = 0
+    /// A question ended. Whatever the outcome, a question the window raised
+    /// by itself makes it stay away for `min(15 min, 20 s * 2^n)` and n goes
+    /// up, so anything that can reach the host cannot bring the window back as
+    /// fast as it can invent devices, until it gets a yes. Answering never
+    /// ends the quiet time early. After an hour with no such question n starts
+    /// over. Three in a row that end in Deny or closing, the third within ten
+    /// minutes of the first, keep the window away for 12 hours.
+    ///
+    /// Closing also sets every waiting device aside; approving or denying
+    /// sets nothing aside. A question about a device the user picked in the
+    /// menu (`id` is that device) changes neither n nor the quiet time.
+    mutating func questionEnded(_ id: String?, _ outcome: Outcome, in records: [DeviceRecord],
+                                now: TimeInterval) {
+        if outcome == .closed {
+            for r in records where r.state == .waiting { setAside.insert(r.id) }
+        }
+        if let id, pickedAsking == id {
+            pickedAsking = nil
+            return
+        }
+        pickedAsking = nil
+        if let lastEnded, now - lastEnded >= Self.resetAfter { timesClosed = 0 }
+        lastEnded = now
+        var quiet = min(Self.longestQuiet, Self.firstQuiet * pow(2, Double(min(timesClosed, 12))))
+        timesClosed += 1
+        if outcome == .approved {
+            badEnds = []
+        } else {
+            badEnds.append(now)
+            if badEnds.count > 3 { badEnds.removeFirst(badEnds.count - 3) }
+            if badEnds.count == 3, now - badEnds[0] <= Self.lockoutWithin {
+                quiet = Self.lockout
+                badEnds = []
+            }
+        }
+        quietUntil = now + quiet
+        quietSpan = quiet
     }
 
     /// The user picked this device in the menu.

@@ -612,6 +612,18 @@ A trusted device can already type and click on the host, so letting it approve
 another device gives it nothing it could not do through the host's own
 approval window.
 
+The host's approval window does not come back as fast as devices can ask. When
+a question it raised by itself ends (approved, denied or closed), it stays away
+for the shorter of 15 minutes and 20 s times 2 to the power n, and n goes up by
+one; n starts over after an hour in which the window raised no question. Closing
+also sets every waiting device aside; approving or denying does not, and the
+others come up when the quiet time is over. Three such questions in a row that
+end in Deny or closing, the third within 10 minutes of the first, keep the
+window away for 12 hours. A device the user picks in the host's menu is shown
+at once, and its answer changes neither n nor the quiet time. While the window
+stays away, waiting devices stay in the Devices menu and the menu-bar icon shows
+that devices are waiting.
+
 ### Browser client
 
 The browser client reaches the stream through the web server's WebSocket

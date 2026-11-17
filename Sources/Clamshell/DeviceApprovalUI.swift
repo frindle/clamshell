@@ -27,8 +27,8 @@ final class DeviceApprovalPanelController: NSWindowController {
     var onRevoke: ((DeviceRecord) -> Void)?
     /// The notice was acknowledged or its time ran out.
     var onNoticeDone: (() -> Void)?
-    /// The user closed the window without deciding.
-    var onSetAside: (() -> Void)?
+    /// The user closed the window without deciding, on this device's question.
+    var onSetAside: ((String) -> Void)?
 
     private enum Content {
         case nothing
@@ -306,12 +306,12 @@ extension DeviceApprovalPanelController: NSWindowDelegate {
         noticeTimer?.invalidate()
         noticeTimer = nil
         guard !closingItself else { return }
-        let wasAsking: Bool
-        if case .asking = content { wasAsking = true } else { wasAsking = false }
+        let askedId: String?
+        if case .asking(let d) = content { askedId = d.id } else { askedId = nil }
         let wasNotice: Bool
         if case .notice = content { wasNotice = true } else { wasNotice = false }
         content = .nothing
-        if wasAsking { onSetAside?() }
+        if let askedId { onSetAside?(askedId) }
         if wasNotice { onNoticeDone?() }
     }
 }
