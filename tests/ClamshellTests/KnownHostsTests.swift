@@ -327,6 +327,67 @@ final class KnownHostsTests: XCTestCase {
         XCTAssertEqual(back.standing(of: "10.0.0.8"), .unknownAllowed)
     }
 
+    // MARK: Home-network addresses first
+
+    func testWhichAddressesAreOnAHomeNetwork() {
+        for text in ["10.0.0.5", "172.16.0.1", "172.31.255.1", "192.168.1.1", "169.254.3.4", "[fd00::5]:5903",
+                     "[fc00::1]:5903", "[fe80::1]:5903", "[febf::1]:5903", "ws://[fd00::5]:5903", "mac.local",
+                     "ws://Mac.Local:5905"] {
+            XCTAssertTrue(KnownHosts.isPrivateAddress(text), text)
+        }
+        for text in ["172.15.0.1", "172.32.0.1", "192.169.0.1", "100.64.0.1", "11.0.0.1", "192.0.2.1", "198.51.100.7",
+                     "[2001:db8::1]:5903", "[fec0::1]:5903", "mac.example.com", "wss://mac.example.com/ws/a", "local",
+                     "mac.local.example.com", "", "not an address"] {
+            XCTAssertFalse(KnownHosts.isPrivateAddress(text), text)
+        }
+    }
+
+    func testVerifiedHomeAddressesAreDialledFirstNewestSuccessFirst() {
+        var k = KnownHosts()
+        let a = key()
+        k.recordVerified(key: a, name: "Example Mac", address: "192.0.2.10", now: 1)
+        k.recordVerified(key: a, name: "Example Mac", address: "10.0.0.5", now: 2)
+        k.recordVerified(key: a, name: "Example Mac", address: "192.0.2.10", now: 30)   // the newest success, but not at home
+        XCTAssertEqual(k.dialOrder(hostId: id(a)), ["10.0.0.5:5903", "192.0.2.10:5903"])
+        k.addHints(["ws://10.0.0.9:5903"], toHostId: id(a), now: 31)
+        XCTAssertEqual(k.dialOrder(hostId: id(a)), ["10.0.0.5:5903", "192.0.2.10:5903", "10.0.0.9:5903"],
+                       "a hint at a home address has not been verified, so it waits with the rest")
+        k.recordVerified(key: a, name: "Example Mac", address: "[fd00::7]:5903", now: 5)
+        XCTAssertEqual(k.dialOrder(hostId: id(a)).prefix(3), ["[fd00::7]:5903", "10.0.0.5:5903", "192.0.2.10:5903"],
+                       "among home addresses the newest success is first")
+    }
+
+    func testAVerifiedHomeAddressGoesBeforeAPickedTunnel() {
+        var k = KnownHosts()
+        let a = key()
+        k.recordVerified(key: a, name: "Example Mac", address: "wss://mac.example.com/ws/a", now: 1)
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://10.0.0.5:5903", now: 2)
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://10.0.0.6:5904", now: 3)
+        XCTAssertEqual(k.dialURLs(hostId: id(a), picked: "wss://mac.example.com/ws/a"),
+                       ["ws://10.0.0.5:5903", "wss://mac.example.com/ws/a"], "display A: the home address for A")
+        XCTAssertEqual(k.dialURLs(hostId: id(a), picked: "wss://mac.example.com/ws/b"),
+                       ["ws://10.0.0.6:5904", "wss://mac.example.com/ws/b"], "display B: the home address for B")
+        // A hint has not been verified: it stays behind the picked address.
+        k.addHints(["ws://10.0.0.8:5903"], toHostId: id(a), now: 4)
+        XCTAssertEqual(k.dialURLs(hostId: id(a), picked: "wss://mac.example.com/ws/a"),
+                       ["ws://10.0.0.5:5903", "wss://mac.example.com/ws/a", "ws://10.0.0.8:5903"])
+        // A picked public direct address is not first either.
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://192.0.2.10:5903", now: 5)
+        XCTAssertEqual(k.dialURLs(hostId: id(a), picked: "ws://192.0.2.10:5903").first, "ws://10.0.0.5:5903")
+    }
+
+    func testAPickedHomeAddressStaysFirst() {
+        var k = KnownHosts()
+        let a = key()
+        k.recordVerified(key: a, name: "Example Mac", address: "wss://mac.example.com/ws/a", now: 1)
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://10.0.0.5:5903", now: 2)
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://[fd00::7]:5903", now: 3)
+        let urls = k.dialURLs(hostId: id(a), picked: "ws://10.0.0.5:5903")
+        XCTAssertEqual(urls.first, "ws://10.0.0.5:5903")
+        XCTAssertEqual(Set(urls), ["ws://10.0.0.5:5903", "ws://[fd00::7]:5903", "wss://mac.example.com/ws/a"])
+        XCTAssertEqual(urls.last, "wss://mac.example.com/ws/a", "the tunnel comes after the home addresses")
+    }
+
     func testChangesApplyOneByOne() {
         var k = KnownHosts()
         let a = key()

@@ -305,15 +305,63 @@ public sealed class KnownHosts
         return h.Addresses.Any(k => k.Address == a && k.Verified);
     }
 
-    /// <summary>The addresses to try for a host: the last successful first,
-    /// then the verified ones by recency, then the hints by recency.</summary>
+    /// <summary>True for an address on a home network: IPv4 10/8, 172.16/12,
+    /// 192.168/16 and 169.254/16; IPv6 fc00::/7 and fe80::/10; a name ending
+    /// in .local. Nothing else (100.64/10 included). Takes an address or a
+    /// URL; false when the text is not an address.</summary>
+    public static bool IsPrivateAddress(string text)
+    {
+        var a = NormalizeAddress(text);
+        if (a is null) return false;
+        var host = a.Substring(0, a.LastIndexOf(':'));
+        if (host.StartsWith('[')) host = host.Substring(1, host.Length - 2);
+        if (host.Contains(':'))
+        {
+            if (!System.Net.IPAddress.TryParse(host, out var v6) ||
+                v6.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6) return false;
+            if (v6.IsIPv4MappedToIPv6) return IsPrivateIPv4(v6.MapToIPv4().GetAddressBytes());
+            var b = v6.GetAddressBytes();
+            return (b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80);
+        }
+        var parts = host.Split('.');
+        if (parts.Length == 4 && parts.All(p => p.Length is >= 1 and <= 3 && p.All(char.IsAsciiDigit)) &&
+            parts.All(p => int.Parse(p, System.Globalization.CultureInfo.InvariantCulture) <= 255))
+        {
+            return IsPrivateIPv4(parts.Select(p => (byte)int.Parse(p, System.Globalization.CultureInfo.InvariantCulture)).ToArray());
+        }
+        return host.EndsWith(".local", StringComparison.Ordinal);
+    }
+
+    private static bool IsPrivateIPv4(byte[] b) =>
+        b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168) ||
+        (b[0] == 169 && b[1] == 254);
+
+    /// <summary>The URLs to dial for a host the user picked an address of: the
+    /// picked one first, then its fallbacks. When the picked address is not on
+    /// a home network, the verified home-network fallbacks for the same
+    /// display go before it.</summary>
+    public List<string> DialUrls(string hostId, string picked)
+    {
+        var others = FallbackUrls(hostId, picked);
+        if (IsPrivateAddress(picked)) { others.Insert(0, picked); return others; }
+        var home = others.Where(u => IsPrivateAddress(u) && IsVerified(u, hostId)).ToList();
+        var result = new List<string>(home) { picked };
+        result.AddRange(others.Where(u => !home.Contains(u)));
+        return result;
+    }
+
+    /// <summary>The addresses to try for a host: verified home-network
+    /// addresses first, the last successful first among them; then the last
+    /// successful, then the verified ones by recency, then the hints by
+    /// recency.</summary>
     public List<string> DialOrder(string hostId)
     {
         var h = Host(hostId);
         if (h is null) return new List<string>();
         return h.Addresses
             .Select((a, i) => (a, i))
-            .OrderByDescending(x => x.a.LastSuccess ?? double.NegativeInfinity)
+            .OrderByDescending(x => x.a.Verified && IsPrivateAddress(x.a.Address))
+            .ThenByDescending(x => x.a.LastSuccess ?? double.NegativeInfinity)
             .ThenByDescending(x => x.a.Verified)
             .ThenByDescending(x => x.a.LastUsed)
             .ThenBy(x => x.i)

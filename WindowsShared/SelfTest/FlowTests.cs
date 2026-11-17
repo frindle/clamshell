@@ -14,6 +14,7 @@ public static class FlowTests
     {
         t.Group("known hosts store", () => StoreTests(t));
         t.Group("known hosts: fallback addresses", () => FallbackTests(t));
+        t.Group("home-network addresses first", () => HomeFirstTests(t));
         t.Group("known hosts file", () => FileTests(t));
         t.Group("known hosts file lock", () => CrossProcessLockTests(t));
         t.Group("flow: opening and challenge", () => OpeningTests(t));
@@ -243,6 +244,47 @@ public static class FlowTests
         t.Check(KnownHosts.DisplayPath("ws://192.0.2.10:5903/ws/a") is null, "only a tunnel keeps a path");
         t.Equal(KnownHosts.DisplayIndex("ws://192.0.2.10:5905"), (int?)2, "port 5905 is display C");
         t.Check(KnownHosts.DisplayIndex("ws://192.0.2.10:8443") is null, "a custom port names no display");
+    }
+
+    // MARK: Home-network addresses first
+
+    private static void HomeFirstTests(TestRun t)
+    {
+        foreach (var text in new[] { "10.0.0.5", "172.16.0.1", "172.31.255.1", "192.168.1.1", "169.254.3.4", "[fd00::5]:5903",
+                                     "[fc00::1]:5903", "[fe80::1]:5903", "[febf::1]:5903", "ws://[fd00::5]:5903", "mac.local",
+                                     "ws://Mac.Local:5905" })
+            t.Check(KnownHosts.IsPrivateAddress(text), "home network: " + text);
+        foreach (var text in new[] { "172.15.0.1", "172.32.0.1", "192.169.0.1", "100.64.0.1", "11.0.0.1", "192.0.2.1", "198.51.100.7",
+                                     "[2001:db8::1]:5903", "[fec0::1]:5903", "mac.example.com", "wss://mac.example.com/ws/a", "local",
+                                     "mac.local.example.com", "", "not an address" })
+            t.Check(!KnownHosts.IsPrivateAddress(text), "not a home network: " + text);
+
+        using var key = TestKey.Random();
+        var id = DeviceIdentity.Id(key.Public);
+        string Order(IEnumerable<string> urls) => string.Join(" ", urls);
+
+        var k = new KnownHosts();
+        k.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 1);
+        k.RecordVerified(key.Public, "Example Mac", "10.0.0.5", 2);
+        k.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 30);
+        t.Equal(Order(k.DialOrder(id)), "10.0.0.5:5903 192.0.2.10:5903", "a verified home address is dialled first, even if another succeeded later");
+        k.AddHints(new[] { "ws://10.0.0.9:5903" }, id, 31);
+        t.Equal(Order(k.DialOrder(id)), "10.0.0.5:5903 192.0.2.10:5903 10.0.0.9:5903", "a hint at a home address waits with the rest");
+        k.RecordVerified(key.Public, "Example Mac", "[fd00::7]:5903", 5);
+        t.Equal(Order(k.DialOrder(id).Take(3)), "[fd00::7]:5903 10.0.0.5:5903 192.0.2.10:5903", "among home addresses the newest success is first");
+
+        var t2 = new KnownHosts();
+        t2.RecordVerified(key.Public, "Example Mac", "wss://mac.example.com/ws/a", 1);
+        t2.RecordVerified(key.Public, "Example Mac", "ws://10.0.0.5:5903", 2);
+        t2.RecordVerified(key.Public, "Example Mac", "ws://10.0.0.6:5904", 3);
+        t.Equal(Order(t2.DialUrls(id, "wss://mac.example.com/ws/a")), "ws://10.0.0.5:5903 wss://mac.example.com/ws/a",
+            "display A: the home address for A goes before a picked tunnel");
+        t.Equal(Order(t2.DialUrls(id, "wss://mac.example.com/ws/b")), "ws://10.0.0.6:5904 wss://mac.example.com/ws/b",
+            "display B: the home address for B goes before a picked tunnel");
+        t2.AddHints(new[] { "ws://10.0.0.8:5903" }, id, 4);
+        t.Equal(Order(t2.DialUrls(id, "wss://mac.example.com/ws/a")), "ws://10.0.0.5:5903 wss://mac.example.com/ws/a ws://10.0.0.8:5903",
+            "an unverified home address stays behind the picked one");
+        t.Equal(Order(t2.DialUrls(id, "ws://10.0.0.5:5903")).Split(' ')[0], "ws://10.0.0.5:5903", "a picked home address stays first");
     }
 
     // MARK: File

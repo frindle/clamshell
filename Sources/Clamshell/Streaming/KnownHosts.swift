@@ -176,12 +176,55 @@ struct KnownHosts: Equatable {
         return h.addresses.contains { $0.address == a && $0.verified }
     }
 
-    /// The addresses to try for a host: the last successful first, then the
-    /// verified ones by recency, then the hints by recency.
+    /// True for an address on a home network: IPv4 10/8, 172.16/12,
+    /// 192.168/16 and 169.254/16; IPv6 fc00::/7 and fe80::/10; a name ending
+    /// in `.local`. Nothing else (100.64/10 included). Takes an address or a
+    /// URL; false when the text is not an address.
+    static func isPrivateAddress(_ text: String) -> Bool {
+        guard let a = normalizeAddress(text), let colon = a.lastIndex(of: ":") else { return false }
+        var host = String(a[..<colon])
+        if host.hasPrefix("[") { host = String(host.dropFirst().dropLast()) }
+        if host.contains(":") {
+            var raw = in6_addr()
+            guard inet_pton(AF_INET6, host, &raw) == 1 else { return false }
+            let b = withUnsafeBytes(of: &raw) { Array($0) }
+            if b[0 ..< 10].allSatisfy({ $0 == 0 }), b[10] == 0xff, b[11] == 0xff {
+                return isPrivateIPv4(Array(b[12 ..< 16]))
+            }
+            return b[0] & 0xfe == 0xfc || (b[0] == 0xfe && b[1] & 0xc0 == 0x80)
+        }
+        var raw = in_addr()
+        if inet_pton(AF_INET, host, &raw) == 1 {
+            return isPrivateIPv4(withUnsafeBytes(of: &raw) { Array($0) })
+        }
+        return host.hasSuffix(".local")
+    }
+
+    private static func isPrivateIPv4(_ b: [UInt8]) -> Bool {
+        b[0] == 10 || (b[0] == 172 && (16 ... 31).contains(b[1])) || (b[0] == 192 && b[1] == 168)
+            || (b[0] == 169 && b[1] == 254)
+    }
+
+    /// The URLs to dial for a host the user picked an address of: the picked
+    /// one first, then its fallbacks. When the picked address is not on a home
+    /// network, the verified home-network fallbacks for the same display go
+    /// before it: video is faster at home, and away from home they fail fast.
+    func dialURLs(hostId id: String, picked: String) -> [String] {
+        let others = fallbackURLs(hostId: id, picked: picked)
+        guard !Self.isPrivateAddress(picked) else { return [picked] + others }
+        let home = others.filter { Self.isPrivateAddress($0) && isVerified(address: $0, forHost: id) }
+        return home + [picked] + others.filter { !home.contains($0) }
+    }
+
+    /// The addresses to try for a host: verified home-network addresses
+    /// first, the last successful first among them; then the last successful,
+    /// then the verified ones by recency, then the hints by recency.
     func dialOrder(hostId id: String) -> [String] {
         guard let h = host(id: id) else { return [] }
+        func home(_ a: KnownAddress) -> Bool { a.verified && Self.isPrivateAddress(a.address) }
         return h.addresses.enumerated().sorted { l, r in
             let a = l.element, b = r.element
+            if home(a) != home(b) { return home(a) }
             if (a.lastSuccess ?? -.infinity) != (b.lastSuccess ?? -.infinity) {
                 return (a.lastSuccess ?? -.infinity) > (b.lastSuccess ?? -.infinity)
             }

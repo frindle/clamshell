@@ -150,8 +150,13 @@ final class StreamClient: ObservableObject {
     private let openTimeoutInterval: TimeInterval = 10
     /// The same wait when the Mac has other saved addresses to try next.
     private let alternateOpenTimeoutInterval: TimeInterval = 4
+    /// The same wait for an address on a home network when there are others to
+    /// try next: away from home it costs little to find that out.
+    private let privateOpenTimeoutInterval: TimeInterval = 2
     /// Which of the saved Mac's addresses the next attempt dials (0 is the
-    /// address the user picked). Moves on only when a socket never opened.
+    /// first one in the plan: a verified home-network address when there is
+    /// one, otherwise the address the user picked). Moves on only when a
+    /// socket never opened.
     private var dialIndex = 0
     /// The addresses to dial for the current `connect`, and the saved Mac the
     /// user picked (nil when the address is not a saved Mac's).
@@ -186,7 +191,9 @@ final class StreamClient: ObservableObject {
               case let .host(id) = known.standing(of: normalized) else { return ([primary], nil) }
         // Every fallback is for the same display as the one picked: the same
         // port for a direct address, the same /ws/<letter> path for a tunnel.
-        return ([primary] + known.fallbackURLs(hostId: id, picked: primary), id)
+        // A verified home-network address for that display goes before a
+        // picked address that is not one (see `KnownHosts.dialURLs`).
+        return (known.dialURLs(hostId: id, picked: primary), id)
     }
 
     /// The user's answer to a question the connection flow asked ("Connect"
@@ -289,7 +296,9 @@ final class StreamClient: ObservableObject {
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20 // keyframes at full display resolution
         let attempt = Attempt(task: task, flow: flow,
-                              openTimeout: urls.count > 1 ? alternateOpenTimeoutInterval : openTimeoutInterval)
+                              openTimeout: urls.count == 1 ? openTimeoutInterval
+                                  : KnownHosts.isPrivateAddress(urlString) ? privateOpenTimeoutInterval
+                                  : alternateOpenTimeoutInterval)
         attempt.parser.onMessage = { [weak self, weak attempt] type, payload in
             guard let self, let attempt, !attempt.ended else { return }
             self.perform(attempt.flow.received(type: type.rawValue, payload: payload), on: attempt)
