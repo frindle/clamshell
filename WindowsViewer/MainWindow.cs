@@ -61,10 +61,14 @@ internal sealed class MainWindow : Window
             return;
         }
         _client = client;
-        client.OnHelloAck = (codec, w, h) => Dispatcher.Invoke(() => OnHelloAck(codec, w, h));
-        client.OnFrame = (w, h, bgra) => Dispatcher.Invoke(() => OnFrame(w, h, bgra));
-        // BeginInvoke, not Invoke: the client calls these while it holds its own
-        // lock, and the UI thread takes that lock to send input.
+        // BeginInvoke, never Invoke, for everything the receive thread raises: it
+        // holds the decoder lock while a frame comes out, and closing the window
+        // (or StopAndClose) takes that lock on the UI thread, so waiting for the
+        // UI there would be a deadlock. The posts keep their order.
+        client.OnHelloAck = (codec, w, h) => Dispatcher.BeginInvoke(() => OnHelloAck(codec, w, h));
+        client.OnFrame = PostFrame;
+        // The client also calls these while it holds its own lock, and the UI
+        // thread takes that lock to send input.
         client.OnState = state => Dispatcher.BeginInvoke(() => OnState(state));
         client.OnDisconnected = reason => Dispatcher.BeginInvoke(() => OnDisconnected(reason));
 
@@ -126,6 +130,36 @@ internal sealed class MainWindow : Window
 
         _bitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
         _image.Source = _bitmap;
+    }
+
+    // At most one frame waits for the UI: a newer one replaces it. The decoder
+    // hands over a fresh array for every frame, so nothing is reused under it.
+    private readonly object _frameGate = new();
+    private (int W, int H, byte[] Bgra)? _waitingFrame;
+    private bool _frameDeliveryPosted;
+
+    private void PostFrame(int w, int h, byte[] bgra)
+    {
+        bool post;
+        lock (_frameGate)
+        {
+            _waitingFrame = (w, h, bgra);
+            post = !_frameDeliveryPosted;
+            _frameDeliveryPosted = true;
+        }
+        if (post) Dispatcher.BeginInvoke(() => DeliverFrame());
+    }
+
+    private void DeliverFrame()
+    {
+        (int W, int H, byte[] Bgra)? frame;
+        lock (_frameGate)
+        {
+            frame = _waitingFrame;
+            _waitingFrame = null;
+            _frameDeliveryPosted = false;
+        }
+        if (frame is { } f) OnFrame(f.W, f.H, f.Bgra);
     }
 
     private void OnFrame(int w, int h, byte[] bgra)
