@@ -47,6 +47,9 @@ final class StreamLink {
     fileprivate var bytesWhilePending = 0
     fileprivate var lastWaitingList: Data?
     fileprivate var toldClientInfo = false
+    /// Set once the connection is ready and its upgrade headers were bound or
+    /// given up on (see `UpgradeHeaders`).
+    fileprivate var reachedReady = false
 
     fileprivate init(conn: NWConnection) { self.conn = conn }
 }
@@ -109,6 +112,7 @@ final class StreamGate {
     func accept(_ conn: NWConnection) {
         let link = StreamLink(conn: conn)
         links.append(link)
+        upgradeHeaders.connectionAccepted()
         attachParser(to: link)
         // Counted from here, not from the WebSocket upgrade, so a connection
         // that never finishes the upgrade cannot sit open either.
@@ -158,7 +162,15 @@ final class StreamGate {
         guard link.phase == .awaitingResponse, link.handshake == nil else { return }
         let peer = Self.remoteAddress(of: link.conn)
         let counted = AddressGroup.of(link.address)
-        link.address = ClientAddress.resolve(peer: peer, headers: upgradeHeaders.take(), trusted: auth.trustedProxies)
+        link.reachedReady = true
+        // Headers are used only when they surely belong to this connection;
+        // otherwise it stays with the peer's address (the loopback group
+        // when it came through a local proxy).
+        if let headers = upgradeHeaders.bindAtReady() {
+            link.address = ClientAddress.resolve(peer: peer, headers: headers, trusted: auth.trustedProxies)
+        } else {
+            link.address = peer
+        }
         if AddressGroup.of(link.address) != counted, let token = link.unanswered {
             // Behind a proxy: count the connection in its own group instead.
             auth.removeUnanswered(token)
@@ -448,6 +460,12 @@ final class StreamGate {
         guard link.phase != .closed else { return }
         let was = link.phase
         release(link)
+        if !link.reachedReady {
+            // It may have left upgrade headers behind, and which ones is not
+            // known: no connection may take them.
+            upgradeHeaders.connectionClosedBeforeReady()
+            link.reachedReady = true
+        }
         link.phase = .closed
         link.handshake = nil
         link.sealer = nil

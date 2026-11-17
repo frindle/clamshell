@@ -823,10 +823,19 @@ final class WebServer {
         // address found in the browser's upgrade request can go with it.
         var innerTask: URLSessionWebSocketTask?
 
+        // Upgrade headers go to a connection only when they surely belong to
+        // it (see `UpgradeHeaders`): this one is counted from here until it is
+        // ready, or until it closes without getting there.
+        upgradeHeaders.connectionAccepted()
+        var readyReached = false
         var closed = false
         let close: () -> Void = { [weak self] in
             guard !closed else { return }
             closed = true
+            if !readyReached {
+                upgradeHeaders.connectionClosedBeforeReady()
+                readyReached = true
+            }
             browserWS.cancel()
             innerTask?.cancel(with: .goingAway, reason: nil)
             self?.sessionEnded()
@@ -877,9 +886,11 @@ final class WebServer {
                 // Same rule as the stream server's: headers count only from a
                 // trusted proxy. The result goes on to the stream server in
                 // X-Forwarded-For, where this relay (127.0.0.1) is trusted.
-                let client = ClientAddress.resolve(peer: StreamGate.remoteAddress(of: browserWS),
-                                                   headers: upgradeHeaders.take(),
-                                                   trusted: HostAuth.storedTrustedProxies())
+                readyReached = true
+                let peer = StreamGate.remoteAddress(of: browserWS)
+                let client = upgradeHeaders.bindAtReady().map {
+                    ClientAddress.resolve(peer: peer, headers: $0, trusted: HostAuth.storedTrustedProxies())
+                } ?? peer
                 var request = URLRequest(url: URL(string: "ws://127.0.0.1:\(targetPort)")!)
                 if !client.isEmpty { request.setValue(client, forHTTPHeaderField: "X-Forwarded-For") }
                 let inner = URLSession.shared.webSocketTask(with: request)
