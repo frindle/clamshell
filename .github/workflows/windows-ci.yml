@@ -29,6 +29,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-store
 
+      - name: Gate self-test (real server on loopback, real handshakes, throwaway key and list)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-gate
+
       - name: Live smoke test (real display enum, encoder probe, listener bind)
         # `selftest` above never touches DXGI/Media Foundation/HttpListener —
         # those need an actual display/session, which is exactly what nobody
