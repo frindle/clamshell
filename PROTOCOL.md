@@ -465,12 +465,42 @@ After any status other than 0 or 1 the host closes the connection.
 - The host checks the version, that both client keys are valid curve points,
   and the signature, then looks the device id up: trusted → `accepted`,
   denied → `denied`, unknown → added to the waiting list → `pending`.
-- At most 8 connections wait for approval at once; more get `busy`. At most 16
-  devices are on the waiting list. When it is full, a new device takes the
-  place of the oldest waiting device that has no open connection, and gets
-  `busy` only if there is none, so stale entries cannot keep a real device
-  from asking. At most 10 new devices are listed per minute; the rest get
-  `busy`. A waiting device nobody approves is dropped after 24 hours.
+- Room in three small tables is shared out by the address the connection
+  came from, reduced to a group: an IPv4 address as it is, an IPv4-mapped
+  IPv6 address as its IPv4 address, any other IPv6 address as its first 64
+  bits, and "unknown" when there is no usable address. The group is used only
+  for this and is never a reason to trust a device. Connections that come
+  through the web relay or a tunnel all show the relay's address, so they
+  share one group.
+
+  | Table | Size | Share per group | May be replaced | First to go |
+  |---|---|---|---|---|
+  | Connections that have not answered the challenge | 32 | 8 | all | oldest |
+  | Connections waiting for approval | 8 | 3 | all | oldest |
+  | Devices on the waiting list | 16 | 4 | no open connection, and not seen in the last 5 minutes | least recently seen |
+
+  An arrival is let in when there is room and its group is under its share.
+  When its group is at its share, it takes the place of that group's first
+  replaceable entry, or is turned away if it has none. When the table is full,
+  the group holding the most entries (the one listed first on a tie) is picked:
+  if the arrival's group holds fewer, the arrival takes the place of the picked
+  group's first replaceable entry, or is turned away if it has none;
+  otherwise it is turned away. An unanswered connection that loses its place
+  is closed; a waiting connection that loses its place gets `busy` and is
+  closed; a new device that is turned away gets `busy`.
+- A device has one waiting connection per listener: when it connects again
+  on a listener where it already waits, the earlier connection gets `busy`
+  and is closed and the new one takes its place (both proved they hold the
+  key).
+- At most 10 new devices are listed per minute, and at most 3 per minute from
+  one group; the rest get `busy`. Every verified handshake from a device
+  that is already on the waiting list counts as seeing it, also when the
+  answer is `busy`. A waiting device nobody approves is dropped after 24
+  hours.
+- Someone with as many addresses as a table has room, or who shares the real
+  device's address, can still keep a new device off the list for as long as
+  they keep trying. Devices that are already trusted are not kept out by
+  that.
 - Approval while the device's connection is still open sends `accepted` on
   that connection, so the session starts without a reconnect.
 - Nothing a waiting connection sends is read. One that sends more than 64 KB

@@ -79,6 +79,11 @@ final class DeviceTrustStore {
     static let lockName = "devices.lock"
     static let maxWaiting = 16
     static let maxNewPerMinute = 10
+    /// What one address group may hold of the waiting list, and add in a minute.
+    static let maxWaitingPerGroup = 4
+    static let maxNewPerMinutePerGroup = 3
+    /// A waiting device seen this recently is not replaced by a newcomer.
+    static let recentlySeen: TimeInterval = 5 * 60
     static let waitingLifetime: TimeInterval = 24 * 60 * 60
     static let maxFileBytes = 1 << 20
     /// Posted in this process, with the store as object, after the list
@@ -116,7 +121,7 @@ final class DeviceTrustStore {
     private let now: () -> Date
     private let lock = NSLock()
     private var records: [DeviceRecord] = []
-    private var recentAdds: [TimeInterval] = []
+    private var recentAdds: [(time: TimeInterval, group: String?)] = []
     private var watcher: DispatchSourceFileSystemObject?
     private let watchQueue = DispatchQueue(label: "com.frindle.clamshell.devices.watch")
     private var reloadScheduled = false
@@ -181,9 +186,16 @@ final class DeviceTrustStore {
     /// A device that proved it holds `publicKey` is asking to connect while
     /// approval is on. Unknown devices join the waiting list, within its
     /// limits. `hasOpenConnection` says whether a waiting device still has a
-    /// connection open: when the list is full, only one without is replaced.
-    /// It is called with the store locked, so it must not call the store.
-    func ask(publicKey: Data, name: String, address: String,
+    /// connection open: only one without is ever replaced. It is called with
+    /// the store locked, so it must not call the store.
+    ///
+    /// `group` is the asker's address group (`AddressGroup.of`). With one,
+    /// room on the list is shared out by group (`RoomSharing`): a group holds
+    /// at most `maxWaitingPerGroup` waiting devices and lists at most
+    /// `maxNewPerMinutePerGroup` a minute, and a waiting device seen in the
+    /// last `recentlySeen` seconds is never replaced. Without one only the
+    /// limits for the whole list apply.
+    func ask(publicKey: Data, name: String, address: String, group: String? = nil,
              hasOpenConnection: (String) -> Bool) -> Answer {
         guard DeviceIdentity.isValidPublicKey(publicKey) else { return .denied }
         let id = DeviceIdentity.id(ofPublicKey: publicKey)
@@ -208,20 +220,44 @@ final class DeviceTrustStore {
                     return (.waiting, .waiting)
                 }
             }
-            self.recentAdds.removeAll { t - $0 >= 60 || t < $0 }
+            self.recentAdds.removeAll { t - $0.time >= 60 || t < $0.time }
             guard self.recentAdds.count < Self.maxNewPerMinute else { return (.busy, .busy) }
+            if let group {
+                guard self.recentAdds.filter({ $0.group == group }).count < Self.maxNewPerMinutePerGroup else {
+                    return (.busy, .busy)
+                }
+            }
             let waiting = list.filter { $0.state == .waiting }.sorted { $0.firstSeen < $1.firstSeen }
-            if waiting.count >= Self.maxWaiting {
+            if let group {
+                let entries = waiting.map {
+                    RoomSharing.Entry(group: AddressGroup.of($0.address), age: t - $0.lastSeen,
+                                      removable: !hasOpenConnection($0.id) && t - $0.lastSeen >= Self.recentlySeen)
+                }
+                switch RoomSharing.decide(entries: entries, size: Self.maxWaiting,
+                                          share: Self.maxWaitingPerGroup, group: group) {
+                case .admit: break
+                case .replace(let i): list.removeAll { $0.id == waiting[i].id }
+                case .turnAway: return (.busy, .busy)
+                }
+            } else if waiting.count >= Self.maxWaiting {
                 guard let stale = waiting.first(where: { !hasOpenConnection($0.id) }) else { return (.busy, .busy) }
                 list.removeAll { $0.id == stale.id }
             }
-            self.recentAdds.append(t)
+            self.recentAdds.append((t, group))
             list.append(DeviceRecord(id: id, publicKey: Hex.encode(publicKey), name: name, state: .waiting,
                                      firstSeen: t, lastSeen: t, address: address,
                                      decidedAt: nil, decidedBy: nil))
             // A device that could not be listed cannot be approved either.
             return (.waiting, .busy)
         }
+    }
+
+    /// For selftests that list more new devices from one address in a minute
+    /// than the host allows: forgets the new devices counted so far.
+    func forgetRecentAdds() {
+        lock.lock()
+        recentAdds = []
+        lock.unlock()
     }
 
     /// A device connected to a host that is not asking for approval: keeps a

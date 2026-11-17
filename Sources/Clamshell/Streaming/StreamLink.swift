@@ -42,7 +42,7 @@ final class StreamLink {
     fileprivate var deadline: DispatchWorkItem?
     fileprivate var pendingTimer: DispatchSourceTimer?
     fileprivate var pendingResult: Data?
-    fileprivate var countedAsWaiting = false
+    fileprivate var waitingToken: HostAuth.Waiting?
     fileprivate var countedAsSession = false
     fileprivate var bytesWhilePending = 0
     fileprivate var lastWaitingList: Data?
@@ -110,7 +110,10 @@ final class StreamGate {
         attachParser(to: link)
         // Counted from here, not from the WebSocket upgrade, so a connection
         // that never finishes the upgrade cannot sit open either.
-        link.unanswered = auth.addUnanswered { [weak self, weak link] in
+        // The address group shares out room; an inbound connection's endpoint
+        // is its peer, known before the connection is ready.
+        link.address = Self.remoteAddress(of: conn)
+        link.unanswered = auth.addUnanswered(group: AddressGroup.of(link.address)) { [weak self, weak link] in
             self?.queue.async {
                 guard let self, let link, link.phase == .awaitingResponse else { return }
                 self.close(link, why: "too many connections had not answered the challenge")
@@ -261,7 +264,9 @@ final class StreamGate {
             admit(link, device)
             return
         }
+        let group = AddressGroup.of(link.address)
         let answer = auth.store.ask(publicKey: device.publicKey, name: device.name, address: link.address,
+                                    group: group,
                                     hasOpenConnection: { [auth] id in auth.hasWaitingConnection(deviceId: id) })
         switch answer {
         case .trusted:
@@ -271,11 +276,22 @@ final class StreamGate {
         case .busy:
             finish(link, .busy, why: "\(who) asked while the waiting list was full")
         case .waiting:
-            guard auth.admitWaiting(deviceId: device.id) else {
+            // One waiting connection per device on a listener: both proved
+            // they hold the key, so the newer takes the place of the older.
+            for earlier in links where earlier !== link && earlier.phase == .pending && earlier.device?.id == device.id {
+                finish(earlier, .busy, why: "\(who) connected again on this listener")
+            }
+            let token = auth.admitWaitingConnection(deviceId: device.id, group: group) { [weak self, weak link] in
+                self?.queue.async {
+                    guard let self, let link, link.phase == .pending else { return }
+                    self.finish(link, .busy, why: "its place went to a connection from an address group with fewer waiting")
+                }
+            }
+            guard let token else {
                 finish(link, .busy, why: "\(who) asked while too many connections were waiting")
                 return
             }
-            link.countedAsWaiting = true
+            link.waitingToken = token
             wait(link, device)
             clog("DEVICES: \(who) is waiting for approval")
         }
@@ -449,9 +465,9 @@ final class StreamGate {
             auth.removeUnanswered(token)
             link.unanswered = nil
         }
-        if link.countedAsWaiting, let id = link.device?.id {
-            auth.releaseWaiting(deviceId: id)
-            link.countedAsWaiting = false
+        if let token = link.waitingToken {
+            auth.releaseWaiting(token)
+            link.waitingToken = nil
         }
         if link.countedAsSession {
             auth.sessionClosed(deviceId: link.device?.id)
