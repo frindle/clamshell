@@ -137,6 +137,97 @@ final class KnownHostsTests: XCTestCase {
         XCTAssertTrue(KnownHosts.decode(Data(#"{"version":1}"#.utf8)).damaged)
     }
 
+    // MARK: A fallback address reaches the same display
+
+    /// One Mac known at a LAN address and a tunnel, for display A and B.
+    private func twoRoutes() -> (KnownHosts, String) {
+        var k = KnownHosts()
+        let a = key()
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://192.0.2.10:5903", now: 1)
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://192.0.2.10:5904", now: 2)
+        k.recordVerified(key: a, name: "Example Mac", address: "ws://198.51.100.7:5903", now: 3)
+        k.recordVerified(key: a, name: "Example Mac", address: "wss://mac.example.com/ws/a", now: 4)
+        return (k, id(a))
+    }
+
+    func testTheTunnelPathIsKeptWhenAnAddressIsSaved() {
+        let (k, h) = twoRoutes()
+        let tunnel = k.host(id: h)?.addresses.first { $0.address == "mac.example.com:443" }
+        XCTAssertEqual(tunnel?.path, "/ws/a")
+        XCTAssertNil(k.host(id: h)?.addresses.first { $0.address == "192.0.2.10:5903" }?.path)
+        // Survives a save and a load.
+        let back = KnownHosts.decode(k.encoded())
+        XCTAssertFalse(back.damaged)
+        XCTAssertEqual(back.hosts, k)
+    }
+
+    func testAFallbackForDisplayAKeepsToDisplayA() {
+        let (k, h) = twoRoutes()
+        let urls = k.fallbackURLs(hostId: h, picked: "ws://192.0.2.10:5903")
+        XCTAssertEqual(Set(urls), ["ws://198.51.100.7:5903", "wss://mac.example.com/ws/a"])
+        XCTAssertFalse(urls.contains("ws://192.0.2.10:5904"), "another display's port is never a fallback")
+    }
+
+    func testAFallbackForDisplayBUsesDisplayBsPortAndPath() {
+        let (k, h) = twoRoutes()
+        // Picked display B directly: no other address is on 5904, and the
+        // tunnel is dialled with its /ws/b path.
+        XCTAssertEqual(k.fallbackURLs(hostId: h, picked: "ws://192.0.2.10:5904"), ["wss://mac.example.com/ws/b"])
+    }
+
+    func testFromATunnelTheFallbacksAreOnThePortOfThatDisplay() {
+        let (k, h) = twoRoutes()
+        let b = k.fallbackURLs(hostId: h, picked: "wss://mac.example.com/ws/b")
+        XCTAssertEqual(b, ["ws://192.0.2.10:5904"])
+        let a = k.fallbackURLs(hostId: h, picked: "wss://mac.example.com/ws/a")
+        XCTAssertEqual(Set(a), ["ws://192.0.2.10:5903", "ws://198.51.100.7:5903"])
+    }
+
+    func testASavedTunnelWithNoPathGivesNoTunnelFallbackAndOldCopiesStillLoad() throws {
+        var k = KnownHosts()
+        let a = key()
+        k.recordVerified(key: a, name: "Example Mac", address: "192.0.2.10", now: 1)
+        k.recordVerified(key: a, name: "Example Mac", address: "wss://mac.example.com", now: 2)   // no path to keep
+        XCTAssertEqual(k.fallbackURLs(hostId: id(a), picked: "ws://192.0.2.10:5903"), [])
+        // A copy saved before paths were kept has no "path" key at all.
+        var obj = try XCTUnwrap(JSONSerialization.jsonObject(with: k.encoded()) as? [String: Any])
+        var hosts = try XCTUnwrap(obj["hosts"] as? [[String: Any]])
+        var addresses = try XCTUnwrap(hosts[0]["addresses"] as? [[String: Any]])
+        for i in addresses.indices { addresses[i].removeValue(forKey: "path") }
+        hosts[0]["addresses"] = addresses
+        obj["hosts"] = hosts
+        let old = KnownHosts.decode(try JSONSerialization.data(withJSONObject: obj))
+        XCTAssertFalse(old.damaged)
+        XCTAssertEqual(old.hosts.fallbackURLs(hostId: id(a), picked: "ws://192.0.2.10:5903"), [])
+        // The next connection that reaches the tunnel saves its path.
+        var next = old.hosts
+        next.bind(address: "wss://mac.example.com/ws/a", toHostId: id(a), now: 9)
+        XCTAssertEqual(next.fallbackURLs(hostId: id(a), picked: "ws://192.0.2.10:5903"), ["wss://mac.example.com/ws/a"])
+    }
+
+    func testAHintFillsInAMissingPathButNeverMovesAnAddress() {
+        var k = KnownHosts()
+        let a = key(), b = key()
+        k.recordVerified(key: a, name: "Example Mac", address: "192.0.2.10", now: 1)
+        k.recordVerified(key: b, name: "Other Mac", address: "198.51.100.9", now: 1)
+        k.addHints(["wss://mac.example.com/ws/a", "ws://198.51.100.9:5903"], toHostId: id(a), now: 2)
+        XCTAssertEqual(k.host(id: id(a))?.addresses.first { $0.address == "mac.example.com:443" }?.path, "/ws/a")
+        XCTAssertEqual(k.standing(of: "198.51.100.9:5903"), .host(id: id(b)))
+    }
+
+    func testOnlyADisplayPathIsKept() {
+        XCTAssertEqual(KnownHosts.displayPath(ofURL: "wss://mac.example.com/ws/c"), "/ws/c")
+        XCTAssertEqual(KnownHosts.displayPath(ofURL: "wss://mac.example.com/tunnel/ws/b"), "/tunnel/ws/b")
+        XCTAssertNil(KnownHosts.displayPath(ofURL: "wss://mac.example.com"))
+        XCTAssertNil(KnownHosts.displayPath(ofURL: "wss://mac.example.com/ws/ab"))
+        XCTAssertEqual(KnownHosts.displayPath(ofURL: "wss://mac.example.com/ws/a?token=1"), "/ws/a", "the query is not part of the path")
+        XCTAssertNil(KnownHosts.displayPath(ofURL: "ws://192.0.2.10:5903/ws/a"), "only a tunnel keeps a path")
+        XCTAssertEqual(KnownHosts.displayIndex(ofURL: "ws://192.0.2.10:5905"), 2)
+        XCTAssertEqual(KnownHosts.displayIndex(ofURL: "192.0.2.10"), 0)
+        XCTAssertNil(KnownHosts.displayIndex(ofURL: "wss://mac.example.com"))
+        XCTAssertNil(KnownHosts.displayIndex(ofURL: "ws://192.0.2.10:8443"))
+    }
+
     // MARK: A damaged saved copy is refused, not replaced
 
     private final class MemoryBlobs: KnownHostsBlobStore {

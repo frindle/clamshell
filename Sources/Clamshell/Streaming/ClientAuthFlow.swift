@@ -204,9 +204,9 @@ struct ClientAuthFlow {
                     .hostCapabilities([]),
                     .state(.connected(verified: false, hostName: ""))]
         case .askingHost:
-            guard yes, let h = handshake, let address else { return finish(.stop, "user declined", state: nil) }
+            guard yes, let h = handshake, address != nil else { return finish(.stop, "user declined", state: nil) }
             phase = .ended
-            return [.change(.recordVerified(key: h.hostIdentityKey, name: h.hostName, address: address)),
+            return [.change(.recordVerified(key: h.hostIdentityKey, name: h.hostName, address: config.dialledURL)),
                     .end(.reconnect(after: 0, carry: FlowCarry()), "host confirmed by the user")]
         default:
             return []
@@ -326,7 +326,9 @@ struct ClientAuthFlow {
         if hostKnown, !bound, let address {
             bound = true
             if standing != .host(id: h.hostId) {
-                actions.append(.change(.bind(hostId: h.hostId, address: address)))
+                // The dialled URL, not the bare address: a tunnel's display path
+                // is kept with the address so a later fallback reaches the same display.
+                actions.append(.change(.bind(hostId: h.hostId, address: config.dialledURL)))
             }
         }
         let name = h.hostName
@@ -340,8 +342,8 @@ struct ClientAuthFlow {
             return actions
         case .accepted:
             if waitingShown || hostKnown {
-                guard let address else { return fail("the address cannot be used") }
-                actions.append(.change(.recordVerified(key: h.hostIdentityKey, name: name, address: address)))
+                guard address != nil else { return fail("the address cannot be used") }
+                actions.append(.change(.recordVerified(key: h.hostIdentityKey, name: name, address: config.dialledURL)))
                 return actions + startSession(h)
             }
             // Rule 12: let in without being asked, by a host not met before.

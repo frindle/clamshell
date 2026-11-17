@@ -175,20 +175,9 @@ final class StreamClient: ObservableObject {
         let known = KnownHostsStore.shared.hosts
         guard let normalized = KnownHosts.normalizeAddress(primary),
               case let .host(id) = known.standing(of: normalized) else { return [primary] }
-        var urls = [primary]
-        for address in known.dialOrder(hostId: id) where address != normalized {
-            if let url = Self.url(forAddress: address) { urls.append(url) }
-        }
-        return urls
-    }
-
-    /// A dialable URL for a normalized `host:port` (port 443 means wss, as
-    /// the spec's default for that scheme; the path is not kept).
-    private static func url(forAddress address: String) -> String? {
-        guard let colon = address.lastIndex(of: ":") else { return nil }
-        let host = String(address[..<colon]), port = String(address[address.index(after: colon)...])
-        guard !host.isEmpty, UInt16(port) != nil else { return nil }
-        return port == "443" ? "wss://\(host)" : "ws://\(host):\(port)"
+        // Every fallback is for the same display as the one picked: the same
+        // port for a direct address, the same /ws/<letter> path for a tunnel.
+        return [primary] + known.fallbackURLs(hostId: id, picked: primary)
     }
 
     /// The user's answer to a question the connection flow asked ("Connect"

@@ -622,6 +622,45 @@ export function hintAddress(url) {
   return normalizeAddress(url);
 }
 
+/**
+ * The path of a wss URL when it names a display: ends in `/ws/<letter>`, at
+ * most 64 bytes, only letters, digits and `/ _ . -`. null otherwise.
+ */
+export function displayPath(text) {
+  if (typeof text !== 'string' || !text.includes('://')) return null;
+  let u;
+  try { u = new URL(text); } catch { return null; }
+  if (u.protocol !== 'wss:') return null;
+  const p = u.pathname;
+  return bytes(p).length <= 64 && /^[A-Za-z0-9/_.-]*\/ws\/[a-z]$/.test(p) ? p : null;
+}
+
+/** The port of a normalized `host:port`. */
+export function portOf(address) {
+  const n = Number(address.slice(address.lastIndexOf(':') + 1));
+  return Number.isInteger(n) ? n : null;
+}
+
+/**
+ * Which display a dialled address is for, counting from 0 (A). A `/ws/<letter>`
+ * path names it; a direct address is on port 5903 + n. null when neither says.
+ */
+export function displayIndex(text) {
+  const p = displayPath(text);
+  if (p) return p.charCodeAt(p.length - 1) - 97;
+  const a = normalizeAddress(text);
+  const port = a ? portOf(a) : null;
+  if (port === null || port === 443) return null;
+  const n = port - DEFAULT_PORT;
+  return n >= 0 && n < 26 ? n : null;
+}
+
+/** `wss://host` + the saved path with its final display letter replaced. */
+export function tunnelUrl(host, path, display) {
+  if (!(display >= 0 && display <= 25) || displayPath(`wss://${host}${path}`) !== path) return null;
+  return `wss://${host}${path.slice(0, -1)}${String.fromCharCode(97 + display)}`;
+}
+
 export class KnownHosts {
   constructor() {
     /** [{id, key (hex), name, addresses: [{address, verified, lastUsed, lastSuccess}]}] */
@@ -661,6 +700,38 @@ export class KnownHosts {
   }
 
   /**
+   * The URLs to try after `picked` for a host, in dial order, every one for
+   * the same display as `picked`: a direct address on the same port (or on the
+   * picked display's port, when `picked` is a tunnel), and a tunnel address
+   * with the saved path switched to the picked display's letter. An address
+   * with no saved path (a copy from before the path was kept) gives no tunnel
+   * fallback until the next connection that reaches it.
+   */
+  fallbackUrls(hostId, picked) {
+    const pickedAddress = normalizeAddress(picked);
+    const h = this.host(hostId);
+    if (!pickedAddress || !h) return [];
+    const index = displayIndex(picked);
+    const pickedPort = portOf(pickedAddress);
+    const out = [];
+    for (const address of this.dialOrder(hostId)) {
+      if (address === pickedAddress) continue;
+      const port = portOf(address);
+      const name = address.slice(0, address.lastIndexOf(':'));
+      if (port === 443) {
+        const saved = h.addresses.find((x) => x.address === address).path;
+        if (index === null || !saved) continue;
+        const url = tunnelUrl(name, saved, index);
+        if (url) out.push(url);
+      } else {
+        const want = pickedPort === 443 ? (index === null ? null : DEFAULT_PORT + index) : pickedPort;
+        if (want === port) out.push(`ws://${name}:${port}`);
+      }
+    }
+    return out;
+  }
+
+  /**
    * Remembers a host whose key was verified at an address: adds it if new,
    * binds the address to it (taking the address from any other host), and
    * clears the "unverified allowed" mark. `id` is the key's id.
@@ -675,7 +746,7 @@ export class KnownHosts {
     } else {
       this.hosts.push({ id, key: toHex(key), name: shown, addresses: [] });
     }
-    this.bind(a, id, now);
+    this.bind(address, id, now);
   }
 
   /** Binds an address to a host that is already known. Does nothing for an unknown host. */
@@ -683,12 +754,15 @@ export class KnownHosts {
     const a = normalizeAddress(address);
     const h = this.host(id);
     if (!a || !h) return;
+    // `address` may be the URL that was dialled: its display path is kept.
+    const path = displayPath(address);
     for (const other of this.hosts) if (other !== h) other.addresses = other.addresses.filter((x) => x.address !== a);
     const have = h.addresses.find((x) => x.address === a);
     if (have) {
       have.verified = true; have.lastUsed = now; have.lastSuccess = now;
+      if (path) have.path = path;
     } else {
-      h.addresses.push({ address: a, verified: true, lastUsed: now, lastSuccess: now });
+      h.addresses.push({ address: a, verified: true, lastUsed: now, lastSuccess: now, ...(path ? { path } : {}) });
     }
     this.unverifiedAllowed = this.unverifiedAllowed.filter((x) => x !== a);
     this.#trim(h);
@@ -705,8 +779,14 @@ export class KnownHosts {
       const a = hintAddress(url);
       if (!a) continue;
       if (this.hosts.some((o) => o !== h && o.addresses.some((x) => x.address === a))) continue;
-      if (h.addresses.some((x) => x.address === a)) continue;
-      h.addresses.push({ address: a, verified: false, lastUsed: now, lastSuccess: null });
+      const path = displayPath(url);
+      const have = h.addresses.find((x) => x.address === a);
+      if (have) {
+        // Already known: only fill in a display path it does not have yet.
+        if (!have.path && path) have.path = path;
+        continue;
+      }
+      h.addresses.push({ address: a, verified: false, lastUsed: now, lastSuccess: null, ...(path ? { path } : {}) });
       this.unverifiedAllowed = this.unverifiedAllowed.filter((x) => x !== a);
       this.#trim(h);
     }
@@ -776,9 +856,13 @@ export class KnownHosts {
         const n = a && typeof a.address === 'string' ? normalizeAddress(a.address) : null;
         if (!n || n !== a.address || claimed.has(n) || addresses.some((x) => x.address === n)
             || typeof a.lastUsed !== 'number') { damaged = true; continue; }
+        // A path that is not a display path is dropped, not trusted.
+        const path = typeof a.path === 'string' && portOf(n) === 443 && displayPath(`wss://x${a.path}`) === a.path
+          ? a.path : null;
         addresses.push({
           address: n, verified: a.verified === true, lastUsed: a.lastUsed,
           lastSuccess: typeof a.lastSuccess === 'number' ? a.lastSuccess : null,
+          ...(path ? { path } : {}),
         });
       }
       const name = cleanName(typeof entry.name === 'string' ? entry.name : '');
@@ -962,7 +1046,7 @@ export class AuthFlow {
         if (!yes || !h || !this.address) return this.#finish({ kind: 'stop' }, 'user declined', null);
         this.phase = 'ended';
         this.#emit({ do: 'change', change: { kind: 'recordVerified', key: h.hostIdentityKey, id: h.hostId,
-          name: h.hostName, address: this.address } });
+          name: h.hostName, address: this.config.dialledURL } });
         this.#emit({ do: 'end', end: { kind: 'reconnect', after: 0, carry: newCarry() },
           reason: 'host confirmed by the user' });
       }
@@ -1106,7 +1190,9 @@ export class AuthFlow {
     if (hostKnown && !this.bound && this.address) {
       this.bound = true;
       if (!(this.standing.kind === 'host' && this.standing.id === h.hostId)) {
-        this.#emit({ do: 'change', change: { kind: 'bind', hostId: h.hostId, address: this.address } });
+        // The dialled URL, not the bare address: a tunnel's display path is
+        // kept with the address so a later fallback reaches the same display.
+        this.#emit({ do: 'change', change: { kind: 'bind', hostId: h.hostId, address: this.config.dialledURL } });
       }
     }
     const name = h.hostName;
@@ -1122,7 +1208,7 @@ export class AuthFlow {
         if (this.waitingShown || hostKnown) {
           if (!this.address) return this.#fail('the address cannot be used');
           this.#emit({ do: 'change', change: { kind: 'recordVerified', key: h.hostIdentityKey, id: h.hostId,
-            name, address: this.address } });
+            name, address: this.config.dialledURL } });
           return this.#startSession(h);
         }
         // Rule 12: let in without being asked, by a host not met before.

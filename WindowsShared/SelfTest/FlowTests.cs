@@ -13,6 +13,7 @@ public static class FlowTests
     public static void Run(TestRun t)
     {
         t.Group("known hosts store", () => StoreTests(t));
+        t.Group("known hosts: fallback addresses", () => FallbackTests(t));
         t.Group("known hosts file", () => FileTests(t));
         t.Group("flow: opening and challenge", () => OpeningTests(t));
         t.Group("flow: results", () => ResultTests(t));
@@ -182,6 +183,65 @@ public static class FlowTests
         t.Check(KnownHosts.Decode(Json("[]")).Damaged, "a non-object is damaged");
         var broken = Encoding.UTF8.GetString(h.Encoded()).Replace("\"key\":\"", "\"key\":\"AAAA");
         t.Check(KnownHosts.Decode(Json(broken)).Damaged, "an entry with a bad key is damaged");
+    }
+
+    // MARK: Fallback addresses
+
+    private static string Joined(IEnumerable<string> urls) => string.Join(" ", urls.OrderBy(x => x, StringComparer.Ordinal));
+
+    private static void FallbackTests(TestRun t)
+    {
+        using var key = TestKey.Random();
+        var id = DeviceIdentity.Id(key.Public);
+        var k = new KnownHosts();
+        k.RecordVerified(key.Public, "Example Mac", "ws://192.0.2.10:5903", 1);
+        k.RecordVerified(key.Public, "Example Mac", "ws://192.0.2.10:5904", 2);
+        k.RecordVerified(key.Public, "Example Mac", "ws://198.51.100.7:5903", 3);
+        k.RecordVerified(key.Public, "Example Mac", "wss://mac.example.com/ws/a", 4);
+
+        t.Equal(k.Host(id)!.Addresses.First(a => a.Address == "mac.example.com:443").Path, "/ws/a", "the tunnel path is kept");
+        t.Check(k.Host(id)!.Addresses.First(a => a.Address == "192.0.2.10:5903").Path is null, "a direct address has no path");
+        var (back, damaged) = KnownHosts.Decode(k.Encoded());
+        t.Check(!damaged, "a copy with paths decodes");
+        t.Same(back.Encoded(), k.Encoded(), "the path survives a save and a load");
+
+        t.Equal(Joined(k.FallbackUrls(id, "ws://192.0.2.10:5903")),
+            "ws://198.51.100.7:5903 wss://mac.example.com/ws/a", "display A: same port, tunnel on /ws/a, never port 5904");
+        t.Equal(Joined(k.FallbackUrls(id, "ws://192.0.2.10:5904")),
+            "wss://mac.example.com/ws/b", "display B: the tunnel is dialled with /ws/b");
+        t.Equal(Joined(k.FallbackUrls(id, "wss://mac.example.com/ws/b")),
+            "ws://192.0.2.10:5904", "from a tunnel for B: only the B port");
+        t.Equal(Joined(k.FallbackUrls(id, "wss://mac.example.com/ws/a")),
+            "ws://192.0.2.10:5903 ws://198.51.100.7:5903", "from a tunnel for A: only the A port");
+
+        // A copy saved before paths were kept: still loads, gives no tunnel fallback until the next connection.
+        var old = new KnownHosts();
+        old.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 1);
+        old.RecordVerified(key.Public, "Example Mac", "wss://mac.example.com", 2);
+        var oldJson = Encoding.UTF8.GetString(old.Encoded());
+        t.Check(!oldJson.Contains("\"path\""), "no path is written when there is none");
+        var (loaded, oldDamaged) = KnownHosts.Decode(Json(oldJson));
+        t.Check(!oldDamaged, "an old copy still loads");
+        t.Equal(Joined(loaded.FallbackUrls(id, "ws://192.0.2.10:5903")), "", "no tunnel fallback without a saved path");
+        loaded.Bind("wss://mac.example.com/ws/a", id, 9);
+        t.Equal(Joined(loaded.FallbackUrls(id, "ws://192.0.2.10:5903")), "wss://mac.example.com/ws/a", "the next connection saves the path");
+
+        // A hint fills in a missing path and never moves an address.
+        var other = TestKey.Random();
+        var h = new KnownHosts();
+        h.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 1);
+        h.RecordVerified(other.Public, "Other Mac", "198.51.100.9", 1);
+        h.AddHints(new[] { "wss://mac.example.com/ws/a", "ws://198.51.100.9:5903" }, id, 2);
+        t.Equal(h.Host(id)!.Addresses.First(a => a.Address == "mac.example.com:443").Path, "/ws/a", "a hint carries its path");
+        t.Equal(h.Standing("198.51.100.9:5903").HostId, DeviceIdentity.Id(other.Public), "a hint cannot take an address");
+        other.Dispose();
+
+        t.Equal(KnownHosts.DisplayPath("wss://mac.example.com/tunnel/ws/b"), "/tunnel/ws/b", "a prefix is allowed");
+        t.Check(KnownHosts.DisplayPath("wss://mac.example.com") is null, "no path, no display path");
+        t.Check(KnownHosts.DisplayPath("wss://mac.example.com/ws/ab") is null, "one letter only");
+        t.Check(KnownHosts.DisplayPath("ws://192.0.2.10:5903/ws/a") is null, "only a tunnel keeps a path");
+        t.Equal(KnownHosts.DisplayIndex("ws://192.0.2.10:5905"), (int?)2, "port 5905 is display C");
+        t.Check(KnownHosts.DisplayIndex("ws://192.0.2.10:8443") is null, "a custom port names no display");
     }
 
     // MARK: File

@@ -261,7 +261,7 @@ final class ClientAuthFlowTests: XCTestCase {
         // Then accepted: remembered, session up.
         let accepted = try h.result(.accepted, response: device.response, sign: hostSigner())
         let up = flow.received(type: resultType, payload: accepted)
-        XCTAssertEqual(changes(up), [.recordVerified(key: hostPub, name: "Studio", address: address)])
+        XCTAssertEqual(changes(up), [.recordVerified(key: hostPub, name: "Studio", address: url)])
         XCTAssertTrue(flow.isSecure)
         XCTAssertEqual(sent(up).count, 2)
     }
@@ -529,7 +529,7 @@ final class ClientAuthFlowTests: XCTestCase {
         XCTAssertEqual(end(declined), .stop)
 
         let yes = flow.answered(true)
-        XCTAssertEqual(changes(yes), [.recordVerified(key: hostPub, name: "Studio", address: address)])
+        XCTAssertEqual(changes(yes), [.recordVerified(key: hostPub, name: "Studio", address: url)])
         XCTAssertTrue(sent(yes).isEmpty)
         XCTAssertEqual(end(yes), .reconnect(after: 0, carry: FlowCarry()))
     }
@@ -540,7 +540,7 @@ final class ClientAuthFlowTests: XCTestCase {
         let (_, response) = challenge(&flow, h)
         let device = try h.verify(responsePayload: try XCTUnwrap(response))
         let a = flow.received(type: resultType, payload: try h.result(.pending, response: device.response, sign: hostSigner()))
-        XCTAssertEqual(changes(a), [.bind(hostId: DeviceIdentity.id(ofPublicKey: hostPub), address: "mac.example.com:443")])
+        XCTAssertEqual(changes(a), [.bind(hostId: DeviceIdentity.id(ofPublicKey: hostPub), address: "wss://mac.example.com/ws/a")])
         XCTAssertTrue(sent(a).isEmpty)
     }
 

@@ -254,7 +254,7 @@ test('rule 9: a verified result from a known host at a new address binds it with
   const t = await setup({ known });
   await handshake(t, host);
   await t.feed(await host.resultMessage(A.STATUS.pending));
-  assert.deepStrictEqual(t.changes(), [{ kind: 'bind', hostId: host.id, address: '192.0.2.10:5903' }]);
+  assert.deepStrictEqual(t.changes(), [{ kind: 'bind', hostId: host.id, address: ADDRESS }]);
   await t.feed(await host.resultMessage(A.STATUS.pending)); // a repeat binds nothing again
   assert.strictEqual(t.changes().length, 1);
 });
@@ -278,7 +278,7 @@ test('rules 10 and 11: pending, a repeated pending, then accepted: the host is r
   await host.startSession(() => {});
   await t.feed(await host.resultMessage(A.STATUS.accepted));
   assert.deepStrictEqual(t.changes(), [{
-    kind: 'recordVerified', key: host.identity.publicRaw, id: host.id, name: 'Studio', address: '192.0.2.10:5903',
+    kind: 'recordVerified', key: host.identity.publicRaw, id: host.id, name: 'Studio', address: ADDRESS,
   }]);
   assert.deepStrictEqual(t.lastState(), { kind: 'connected', verified: true, hostName: 'Studio' });
   assert.strictEqual(t.flow.isSecure, true);
@@ -320,7 +320,7 @@ test('rule 12: a host not met before that lets this device in unasked is not tru
   assert.strictEqual(t.ends().length, 0);
   await t.flow.answered(true); await t.flow.settled();
   assert.deepStrictEqual(t.changes(), [{
-    kind: 'recordVerified', key: host.identity.publicRaw, id: host.id, name: 'Studio', address: '192.0.2.10:5903',
+    kind: 'recordVerified', key: host.identity.publicRaw, id: host.id, name: 'Studio', address: ADDRESS,
   }]);
   assert.deepStrictEqual(t.ends().map((e) => e.end.kind), ['reconnect']);
 });

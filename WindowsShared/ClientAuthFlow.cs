@@ -310,7 +310,7 @@ public sealed class ClientAuthFlow
                 _phase = Phase.Ended;
                 return new List<FlowAction>
                 {
-                    FlowAction.ChangeStore(KnownHostsChange.RecordVerified(h.HostIdentityKey, h.HostName, _address)),
+                    FlowAction.ChangeStore(KnownHostsChange.RecordVerified(h.HostIdentityKey, h.HostName, _config.DialledUrl)),
                     FlowAction.Ended(FlowEnd.Reconnect(0, new FlowCarry()), "host confirmed by the user"),
                 };
             }
@@ -464,7 +464,9 @@ public sealed class ClientAuthFlow
             _bound = true;
             if (!(_standing.Kind == StandingKind.Host && _standing.HostId == h.HostId))
             {
-                actions.Add(FlowAction.ChangeStore(KnownHostsChange.Bind(h.HostId, _address)));
+                // The dialled URL, not the bare address: a tunnel's display path
+                // is kept with the address so a later fallback reaches the same display.
+                actions.Add(FlowAction.ChangeStore(KnownHostsChange.Bind(h.HostId, _config.DialledUrl)));
             }
         }
         var name = h.HostName;
@@ -481,7 +483,7 @@ public sealed class ClientAuthFlow
                 if (_waitingShown || hostKnown)
                 {
                     if (_address is null) return Fail("the address cannot be used");
-                    actions.Add(FlowAction.ChangeStore(KnownHostsChange.RecordVerified(h.HostIdentityKey, name, _address)));
+                    actions.Add(FlowAction.ChangeStore(KnownHostsChange.RecordVerified(h.HostIdentityKey, name, _config.DialledUrl)));
                     actions.AddRange(StartSession(h));
                     return actions;
                 }

@@ -19,6 +19,11 @@ struct KnownAddress: Codable, Equatable {
     var lastUsed: Double
     /// Seconds on the caller's clock: the last verified handshake here.
     var lastSuccess: Double?
+    /// For a tunnel (`wss`) address only: the path the host answers on, which
+    /// ends in `/ws/<letter>` (`/ws/a`). The address itself has no path, so
+    /// without this a tunnel could not be dialled for the right display. nil
+    /// for a direct address and for a copy saved before this was kept.
+    var path: String?
 }
 
 /// One Mac the app has met.
@@ -91,6 +96,70 @@ struct KnownHosts: Equatable {
         return normalizeAddress(url)
     }
 
+    // MARK: Displays
+
+    /// The path of a `wss` URL when it names a display: ends in `/ws/<letter>`,
+    /// at most 64 bytes, only letters, digits and `/ _ . -`. nil otherwise.
+    static func displayPath(ofURL text: String) -> String? {
+        guard text.contains("://"), let c = URLComponents(string: text),
+              c.scheme?.lowercased() == "wss", c.percentEncodedPath.utf8.count <= 64,
+              c.percentEncodedPath.range(of: #"^[A-Za-z0-9/_.\-]*/ws/[a-z]$"#, options: .regularExpression) != nil
+        else { return nil }
+        return c.percentEncodedPath
+    }
+
+    /// Which display a dialled address is for, counting from 0 (A). A
+    /// `/ws/<letter>` path names it; a direct address is on port 5903 + n.
+    /// nil when neither says (a bare tunnel hostname, or a custom port).
+    static func displayIndex(ofURL text: String) -> Int? {
+        if let p = displayPath(ofURL: text), let letter = p.unicodeScalars.last {
+            return Int(letter.value) - 97
+        }
+        guard let a = normalizeAddress(text), let port = port(ofAddress: a), port != 443 else { return nil }
+        let n = port - Int(streamDefaultPort)
+        return (0 ..< 26).contains(n) ? n : nil
+    }
+
+    static func port(ofAddress a: String) -> Int? {
+        guard let colon = a.lastIndex(of: ":") else { return nil }
+        return Int(a[a.index(after: colon)...])
+    }
+
+    /// The URLs to try after `picked` for a host, in dial order, every one for
+    /// the same display as `picked`: a direct address on the same port (or on
+    /// the picked display's port, when `picked` is a tunnel), and a tunnel
+    /// address with the saved path switched to the picked display's letter. An
+    /// address with no saved path (a copy from before the path was kept) gives
+    /// no tunnel fallback until the next connection that reaches it.
+    func fallbackURLs(hostId id: String, picked: String) -> [String] {
+        guard let pickedAddress = Self.normalizeAddress(picked), let h = host(id: id) else { return [] }
+        let index = Self.displayIndex(ofURL: picked)
+        let pickedPort = Self.port(ofAddress: pickedAddress)
+        let pickedIsTunnel = pickedPort == 443
+        var out: [String] = []
+        for address in dialOrder(hostId: id) where address != pickedAddress {
+            guard let port = Self.port(ofAddress: address),
+                  let colon = address.lastIndex(of: ":") else { continue }
+            let name = String(address[..<colon])
+            if port == 443 {
+                guard let index, let saved = h.addresses.first(where: { $0.address == address })?.path,
+                      let url = Self.tunnelURL(host: name, path: saved, display: index) else { continue }
+                out.append(url)
+            } else {
+                let want = pickedIsTunnel ? index.map { Int(streamDefaultPort) + $0 } : pickedPort
+                if port == want { out.append("ws://\(name):\(port)") }
+            }
+        }
+        return out
+    }
+
+    /// `wss://host` + the saved path with its final display letter replaced.
+    static func tunnelURL(host: String, path: String, display: Int) -> String? {
+        guard (0 ..< 26).contains(display), displayPath(ofURL: "wss://\(host)\(path)") == path else { return nil }
+        let letter = Character(Unicode.Scalar(UInt8(97 + display)))
+        return "wss://\(host)\(path.dropLast())\(letter)"
+    }
+
     // MARK: Questions
 
     func host(id: String) -> KnownHost? { hosts.first { $0.id == id } }
@@ -136,20 +205,23 @@ struct KnownHosts: Equatable {
         } else {
             hosts.append(KnownHost(key: key, name: shown, addresses: []))
         }
-        bind(address: a, toHostId: id, now: now)
+        bind(address: address, toHostId: id, now: now)
     }
 
     /// Binds an address to a host that is already known (a verified result
     /// from a key we have). Does nothing for an unknown host.
     mutating func bind(address: String, toHostId id: String, now: Double) {
         guard let a = Self.normalizeAddress(address), let i = hosts.firstIndex(where: { $0.id == id }) else { return }
+        // `address` may be the URL that was dialled: its display path is kept.
+        let path = Self.displayPath(ofURL: address)
         for j in hosts.indices where j != i { hosts[j].addresses.removeAll { $0.address == a } }
         if let k = hosts[i].addresses.firstIndex(where: { $0.address == a }) {
             hosts[i].addresses[k].verified = true
             hosts[i].addresses[k].lastUsed = now
             hosts[i].addresses[k].lastSuccess = now
+            if let path { hosts[i].addresses[k].path = path }
         } else {
-            hosts[i].addresses.append(KnownAddress(address: a, verified: true, lastUsed: now, lastSuccess: now))
+            hosts[i].addresses.append(KnownAddress(address: a, verified: true, lastUsed: now, lastSuccess: now, path: path))
         }
         unverifiedAllowed.removeAll { $0 == a }
         trim(hostIndex: i)
@@ -165,8 +237,13 @@ struct KnownHosts: Equatable {
             if hosts.enumerated().contains(where: { $0.offset != i && $0.element.addresses.contains { $0.address == a } }) {
                 continue
             }
-            if hosts[i].addresses.contains(where: { $0.address == a }) { continue }
-            hosts[i].addresses.append(KnownAddress(address: a, verified: false, lastUsed: now, lastSuccess: nil))
+            let path = Self.displayPath(ofURL: url)
+            if let k = hosts[i].addresses.firstIndex(where: { $0.address == a }) {
+                // Already known: only fill in a display path it does not have yet.
+                if hosts[i].addresses[k].path == nil, let path { hosts[i].addresses[k].path = path }
+                continue
+            }
+            hosts[i].addresses.append(KnownAddress(address: a, verified: false, lastUsed: now, lastSuccess: nil, path: path))
             unverifiedAllowed.removeAll { $0 == a }
             trim(hostIndex: i)
         }
@@ -256,6 +333,8 @@ struct KnownHosts: Equatable {
                 guard let n = normalizeAddress(a.address), n == a.address, !claimed.contains(n),
                       !addresses.contains(where: { $0.address == n }) else { damaged = true; continue }
                 a.address = n
+                // A path that is not a display path is dropped, not trusted.
+                if let p = a.path, port(ofAddress: n) != 443 || displayPath(ofURL: "wss://x\(p)") != p { a.path = nil }
                 addresses.append(a)
             }
             if let i = out.hosts.firstIndex(where: { $0.id == host.id }) {
