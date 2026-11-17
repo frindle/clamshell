@@ -43,7 +43,10 @@ internal sealed record DeviceRecord(
     double LastSeen,
     string Address,
     double? DecidedAt,
-    string? DecidedBy)
+    string? DecidedBy,
+    // What a proxy on this PC (loopback peer) said the client's address was. A claim,
+    // never checked. Lists written before this field existed have none.
+    string? ReportedAddress = null)
 {
     public string Fingerprint => DeviceIdentity.Fingerprint(Id);
     public string Label => Name.Length == 0 ? "Unnamed device" : Name;
@@ -307,12 +310,14 @@ internal sealed class DeviceTrustStore : IDisposable
     /// <see cref="MaxNewPerMinutePerGroup"/> a minute, and a waiting device seen in the last
     /// <see cref="RecentlySeen"/> seconds is never replaced. Without one only the limits for the
     /// whole list apply.</summary>
-    public Answer Ask(byte[] publicKey, string name, string address, string? group, Func<string, bool> hasOpenConnection)
+    public Answer Ask(byte[] publicKey, string name, string address, string? group, Func<string, bool> hasOpenConnection,
+        string? reported = null)
     {
         if (!DeviceIdentity.IsValidPublicKey(publicKey)) return Answer.Denied;
         var id = DeviceIdentity.Id(publicKey);
         name = StoredName(name);
         address = AuthWire.CleanName(address);
+        reported = StoredReported(reported, address);
         return Mutate((list, t) =>
         {
             int i = list.FindIndex(r => r.Id == id);
@@ -326,12 +331,12 @@ internal sealed class DeviceTrustStore : IDisposable
                         // to disk by reconnecting.
                         return (Answer.Denied, Answer.Denied);
                     case DeviceState.Trusted:
-                        list[i] = Refreshed(list[i], name, address, t, atMostEvery: 60, soonerIfChanged: true, keepName: false);
+                        list[i] = Refreshed(list[i], name, address, reported, t, atMostEvery: 60, soonerIfChanged: true, keepName: false);
                         return (Answer.Trusted, Answer.Trusted);
                     default:
                         // It keeps the name it was first listed with until it is approved, so a
                         // name cannot be swapped under the user's eyes while the question is open.
-                        list[i] = Refreshed(list[i], name, address, t, atMostEvery: 10, soonerIfChanged: false, keepName: true);
+                        list[i] = Refreshed(list[i], name, address, reported, t, atMostEvery: 10, soonerIfChanged: false, keepName: true);
                         return (Answer.Waiting, Answer.Waiting);
                 }
             }
@@ -343,7 +348,7 @@ internal sealed class DeviceTrustStore : IDisposable
             if (group != null)
             {
                 var entries = waiting.Select(r => new RoomSharing.Entry(
-                    AddressGroup.Of(r.Address), t - r.LastSeen,
+                    AddressGroup.Of(r.ReportedAddress ?? r.Address), t - r.LastSeen,
                     Removable: !hasOpenConnection(r.Id) && t - r.LastSeen >= RecentlySeen)).ToList();
                 var verdict = RoomSharing.Decide(entries, MaxWaiting, MaxWaitingPerGroup, group);
                 switch (verdict.Kind)
@@ -363,7 +368,7 @@ internal sealed class DeviceTrustStore : IDisposable
                 list.RemoveAll(r => r.Id == stale.Id);
             }
             if (!_dryRun) _recentAdds.Add((t, group));
-            list.Add(new DeviceRecord(id, Hex.Encode(publicKey), name, DeviceState.Waiting, t, t, address, null, null));
+            list.Add(new DeviceRecord(id, Hex.Encode(publicKey), name, DeviceState.Waiting, t, t, address, null, null, reported));
             // A device that could not be listed cannot be approved either.
             return (Answer.Waiting, Answer.Busy);
         });
@@ -378,15 +383,16 @@ internal sealed class DeviceTrustStore : IDisposable
 
     /// <summary>A device connected to a host that is not asking for approval: keeps a trusted
     /// device's name, address and last-seen time fresh. Adds nothing.</summary>
-    public void NoteConnected(string id, string name, string address)
+    public void NoteConnected(string id, string name, string address, string? reported = null)
     {
         name = StoredName(name);
         address = AuthWire.CleanName(address);
+        reported = StoredReported(reported, address);
         Mutate<bool>((list, t) =>
         {
             int i = list.FindIndex(r => r.Id == id);
             if (i < 0 || list[i].State != DeviceState.Trusted) return (false, false);
-            list[i] = Refreshed(list[i], name, address, t, atMostEvery: 60, soonerIfChanged: true, keepName: false);
+            list[i] = Refreshed(list[i], name, address, reported, t, atMostEvery: 60, soonerIfChanged: true, keepName: false);
             return (true, true);
         });
     }
@@ -693,8 +699,16 @@ internal sealed class DeviceTrustStore : IDisposable
             if (decidedBy != DecidedOnHost && decidedBy != DecidedOnCommandLine && !DeviceIdentity.IsWellFormedId(decidedBy))
                 return null;
         }
+        string? reported = null;
+        if (d.TryGetProperty("reportedAddress", out var ra) && ra.ValueKind != JsonValueKind.Null)
+        {
+            // Absent in lists written before the field existed. Present, it must be text.
+            var text = Str(d, "reportedAddress");
+            if (text == null) return null;
+            reported = StoredReported(text, AuthWire.CleanName(address));
+        }
         return new DeviceRecord(id, Hex.Encode(key), StoredName(name), s, first.Value, last.Value,
-            AuthWire.CleanName(address), decidedAt, decidedBy);
+            AuthWire.CleanName(address), decidedAt, decidedBy, reported);
     }
 
     private static string Serialize(List<DeviceRecord> list)
@@ -720,6 +734,7 @@ internal sealed class DeviceTrustStore : IDisposable
                 w.WriteNumber("firstSeen", r.FirstSeen);
                 w.WriteNumber("lastSeen", r.LastSeen);
                 w.WriteString("address", r.Address);
+                if (r.ReportedAddress != null) w.WriteString("reportedAddress", r.ReportedAddress);
                 if (r.DecidedAt != null) w.WriteNumber("decidedAt", r.DecidedAt.Value);
                 if (r.DecidedBy != null) w.WriteString("decidedBy", r.DecidedBy);
                 w.WriteEndObject();
@@ -770,6 +785,15 @@ internal sealed class DeviceTrustStore : IDisposable
     private static bool IsExpired(DeviceRecord r, double now) =>
         r.State == DeviceState.Waiting && now - r.FirstSeen > WaitingLifetime;
 
+    /// <summary>The proxy-reported address as stored: cleaned, and null when there is none or it is
+    /// the same as the peer.</summary>
+    public static string? StoredReported(string? raw, string peer)
+    {
+        if (raw == null) return null;
+        var text = AuthWire.CleanName(raw);
+        return text.Length == 0 || text == peer ? null : text;
+    }
+
     /// <summary>A name as the host stores and shows it: cleaned the way every name is, and without
     /// the characters that draw nothing.</summary>
     public static string StoredName(string raw) => NameSkeleton.Visible(AuthWire.CleanName(raw));
@@ -778,16 +802,18 @@ internal sealed class DeviceTrustStore : IDisposable
     /// at most every <paramref name="atMostEvery"/> seconds, or at once when the name or address changed
     /// and <paramref name="soonerIfChanged"/> allows it. A waiting device is not allowed that, so it
     /// cannot make the host write to disk as fast as it can reconnect.</summary>
-    private static DeviceRecord Refreshed(DeviceRecord r, string name, string address, double now,
+    private static DeviceRecord Refreshed(DeviceRecord r, string name, string address, string? reported, double now,
         double atMostEvery, bool soonerIfChanged, bool keepName)
     {
         bool due = now - r.LastSeen >= atMostEvery || now < r.LastSeen;
-        bool changed = (!keepName && name.Length > 0 && name != r.Name) || address != r.Address;
+        bool changed = (!keepName && name.Length > 0 && name != r.Name) || address != r.Address
+            || reported != r.ReportedAddress;
         if (!(due || (soonerIfChanged && changed))) return r;
         return r with
         {
             Name = name.Length > 0 && !keepName ? name : r.Name,
             Address = address,
+            ReportedAddress = reported,
             LastSeen = now,
         };
     }

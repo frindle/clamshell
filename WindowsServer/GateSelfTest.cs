@@ -192,6 +192,19 @@ internal static class GateSelfTest
                 await Task.Delay(500);
                 Check(server.SessionsStarted == 0, "nothing started while the device was waiting");
                 Check(auth.Store.StateOf(phone.Id) == DeviceState.Waiting, "the device is on the list as waiting");
+                var listed = auth.Store.Record(phone.Id);
+                Check(listed != null && listed.Address.StartsWith("127.0.0.1", StringComparison.Ordinal),
+                    "the listed address is the TCP peer");
+                Check(listed != null && listed.ReportedAddress == null,
+                    "a connection with no proxy headers has no reported address");
+                Check(listed != null && DeviceText.From(listed).Contains("through a local proxy", StringComparison.Ordinal)
+                      && !DeviceText.From(listed).Contains("reported", StringComparison.Ordinal),
+                    "a loopback peer is shown as coming through a local proxy, with no reported claim");
+                Check(DeviceText.From("127.0.0.1", "198.51.100.7")
+                      == "127.0.0.1, through a local proxy (the proxy reported 198.51.100.7; not verified)",
+                    "a reported address is shown only as an unverified claim next to the peer");
+                Check(DeviceTrustStore.StoredReported("203.0.113.5", "203.0.113.5") == null,
+                    "a reported address equal to the peer is not stored");
 
                 auth.Store.Decide(phone.Id, DeviceTrustStore.Decision.Approve, DeviceTrustStore.DecidedOnHost, onlyIfWaiting: true);
                 var final = await phone.ReadFinalResultAsync();
