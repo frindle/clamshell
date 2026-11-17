@@ -644,6 +644,8 @@ enum AuthGateSelfTest {
         //     to collapse the display (which is where a session, capture and
         //     the clipboard bridge would begin). That a HELLO from a client
         //     that is let in does post it is hello-collapse-selftest's job.
+        // The waiting list is full by now; make room for one more.
+        for record in store.all() where record.state == .waiting { _ = store.forget(id: record.id) }
         let originalPost = StreamServer.postCollapse
         var collapses: [[String: String]] = []
         StreamServer.postCollapse = { collapses.append($0) }
