@@ -9,14 +9,14 @@ final class LoginWindowAgentTests: XCTestCase {
     }
 
     func testARealUserIsAUser() {
-        XCTAssertEqual(LoginWindowAgent.console(forUserName: "penn"), .user("penn"))
+        XCTAssertEqual(LoginWindowAgent.console(forUserName: "example"), .user("example"))
         XCTAssertEqual(LoginWindowAgent.console(forUserName: "root"), .user("root"))
     }
 
     /// The agent must never serve next to a logged-in user's own Clamshell.
     func testServesOnlyAtTheLoginWindow() {
         XCTAssertTrue(LoginWindowAgent.shouldServe(.loginWindow))
-        XCTAssertFalse(LoginWindowAgent.shouldServe(.user("penn")))
+        XCTAssertFalse(LoginWindowAgent.shouldServe(.user("example")))
         XCTAssertFalse(LoginWindowAgent.shouldServe(.user("root")))
     }
 

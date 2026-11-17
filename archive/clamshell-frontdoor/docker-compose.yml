@@ -4,16 +4,16 @@ services:
     container_name: clamshell-frontdoor
     restart: unless-stopped
     environment:
-      TARGET_HOST: "10.0.15.20"
+      TARGET_HOST: "192.0.2.20"
       CLAMSHELL_PORT: "5901"
       VNC_PORT: "5900"
       SSH_PORT: "22"
-      CLAMSHELL_URL: "https://clamshell.penndalton.com"
-      VNC_URL: "https://vnc.penndalton.com"
+      CLAMSHELL_URL: "https://clamshell.example.com"
+      VNC_URL: "https://vnc.example.com"
       # TODO: confirm the real SSH ingress hostname once the Cloudflare
       # Access SSH app (item 3) is actually created -- this is a guess
       # based on the handoff doc's suggested naming, not yet verified.
-      SSH_URL: "https://macstudio-ssh.penndalton.com"
+      SSH_URL: "https://macstudio-ssh.example.com"
       TCP_PROBE_TIMEOUT: "1.5"
       PORT: "8080"
     # TODO: assign a real static IP + MAC on the br0 macvlan network,

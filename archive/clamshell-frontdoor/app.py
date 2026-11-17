@@ -17,13 +17,13 @@ from flask import Flask, redirect, Response
 # ---------------------------------------------------------------------------
 # Configuration (all overridable via environment variables)
 # ---------------------------------------------------------------------------
-TARGET_HOST = os.environ.get("TARGET_HOST", "10.0.15.20")
+TARGET_HOST = os.environ.get("TARGET_HOST", "192.0.2.20")
 CLAMSHELL_PORT = int(os.environ.get("CLAMSHELL_PORT", "5901"))
 VNC_PORT = int(os.environ.get("VNC_PORT", "5900"))
 SSH_PORT = int(os.environ.get("SSH_PORT", "22"))
-CLAMSHELL_URL = os.environ.get("CLAMSHELL_URL", "https://clamshell.penndalton.com")
-VNC_URL = os.environ.get("VNC_URL", "https://vnc.penndalton.com")
-SSH_URL = os.environ.get("SSH_URL", "https://macstudio-ssh.penndalton.com")
+CLAMSHELL_URL = os.environ.get("CLAMSHELL_URL", "https://clamshell.example.com")
+VNC_URL = os.environ.get("VNC_URL", "https://vnc.example.com")
+SSH_URL = os.environ.get("SSH_URL", "https://macstudio-ssh.example.com")
 TCP_PROBE_TIMEOUT = float(os.environ.get("TCP_PROBE_TIMEOUT", "1.5"))
 PORT = int(os.environ.get("PORT", "8080"))
 

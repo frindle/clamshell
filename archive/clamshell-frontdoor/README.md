@@ -19,7 +19,7 @@ logging in via VNC is: revisit the front-door URL, Clamshell is now up,
 step 1 sends you there instead — no extra logic needed for that chain, the
 stateless re-check handles it automatically.
 
-Gate this behind the same Cloudflare Access "Penn Only" policy as everything
+Gate this behind the same owner-only Cloudflare Access policy as everything
 else in this homelab — it's a routing convenience, not itself an auth
 boundary.
 
@@ -27,13 +27,13 @@ boundary.
 
 | Var | Default | Meaning |
 |---|---|---|
-| `TARGET_HOST` | `10.0.15.20` | The Mac's LAN IP |
+| `TARGET_HOST` | `192.0.2.20` | The Mac's LAN IP |
 | `CLAMSHELL_PORT` | `5901` | Clamshell webclient port |
 | `VNC_PORT` | `5900` | macOS Screen Sharing/VNC port |
 | `SSH_PORT` | `22` | SSH port |
-| `CLAMSHELL_URL` | `https://clamshell.penndalton.com` | Redirect target for Clamshell |
-| `VNC_URL` | `https://vnc.penndalton.com` | Redirect target for VNC |
-| `SSH_URL` | `https://macstudio-ssh.penndalton.com` | Redirect target for the browser SSH terminal — **placeholder, confirm the real hostname once the Cloudflare Access SSH app exists** |
+| `CLAMSHELL_URL` | `https://clamshell.example.com` | Redirect target for Clamshell |
+| `VNC_URL` | `https://vnc.example.com` | Redirect target for VNC |
+| `SSH_URL` | `https://macstudio-ssh.example.com` | Redirect target for the browser SSH terminal — **placeholder, confirm the real hostname once the Cloudflare Access SSH app exists** |
 | `TCP_PROBE_TIMEOUT` | `1.5` | Seconds per reachability probe |
 | `PORT` | `8080` | Port the Flask app listens on |
 

@@ -156,7 +156,7 @@ clients speak standard VNC auth, not Apple's). Browser sessions trigger
 the collapse just like native clients.
 
 **LAN TLS (optional):** to serve `/client` over `https://` / `wss://` on the
-LAN (for example with a `*.penndalton.com` wildcard pointed at the Mac), give
+LAN (for example with a `*.example.com` wildcard pointed at the Mac), give
 Clamshell a PEM certificate and private key (unencrypted, RSA or EC; the cert
 file may hold the whole chain). Either:
 
