@@ -690,5 +690,33 @@ enum AuthGateSelfTest {
         try expect(!noMediaServer.hasInputInjector, "no input injector exists")
         try expect(noMediaServer.isClientConnected, "the client is still connected")
         print("PASS a listener without media starts no capture and no input injector for a HELLO")
+
+        // 14. A device that connects again on its listener replaces its waiting
+        //     connection only once the new one has its place. With the waiting
+        //     table full of connections that cannot give way, the new one is
+        //     turned away and the connection already waiting is left alone.
+        store.forgetRecentAdds()
+        for record in store.all() where record.state == .waiting { _ = store.forget(id: record.id) }
+        let y = Device(name: "Selftest Y")
+        let y1 = try bench.knock(port1, y, "Y, first connection")
+        var fillers: [String] = []
+        while fillers.count < 32, auth.admitWaiting(deviceId: "selftest-filler-\(fillers.count)") {
+            fillers.append("selftest-filler-\(fillers.count)")
+        }
+        try expect(!auth.admitWaiting(deviceId: "selftest-filler-over"), "the waiting table is full")
+        let y2 = bench.connect(port1, "Y, second connection")
+        try y2.readChallenge()
+        try y2.answer(as: y)
+        try y2.expectStatus(.busy, skippingPending: true)
+        try y2.expectClosed("there was no room for it")
+        try expect(auth.hasWaitingConnection(deviceId: y.id), "the connection that was waiting is still counted")
+        _ = try y1.onlyPending(for: 0.8)
+        for name in fillers { auth.releaseWaiting(deviceId: name) }
+        // With room again, a new connection takes the place of the old one.
+        let y3 = try bench.knock(port1, y, "Y, third connection")
+        try y1.expectStatus(.busy, skippingPending: true)
+        try y1.expectClosed("a newer connection of the same device took its place")
+        _ = y3
+        print("PASS a connection that is turned away leaves the device's earlier waiting connection alone")
     }
 }

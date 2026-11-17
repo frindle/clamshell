@@ -276,11 +276,6 @@ final class StreamGate {
         case .busy:
             finish(link, .busy, why: "\(who) asked while the waiting list was full")
         case .waiting:
-            // One waiting connection per device on a listener: both proved
-            // they hold the key, so the newer takes the place of the older.
-            for earlier in links where earlier !== link && earlier.phase == .pending && earlier.device?.id == device.id {
-                finish(earlier, .busy, why: "\(who) connected again on this listener")
-            }
             let token = auth.admitWaitingConnection(deviceId: device.id, group: group) { [weak self, weak link] in
                 self?.queue.async {
                     guard let self, let link, link.phase == .pending else { return }
@@ -288,8 +283,17 @@ final class StreamGate {
                 }
             }
             guard let token else {
+                // Turned away: an earlier waiting link from the same device is
+                // left as it was (it is still a waiting connection that proved
+                // the key), so a refused newcomer never costs the device both.
                 finish(link, .busy, why: "\(who) asked while too many connections were waiting")
                 return
+            }
+            // One waiting connection per device on a listener: both proved
+            // they hold the key, so the newer takes the place of the older, but
+            // only now that the newer one has its place.
+            for earlier in links where earlier !== link && earlier.phase == .pending && earlier.device?.id == device.id {
+                finish(earlier, .busy, why: "\(who) connected again on this listener")
             }
             link.waitingToken = token
             wait(link, device)
