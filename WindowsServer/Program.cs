@@ -36,6 +36,7 @@ internal static class Program
         if (args.Length > 0 && args[0] == "selftest-hostkey") return HostKeySelfTest.Run();
         if (args.Length > 0 && args[0] == "selftest-store") return StoreSelfTest.Run();
         if (args.Length > 0 && args[0] == "selftest-gate") return GateSelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-screens") return ScreensSelfTest.Run();
         if (args.Length > 0 && args[0] == "windowlist") return WindowEnum.RunCli();
         if (args.Length > 0 && args[0] == "windowcaptureselftest")
         {

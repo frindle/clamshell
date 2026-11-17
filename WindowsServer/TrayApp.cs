@@ -12,6 +12,9 @@ internal sealed class TrayApp : ApplicationContext
     private List<StreamServer> _servers = new();
     private bool _encoderProbed;
     private HostAuth? _auth;
+    private ApprovalController? _approvals;
+    // Never shown: gives the device list's change events a thread to land on.
+    private readonly Control _ui = new();
 
     private readonly NotifyIcon? _icon;
     private SettingsForm? _settingsForm;
@@ -88,6 +91,14 @@ internal sealed class TrayApp : ApplicationContext
                 return;
             }
         }
+        if (_approvals is null)
+        {
+            _ = _ui.Handle;
+            _approvals = new ApprovalController(_auth, _ui, _icon);
+            _auth.Store.DidChange += RebuildMenuOnUi;
+            _auth.ApprovalDidChange += RebuildMenuOnUi;
+            _approvals.Refresh();
+        }
         _auth.Directory.SetDisplays(displays.Select(d =>
             new HostDirectory.DisplayEntry(d.Index, $"Display {d.Index + 1}", d.IsPrimary, d.Port(_basePort))));
 
@@ -135,6 +146,23 @@ internal sealed class TrayApp : ApplicationContext
         settings.Click += (_, _) => OpenSettings();
         menu.Items.Add(settings);
 
+        if (_auth is not null)
+        {
+            int waiting = _auth.Store.Waiting().Count;
+            if (waiting > 0)
+            {
+                var answer = new ToolStripMenuItem(waiting == 1 ? "1 device is waiting for approval…" : $"{waiting} devices are waiting for approval…");
+                answer.Click += (_, _) => _approvals?.Refresh();
+                menu.Items.Insert(0, answer);
+            }
+            if (!_auth.RequireApproval)
+            {
+                var off = new ToolStripMenuItem("Device approval is off: anyone who can reach this PC can connect") { Enabled = false };
+                menu.Items.Insert(0, off);
+            }
+            menu.Items.Add(new ToolStripMenuItem("This PC’s fingerprint: " + _auth.Identity.Fingerprint) { Enabled = false });
+        }
+
         if (_updateAvailable is { } u)
         {
             var update = new ToolStripMenuItem($"⬆ Update available: {u.Tag}");
@@ -162,8 +190,14 @@ internal sealed class TrayApp : ApplicationContext
             _settingsForm.Activate();
             return;
         }
-        _settingsForm = new SettingsForm(_basePort, RestartWithPort, _updateChecker);
+        _settingsForm = new SettingsForm(_basePort, RestartWithPort, _updateChecker, _auth);
         _settingsForm.Show();
+    }
+
+    private void RebuildMenuOnUi()
+    {
+        try { if (_ui.IsHandleCreated && !_ui.IsDisposed) _ui.BeginInvoke(new Action(RebuildMenu)); }
+        catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException) { }
     }
 
     private async Task CheckForUpdateAsync()
@@ -193,6 +227,7 @@ internal sealed class TrayApp : ApplicationContext
         Log.Line("exiting");
         StopServing();
         _updateTimer.Stop();
+        _approvals?.Dispose();
         if (_icon is not null) _icon.Visible = false;
         ExitThread();
     }
