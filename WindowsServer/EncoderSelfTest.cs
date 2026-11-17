@@ -148,8 +148,6 @@ internal static class EncoderSelfTest
             if (inputFirst) { In(); Out(); } else { Out(); In(); }
             step = "BeginStreaming";
             mft.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, UIntPtr.Zero);
-            step = "StartOfStream";
-            mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, UIntPtr.Zero);
             Console.Error.WriteLine($"  [{name}] OK");
         }
         catch (Exception e) { Console.Error.WriteLine($"  [{name}] FAILED at {step}: {Describe(e)}"); }

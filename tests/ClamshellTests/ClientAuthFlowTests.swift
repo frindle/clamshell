@@ -299,6 +299,47 @@ final class ClientAuthFlowTests: XCTestCase {
         XCTAssertTrue(flow.isEnded)
     }
 
+    // MARK: an address the client chose itself falls through
+
+    private func chosen(key: Data? = nil, falls: Bool) -> ClientAuthFlow {
+        var c = config()
+        c.fallsThrough = falls
+        return ClientAuthFlow(config: c, known: known(key: key))
+    }
+
+    func testAnUnknownKeyAtAnAddressTheClientChoseMovesOnAndKeepsTheAlarm() throws {
+        let other = P256.Signing.PrivateKey().publicKey.x963Representation
+        var flow = chosen(key: other, falls: true)
+        _ = flow.opened()
+        let a = flow.received(type: challengeType, payload: try host().challenge.payload)
+        XCTAssertTrue(sent(a).isEmpty)
+        XCTAssertTrue(changes(a).isEmpty)
+        XCTAssertEqual(end(a), .nextAddress)
+        XCTAssertEqual(states(a), [.changedIdentity(address: address,
+                                                    savedFingerprint: DeviceIdentity.fingerprint(ofPublicKey: other),
+                                                    nowFingerprint: DeviceIdentity.fingerprint(ofPublicKey: hostPub))])
+        XCTAssertTrue(flow.isEnded)
+    }
+
+    func testNoChallengeAtAnAddressTheClientChoseMovesOnAndKeepsTheAlarm() throws {
+        var flow = chosen(falls: true)
+        _ = flow.opened()
+        let a = flow.timerFired(.challenge)
+        XCTAssertTrue(sent(a).isEmpty)
+        XCTAssertEqual(states(a), [.didNotIdentify(hostName: "Studio")])
+        XCTAssertEqual(end(a), .nextAddress)
+    }
+
+    func testTheAddressTheUserPickedStillStopsWithTheAlarm() throws {
+        let other = P256.Signing.PrivateKey().publicKey.x963Representation
+        var key = chosen(key: other, falls: false)
+        _ = key.opened()
+        XCTAssertEqual(end(key.received(type: challengeType, payload: try host().challenge.payload)), .stop)
+        var silent = chosen(falls: false)
+        _ = silent.opened()
+        XCTAssertEqual(end(silent.timerFired(.challenge)), .stop)
+    }
+
     func testSilentKnownHostIsRefusedWithoutAClearHello() throws {
         var flow = ClientAuthFlow(config: config(), known: known())
         let opened = flow.opened()

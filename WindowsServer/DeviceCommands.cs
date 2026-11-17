@@ -168,7 +168,7 @@ internal static class DeviceCommands
             foreach (var d in rows) output($"  {d.Fingerprint}  {Quoted(d.Label)}  {detail(d)}");
         }
         Section("Waiting for approval:", DeviceState.Waiting, d =>
-            $"from {(d.Address.Length == 0 ? "an unknown address" : d.Address)}, asked {DeviceText.Ago(d.FirstSeen, now)}");
+            $"from {DeviceText.From(d)}, asked {DeviceText.Ago(d.FirstSeen, now)}");
         Section("Trusted:", DeviceState.Trusted, d =>
             $"last seen {DeviceText.Ago(d.LastSeen, now)}{Decided(d, "approved")}");
         Section("Denied:", DeviceState.Denied, d => Decided(d, "denied").Trim(',', ' '));

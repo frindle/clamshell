@@ -481,17 +481,25 @@ After any status other than 0 or 1 the host closes the connection.
   came from, reduced to a group: an IPv4 address as it is, an IPv4-mapped
   IPv6 address as its IPv4 address, any other IPv6 address as its first 64
   bits, and "unknown" when there is no usable address. The group is used only
-  for this, and for the address in the host's log lines, and is never a reason
-  to trust a device. Connections that come through the web relay or a tunnel
-  reach the host from 127.0.0.1, so the host looks at their upgrade request
-  when the TCP peer is a trusted proxy: this Mac itself always, and any
-  address or CIDR range listed in the host's `trustedProxies` setting (empty
-  by default). The client address is then `CF-Connecting-IP`, or else the
-  right-most `X-Forwarded-For` entry that is not itself a trusted proxy; with
-  neither, or nothing that reads as an address, the peer's address stays. The
-  web relay applies the same rule to its browser and passes the result to the
-  host in `X-Forwarded-For`. Groups are not a security boundary: a process on
-  the Mac itself can choose any group.
+  for this, and is never a reason to trust a device. Connections that come
+  through the web relay or a tunnel reach the host from 127.0.0.1, so the host
+  looks at their upgrade request when the TCP peer is a trusted proxy: this
+  Mac itself always, and any address or CIDR range listed in the host's
+  `trustedProxies` setting (empty by default). The reported address is
+  `CF-Connecting-IP`, or else the right-most `X-Forwarded-For` entry that is
+  not itself a trusted proxy; with neither, or nothing that reads as an
+  address, there is none. The upgrade handler cannot tell which connection a
+  request belongs to, so the headers are used only when no doubt is possible:
+  when a connection reaches ready, exactly one request is outstanding and this
+  is the only connection not yet ready. Otherwise, and whenever a connection
+  closes before it is ready, the outstanding requests are dropped and the
+  connection keeps the TCP peer. The web relay applies the same rule to its
+  browser and passes the result to the host in `X-Forwarded-For`.
+  The TCP peer is the address the host shows and stores. A reported address
+  is the client's own header, believed only far enough to pick the group, and
+  the host shows it only as "the proxy reported ...; not verified". For a
+  loopback peer the host says it came through a local proxy. Groups are not
+  a security boundary: a process on the Mac itself can choose any group.
 
   | Table | Size | Share per group | May be replaced | First to go |
   |---|---|---|---|---|
@@ -646,6 +654,9 @@ from a device that is trusted at that moment (see below).
   `accepted` when devices are waiting and again whenever the list changes
   (an empty list means none are):
   `{"devices":[{"id":"<64 hex>","name":"iPhone","fingerprint":"AB12-CD34-EF56-7890","firstSeen":1794000000,"address":"192.168.1.23"}]}`
+  `address` is the TCP peer as the host saw it. `reportedAddress` is added
+  only when a proxy on the host claimed another one (see "Host rules"); it is
+  not verified and a client shows it only as the proxy's claim.
 - **DEVICE_DECISION** (trusted client → host), UTF-8 JSON:
   `{"id":"<64 hex>","decision":"approve"}` or `"deny"`. The client sends it
   only after showing the name and fingerprint and getting an explicit answer
@@ -695,10 +706,20 @@ notices a change made by the command line. Both are tied to the Windows user
 the host runs as: another process of the same user can use that user's key and
 read that user's list, as on the Mac. If either cannot be opened the host
 serves nothing. Approval is on unless the value `RequireDeviceApproval` under
-`HKEY_CURRENT_USER\Software\Clamshell` is the DWORD 0. A host behind a reverse
+`HKEY_CURRENT_USER\Software\Clamshell` is the DWORD 0; when it is off the tray
+tooltip and menu say so and the host logs it at start. A host behind a reverse
 proxy lists the proxies it trusts in the multi-string value `TrustedProxies`
-there; the client address it reads from the proxy's headers is only used to
-group connections and for the log.
+there (loopback is always trusted); the address a proxy reports is used to
+group connections and is shown only as "the proxy reported X; not verified"
+next to the TCP peer, never as the address.
+
+Same-user risk. Approval protects against other machines and other users, not
+against code already running as the same Windows user. Any process of that user
+can approve a waiting device itself (the `approve` command, or by writing the
+device list), and can set `RequireDeviceApproval` to 0 in that user's registry
+hive, after which the unapproved HELLO path is open on every interface the host
+listens on. An administrator can do the same. Other non-administrator users
+cannot. The off state is made visible (tooltip, menu, log) but not prevented.
 
 ### Browser client
 

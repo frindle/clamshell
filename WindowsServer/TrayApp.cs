@@ -91,6 +91,8 @@ internal sealed class TrayApp : ApplicationContext
                 return;
             }
         }
+        if (!_auth.RequireApproval)
+            Log.Line("*** device approval is OFF (RequireDeviceApproval is 0): any device that can reach this PC can connect without being approved ***");
         if (_approvals is null)
         {
             _ = _ui.Handle;
@@ -155,9 +157,12 @@ internal sealed class TrayApp : ApplicationContext
                 answer.Click += (_, _) => _approvals?.Refresh();
                 menu.Items.Insert(0, answer);
             }
+            // The tooltip (63 characters at most) says it too, so it shows without opening the menu.
+            if (_icon is not null)
+                _icon.Text = _auth.RequireApproval ? "Clamshell Server" : "Clamshell Server: approval off";
             if (!_auth.RequireApproval)
             {
-                var off = new ToolStripMenuItem("Device approval is off: anyone who can reach this PC can connect") { Enabled = false };
+                var off =new ToolStripMenuItem("Device approval is off: anyone who can reach this PC can connect") { Enabled = false };
                 menu.Items.Insert(0, off);
             }
             menu.Items.Add(new ToolStripMenuItem("This PC’s fingerprint: " + _auth.Identity.Fingerprint) { Enabled = false });

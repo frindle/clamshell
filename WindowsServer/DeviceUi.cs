@@ -33,10 +33,26 @@ internal static class DeviceText
         _ => "Waiting for approval",
     };
 
+    private static readonly Auth.TrustedProxies Loopback = new();
+
+    /// <summary>Where the device connected from. The TCP peer is the fact. A loopback peer means a
+    /// proxy on this PC, and what that proxy says the client's address is only a claim.
+    /// Same wording as DeviceText.from on the Mac.</summary>
+    public static string From(string peer, string? reported)
+    {
+        if (peer.Length == 0) return "an unknown address";
+        string text = peer;
+        if (Loopback.Contains(peer)) text += ", through a local proxy";
+        if (!string.IsNullOrEmpty(reported)) text += $" (the proxy reported {reported}; not verified)";
+        return text;
+    }
+
+    public static string From(DeviceRecord d) => From(d.Address, d.ReportedAddress);
+
     /// <summary>The line under the fingerprint in the approval window.</summary>
     public static string Detail(DeviceRecord d, bool connectedNow, bool nameIsTaken, double now)
     {
-        string from = d.Address.Length == 0 ? "an unknown address" : d.Address;
+        string from = From(d);
         return $"Asked {Ago(d.FirstSeen, now)} from {from}."
             + (connectedNow ? "" : " It is not connected right now.")
             + (nameIsTaken ? " A device you already trust has the same name; this one has a different key." : "");

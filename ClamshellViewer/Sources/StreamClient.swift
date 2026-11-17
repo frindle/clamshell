@@ -162,6 +162,12 @@ final class StreamClient: ObservableObject {
     /// user picked (nil when the address is not a saved Mac's).
     private var dialPlan: [String] = []
     private var pickedHostId: String?
+    /// The address the user picked (as dialled), to tell it from the ones this
+    /// client added from the saved Mac's list.
+    private var pickedURL: String?
+    /// An alarm (changed key, no identification) an address the client chose
+    /// itself ended with. Shown only when no other address connects.
+    private var heldAlarm: (state: FlowState, address: String)?
 
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
@@ -171,7 +177,9 @@ final class StreamClient: ObservableObject {
         authState = nil
         flowCarry = FlowCarry()
         dialIndex = 0
+        heldAlarm = nil
         connectHost = host
+        pickedURL = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
         let plan = makeDialPlan(for: host)
         dialPlan = plan.urls
         pickedHostId = plan.hostId
@@ -293,6 +301,9 @@ final class StreamClient: ObservableObject {
         config.capabilities = ClientAuthFlow.defaultCapabilities.union([.fileTransfer, .peripherals])
         config.fallbackDeviceName = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         config.expectedHostId = pickedHostId
+        // An address from the saved list that the user did not type may fall
+        // through to the next one; the picked one raises its alarm at once.
+        config.fallsThrough = urlString != pickedURL && dialIndex + 1 < urls.count
         let flow = ClientAuthFlow(config: config, known: KnownHostsStore.shared.hosts, carry: flowCarry)
 
         socketDelegate.onOpen = { [weak self] task in self?.socketOpened(task) }
@@ -417,6 +428,7 @@ final class StreamClient: ObservableObject {
         authState = state
         if case let .connected(verified, _) = state {
             reconnectAttempt = 0
+            heldAlarm = nil
             clogViewer(verified ? "connected and verified" : "connected, NOT verified")
         }
     }
@@ -443,16 +455,48 @@ final class StreamClient: ObservableObject {
             // once; only after the last one does the back-off apply.
             var wrongMac = false
             if case .nextAddress = end { wrongMac = true }
-            if (!opened || wrongMac), wantConnection, connectHost != nil {
+            // An address this client chose that opened but never got as far as
+            // a session (not connected, not waiting for approval) also moves on.
+            var failedEarly = false
+            if opened, dialPlan.indices.contains(dialIndex), dialPlan[dialIndex] != pickedURL {
+                switch shown {
+                case .connected?, .waitingForApproval?, .busy?: break
+                default: failedEarly = true
+                }
+            }
+            // A key that is not the saved one, or no identification, at an
+            // address the user did not pick: remember it, and say so only if
+            // no other address connects.
+            switch shown {
+            case .changedIdentity?, .didNotIdentify?:
+                if wrongMac, let s = shown, dialIndex < dialPlan.count {
+                    if heldAlarm == nil { heldAlarm = (s, dialPlan[dialIndex]) }
+                    clogViewer("alarm held for \(dialPlan[dialIndex]); trying the next saved address")
+                }
+            default: break
+            }
+            if (!opened || wrongMac || failedEarly), wantConnection, connectHost != nil {
                 if dialIndex + 1 < dialPlan.count {
                     dialIndex += 1
-                    clogViewer(wrongMac ? "that address reaches a different saved Mac; trying the next saved one"
+                    clogViewer(wrongMac ? "that address reaches a different saved Mac, or not the saved key; trying the next saved one"
                                         : "that address did not answer; trying the next saved one")
                     teardownSocket()
                     openSocket()
                     return
                 }
                 dialIndex = 0
+                if let held = heldAlarm {
+                    // Every address was tried: now the alarm is shown, naming
+                    // the address that raised it.
+                    heldAlarm = nil
+                    wantConnection = false
+                    teardownSocket()
+                    authState = held.state
+                    let text = (Self.describe(held.state) ?? "This Mac could not be verified") + " (at \(held.address))"
+                    status = .failed(text)
+                    lastError = text
+                    return
+                }
             }
             if case let .failed(text)? = shown { lastError = "Could not connect securely: \(text)" }
             scheduleReconnect()

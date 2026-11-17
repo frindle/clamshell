@@ -45,6 +45,11 @@ internal sealed class VideoDecoder : IDisposable
     {
         _mft = ActivateDecoder(_codec);
 
+        // Without this the software decoder keeps a reorder delay and answers "need more
+        // input" for every frame, so a stream with only a few frames shows nothing.
+        try { _mft.Attributes.Set(MFAttr.LowLatency, 1u); }
+        catch (Exception e) { Log.Line($"decoder: low-latency attribute not accepted ({e.Message.Trim()})"); }
+
         using (var inType = MediaFactory.MFCreateMediaType())
         {
             inType.Set(MFAttr.MajorType, MFAttr.Video);
@@ -275,7 +280,8 @@ internal static class MFAttr
     public static readonly Guid Video = new("73646976-0000-0010-8000-00aa00389b71");
     public static readonly Guid H264 = new("34363248-0000-0010-8000-00aa00389b71");
     public static readonly Guid Hevc = new("43564548-0000-0010-8000-00aa00389b71");
-    public static readonly Guid Nv12 = new("3231564e-0000-0010-8000-00aa00389b71");
+    public static readonly Guid LowLatency = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
+    public static readonly Guid Nv12 =new("3231564e-0000-0010-8000-00aa00389b71");
 }
 
 internal static class Mf
