@@ -9,7 +9,9 @@ import Foundation
 // It checks who gets in, and that a connection which has not got in starts
 // nothing and cannot disturb the client being served. It captures nothing and
 // types nothing: no admitted client sends a HELLO long enough to start a
-// session. The first listener is marked primary, and the last step shows that
+// session, except on a third listener made to start no media at all (the
+// interop host's setting), where the last step checks that nothing starts.
+// The first listener is marked primary, and step 12 shows that
 // a connection that has not got in cannot make it collapse the display (the
 // notification is swapped for a local list) or start a session.
 //
@@ -26,6 +28,8 @@ enum AuthGateSelfTest {
     /// Display 0 and display 1 of the host under test.
     private static let port0: UInt16 = 5996
     private static let port1: UInt16 = 5995
+    /// A listener that starts no capture and no input (the interop host's setting).
+    private static let portNoMedia: UInt16 = 5993
 
     private static func expect(_ ok: Bool, _ what: String) throws {
         if !ok { throw Failure("expected that \(what)") }
@@ -391,11 +395,14 @@ enum AuthGateSelfTest {
         auth.responseDeadline = 4
         auth.pendingRepeat = 0.2
 
+        let noMediaServer = StreamServer(source: .display(CGMainDisplayID()), port: portNoMedia, isPrimary: false,
+                                         auth: auth, displayIndex: 0, loopbackOnly: true, startsMedia: false)
         let servers = [
             StreamServer(source: .display(CGMainDisplayID()), port: port0, isPrimary: true,
                          auth: auth, displayIndex: 0, loopbackOnly: true),
             StreamServer(source: .display(CGMainDisplayID()), port: port1, isPrimary: false,
                          auth: auth, displayIndex: 1, loopbackOnly: true),
+            noMediaServer,
         ]
         let bench = Bench(auth: auth)
         var code: Int32 = 0
@@ -403,7 +410,8 @@ enum AuthGateSelfTest {
             for server in servers { try server.start() }
             try bench.waitForListener(port0)
             try bench.waitForListener(port1)
-            try check(bench)
+            try bench.waitForListener(portNoMedia)
+            try check(bench, noMediaServer: noMediaServer)
             print("PASS: the gate let in only what the user approved")
         } catch let failure as Failure {
             print("FAIL: \(failure.what)")
@@ -422,7 +430,7 @@ enum AuthGateSelfTest {
         return code
     }
 
-    private static func check(_ bench: Bench) throws {
+    private static func check(_ bench: Bench, noMediaServer: StreamServer) throws {
         let auth = bench.auth
         let store = auth.store
         let onHost = DeviceTrustStore.decidedOnHost
@@ -666,5 +674,21 @@ enum AuthGateSelfTest {
         try expect(collapses.isEmpty, "a connection that is not let in cannot make the primary listener collapse the display (got \(collapses))")
         try expect(store.state(of: w.id) == .waiting, "the device is still only waiting")
         print("PASS on a primary listener nothing starts before a device is let in")
+
+        // 13. A listener made to start no capture and no input (the interop
+        //     host's setting) starts neither for a client that is let in and
+        //     sends a complete HELLO. The keepalive sent after the HELLO is
+        //     answered, so the HELLO has been handled by then; no session
+        //     start was counted, no injector exists, no HELLO_ACK or video
+        //     follows and the connection stays open.
+        try expect(store.isTrusted(a.id), "device A is still trusted")
+        let t1 = try bench.enter(portNoMedia, a, "A, listener without media", display: 0)
+        try t1.sendSecure(.hello, Data([streamProtocolVersion, StreamCodec.hevc.rawValue]))
+        try t1.expectPing()
+        try t1.expectNothing(for: 1.0, "a listener that starts no media sends no HELLO_ACK or video")
+        try expect(noMediaServer.mediaStartCount == 0, "no capture session was started (\(noMediaServer.mediaStartCount))")
+        try expect(!noMediaServer.hasInputInjector, "no input injector exists")
+        try expect(noMediaServer.isClientConnected, "the client is still connected")
+        print("PASS a listener without media starts no capture and no input injector for a HELLO")
     }
 }
