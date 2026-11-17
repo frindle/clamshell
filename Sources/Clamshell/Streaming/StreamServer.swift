@@ -109,6 +109,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var audioEncoder: AudioEncoder?
     private var clipboard: ClipboardBridge?
     private var injector: InputInjector?
+    /// What the connected device may bring along. Each exists only for a
+    /// device that was let in and set the matching capability bit (see
+    /// `admitted`), and ends with the connection.
+    private var fileSession: HostFileSession?
+    /// Drives the time-based parts of the two above; runs only while one exists.
+    private var deviceTimer: DispatchSourceTimer?
     private let audioQueue = DispatchQueue(label: "clamshell.stream.audio")
 
     /// Serial queue owning all connection/session state.
@@ -335,6 +341,36 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         liveLink = link
         connection = link.conn
         sessionRequested = false
+        startDeviceSessions(for: link)
+    }
+
+    /// Creates what the device's capability bits ask for. A connection with no
+    /// handshake (a host with approval off, a client that never answered the
+    /// challenge) has no device and so no bits: it never transfers files.
+    private func startDeviceSessions(for link: StreamLink) {
+        guard let device = link.device else { return }
+        if HostFileSession.allowed(phase: link.phase, capabilities: device.capabilities) {
+            let name = device.name
+            fileSession = HostFileSession(onStored: { url in
+                HostNotice.post(title: "File received",
+                                body: "\(url.lastPathComponent) from \(name) is in Downloads/Clamshell.")
+            })
+        }
+        if fileSession != nil { startDeviceTimer() }
+    }
+
+    private func startDeviceTimer() {
+        guard deviceTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 1, repeating: 1)
+        timer.setEventHandler { [weak self] in self?.deviceTick() }
+        timer.resume()
+        deviceTimer = timer
+    }
+
+    private func deviceTick() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for frame in fileSession?.tick(now: now) ?? [] { send(frame) }
     }
 
     private func teardownSession() {
@@ -368,6 +404,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         clipboard = nil
         injector?.releaseAll()
         injector = nil
+        deviceTimer?.cancel()
+        deviceTimer = nil
+        fileSession?.closeAll()
+        fileSession = nil
     }
 
     // MARK: - Messages (on `queue`)
@@ -415,8 +455,14 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             break // the gate deals with these; here they mean nothing
         case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
-        case .peripheralAttach, .peripheralStatus, .peripheralDetach, .peripheralInput, .peripheralOutput,
-             .fileOffer, .fileAnswer, .fileData, .fileEnd:
+        case .fileOffer, .fileData, .fileEnd:
+            // Only a session made for a device that set the bit has one.
+            guard let files = fileSession else { return }
+            for frame in files.receive(type: type.rawValue, payload: payload,
+                                       now: ProcessInfo.processInfo.systemUptime) { send(frame) }
+        case .fileAnswer:
+            break // the host never offers a file, so there is nothing to answer
+        case .peripheralAttach, .peripheralStatus, .peripheralDetach, .peripheralInput, .peripheralOutput:
             break // not wired into the host yet
         }
     }

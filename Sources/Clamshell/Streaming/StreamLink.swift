@@ -164,7 +164,7 @@ final class StreamGate {
             auth.removeUnanswered(token)
             countUnanswered(link)
         }
-        var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval]
+        var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval, .fileTransfer]
         if auth.requireApproval { capabilities.insert(.approvalRequired) }
         do {
             let handshake = try HostHandshake(identityKey: auth.identity.publicKey,

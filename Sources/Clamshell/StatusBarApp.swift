@@ -509,6 +509,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(devicesItem)
         menu.setSubmenu(devices.makeMenu(), for: devicesItem)
 
+        // Files a connected device sends land in Downloads/Clamshell.
+        let receiveFiles = NSMenuItem(title: "Receive Files from Devices", action: #selector(toggleReceiveFiles), keyEquivalent: "")
+        receiveFiles.state = HostDeviceSettings.filesEnabled ? .on : .off
+        receiveFiles.target = self
+        menu.addItem(receiveFiles)
+
         let systemMenu = NSMenu()
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
         mute.state = coordinator.comfort.muteWhileCollapsed ? .on : .off
@@ -839,6 +845,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleInvertScroll() {
         invertScroll.toggle()
         UserDefaults.standard.set(invertScroll, forKey: "invertScroll")
+        rebuildMenu()
+    }
+
+    @objc private func toggleReceiveFiles() {
+        HostDeviceSettings.filesEnabled.toggle()
         rebuildMenu()
     }
 
