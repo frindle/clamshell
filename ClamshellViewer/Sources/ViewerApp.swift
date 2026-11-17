@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // ClamshellViewer — universal iOS client for the Clamshell stream protocol
 // (see ../PROTOCOL.md). One app, two UIs picked by device idiom at runtime:
@@ -131,6 +132,11 @@ final class Connection: ObservableObject {
         // Report the iPad's real screen size in HELLO so the Mac auto-sizes
         // its virtual display to this device (no manual preset needed).
         primary.reportedPixelSize = UIScreen.main.nativeBounds.size
+        // Listening for the Mac's answers to files, and controllers going to
+        // the Mac over the primary connection.
+        _ = primary.files
+        _ = external.files
+        GameControllerBridge.shared.start(client: primary)
     }
 
     func connect(host: String) {
@@ -428,6 +434,7 @@ struct ContentView: View {
     @ObservedObject private var knownHosts = KnownHostsStore.shared
     @State private var resolvingNearby: String?
     @State private var showShortcuts = false
+    @State private var showFileImporter = false
     @AppStorage("hostAddress") private var host = ""
     @State private var machineName = ""
     @AppStorage("nerdMode") private var nerdMode = false
@@ -568,6 +575,10 @@ struct ContentView: View {
                         }
                         .padding(.bottom, 12)
                     }
+                    .overlay(alignment: .bottomLeading) {
+                        // Files going to the Mac and the game controllers.
+                        DevicesPanel(files: client.files, controllers: GameControllerBridge.shared)
+                    }
                     .overlay(alignment: .topTrailing) {
                         ZStack(alignment: .topTrailing) {
                             // Always-present, invisible hover/tap catcher —
@@ -616,6 +627,15 @@ struct ContentView: View {
                                     } label: {
                                         Label(pointerLock.isLocked ? "Unlock pointer" : "Lock pointer",
                                               systemImage: pointerLock.isLocked ? "cursorarrow.slash" : "cursorarrow.motionlines")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                                if client.hostCapabilities.contains(.fileTransfer) {
+                                    Button {
+                                        showFileImporter = true
+                                    } label: {
+                                        Label("Send file…", systemImage: "square.and.arrow.up")
                                             .font(.subheadline)
                                             .foregroundStyle(.white.opacity(0.7))
                                     }
@@ -693,6 +713,11 @@ struct ContentView: View {
             } else {
                 connection.releaseDisplayB()
             }
+        }
+        // Files, iCloud Drive and USB drives, read under security-scoped access.
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item],
+                      allowsMultipleSelection: true) { result in
+            if case let .success(urls) = result { client.files.send(urls) }
         }
         .sheet(isPresented: $showSettings) {
             InSessionSettingsView(store: store, currentHost: host,

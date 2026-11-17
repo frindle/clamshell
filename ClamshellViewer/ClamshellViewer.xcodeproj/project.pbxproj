@@ -19,6 +19,13 @@
 		BB0000000000000000000060 /* SecureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000060 /* SecureSession.swift */; };
 		BB0000000000000000000061 /* KnownHosts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000061 /* KnownHosts.swift */; };
 		BB0000000000000000000062 /* ClientAuthFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000062 /* ClientAuthFlow.swift */; };
+		BB0000000000000000000070 /* FileTransferCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000070 /* FileTransferCore.swift */; };
+		BB0000000000000000000071 /* PeripheralCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000071 /* PeripheralCore.swift */; };
+		BB0000000000000000000072 /* FileSendQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000072 /* FileSendQueue.swift */; };
+		BB0000000000000000000073 /* ControllerReport.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000073 /* ControllerReport.swift */; };
+		BB0000000000000000000074 /* FileSendController.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000074 /* FileSendController.swift */; };
+		BB0000000000000000000075 /* GameControllers.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000075 /* GameControllers.swift */; };
+		BB0000000000000000000076 /* DevicesPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000076 /* DevicesPanel.swift */; };
 		BB0000000000000000000063 /* DeviceKeyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000063 /* DeviceKeyStore.swift */; };
 		BB0000000000000000000064 /* KnownHostsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000064 /* KnownHostsStore.swift */; };
 		BB0000000000000000000065 /* AuthPromptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000065 /* AuthPromptView.swift */; };
@@ -58,6 +65,13 @@
 		FF0000000000000000000060 /* SecureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SecureSession.swift; path = ../Sources/Clamshell/Streaming/SecureSession.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000061 /* KnownHosts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KnownHosts.swift; path = ../Sources/Clamshell/Streaming/KnownHosts.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000062 /* ClientAuthFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ClientAuthFlow.swift; path = ../Sources/Clamshell/Streaming/ClientAuthFlow.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000070 /* FileTransferCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FileTransferCore.swift; path = ../Sources/Clamshell/Streaming/FileTransferCore.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000071 /* PeripheralCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PeripheralCore.swift; path = ../Sources/Clamshell/Streaming/PeripheralCore.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000072 /* FileSendQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FileSendQueue.swift; path = ../Sources/Clamshell/Streaming/FileSendQueue.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000073 /* ControllerReport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ControllerReport.swift; path = ../Sources/Clamshell/Streaming/ControllerReport.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000000074 /* FileSendController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSendController.swift; sourceTree = "<group>"; };
+		FF0000000000000000000075 /* GameControllers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameControllers.swift; sourceTree = "<group>"; };
+		FF0000000000000000000076 /* DevicesPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesPanel.swift; sourceTree = "<group>"; };
 		FF0000000000000000000063 /* DeviceKeyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeviceKeyStore.swift; sourceTree = "<group>"; };
 		FF0000000000000000000064 /* KnownHostsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnownHostsStore.swift; sourceTree = "<group>"; };
 		FF0000000000000000000065 /* AuthPromptView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthPromptView.swift; sourceTree = "<group>"; };
@@ -111,6 +125,9 @@
 				FF0000000000000000000006 /* KeyMap.swift */,
 				FF0000000000000000000052 /* NearbyHosts.swift */,
 				FF0000000000000000000054 /* PointerLock.swift */,
+				FF0000000000000000000074 /* FileSendController.swift */,
+				FF0000000000000000000075 /* GameControllers.swift */,
+				FF0000000000000000000076 /* DevicesPanel.swift */,
 				FF0000000000000000000040 /* RDPSession.swift */,
 				FF0000000000000000000042 /* RDPView.swift */,
 				FF0000000000000000000044 /* RDPKeyMap.swift */,
@@ -134,6 +151,10 @@
 				FF0000000000000000000060 /* SecureSession.swift */,
 				FF0000000000000000000061 /* KnownHosts.swift */,
 				FF0000000000000000000062 /* ClientAuthFlow.swift */,
+				FF0000000000000000000070 /* FileTransferCore.swift */,
+				FF0000000000000000000071 /* PeripheralCore.swift */,
+				FF0000000000000000000072 /* FileSendQueue.swift */,
+				FF0000000000000000000073 /* ControllerReport.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -246,6 +267,13 @@
 				BB0000000000000000000061 /* KnownHosts.swift in Sources */,
 				BB0000000000000000000062 /* ClientAuthFlow.swift in Sources */,
 				BB0000000000000000000054 /* PointerLock.swift in Sources */,
+				BB0000000000000000000070 /* FileTransferCore.swift in Sources */,
+				BB0000000000000000000071 /* PeripheralCore.swift in Sources */,
+				BB0000000000000000000072 /* FileSendQueue.swift in Sources */,
+				BB0000000000000000000073 /* ControllerReport.swift in Sources */,
+				BB0000000000000000000074 /* FileSendController.swift in Sources */,
+				BB0000000000000000000075 /* GameControllers.swift in Sources */,
+				BB0000000000000000000076 /* DevicesPanel.swift in Sources */,
 				BB0000000000000000000041 /* RDPSession.swift in Sources */,
 				BB0000000000000000000043 /* RDPView.swift in Sources */,
 				BB0000000000000000000045 /* RDPKeyMap.swift in Sources */,
