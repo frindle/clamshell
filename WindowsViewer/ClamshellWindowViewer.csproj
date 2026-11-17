@@ -27,4 +27,9 @@
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Device-auth handshake, shared with tests/ (the macOS interop project). -->
+    <Compile Include="..\WindowsShared\**\*.cs" Link="WindowsShared\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

@@ -23,6 +23,7 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-auth") return AuthSelfTestMain(args[1..]);
         if (args.Length > 0 && args[0] == "--verify") return VerifyMain(args[1..]);
         if (args.Length > 0 && args[0] == "decode-file") return DecodeFileMain(args[1..]);
 
@@ -42,6 +43,20 @@ internal static class Program
         window.Show();
         app.Run(window);
         return 0;
+    }
+
+    /// <summary>Device-auth checks that need no network and no window.</summary>
+    private static int AuthSelfTestMain(string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer selftest-auth <auth-v1.json>");
+            return 1;
+        }
+        var run = new Clamshell.Auth.TestRun(Log.Line);
+        Clamshell.Auth.AuthTests.Run(run, args[0]);
+        Log.Line($"selftest-auth: {run.Passed} passed, {run.Failed} failed");
+        return run.Failed == 0 ? 0 : 1;
     }
 
     /// <summary>Headless end-to-end verification: real WebSocket connect, real
