@@ -574,21 +574,27 @@ internal sealed partial class StreamServer : IDisposable
             if (_session == link) Teardown();
         }
         if (counted) _auth.SessionClosed(link.Device?.Id);
-        link.Cts.Cancel();
-        _ = CloseSocketAsync(link.Ws, graceful);
+        // Cancelling a pending receive aborts the socket and can drop what was just sent, so a
+        // link that is being told something last waits for its read loop to see the peer's close.
+        if (!graceful) link.Cts.Cancel();
+        _ = CloseSocketAsync(link, graceful);
     }
 
-    private static async Task CloseSocketAsync(WebSocket ws, bool graceful)
+    private static async Task CloseSocketAsync(Link link, bool graceful)
     {
+        var ws = link.Ws;
         try
         {
             if (graceful && ws.State == WebSocketState.Open)
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2));
                 await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, null, cts.Token);
+                while (ws.State == WebSocketState.CloseSent && !cts.IsCancellationRequested)
+                    await Task.Delay(50, cts.Token);
             }
         }
         catch (Exception) { }
+        try { link.Cts.Cancel(); } catch (Exception) { }
         try { ws.Abort(); } catch (Exception) { }
         try { ws.Dispose(); } catch (Exception) { }
     }
