@@ -51,7 +51,14 @@ internal sealed class VideoEncoder : IDisposable
     private VideoEncoder(StreamCodec codec, EncoderStatus status, int width, int height, bool hardware)
     {
         Codec = codec; Status = status; _width = width; _height = height; _hardware = hardware;
-        Build();
+        try { Build(); }
+        catch
+        {
+            // Create tries the next encoder when this throws, and nobody can dispose this one.
+            try { _mft?.Dispose(); } catch { }
+            _mft = null!;
+            throw;
+        }
     }
 
     /// <summary>Picks codec + hardware/software per the preference order and the
@@ -161,8 +168,10 @@ internal sealed class VideoEncoder : IDisposable
                 if (_rebuild)
                 {
                     _rebuild = false;
-                    RebuildLocked();
+                    if (!RebuildLocked()) return;
                 }
+                // A failed rebuild leaves no transform until the next keyframe request retries it.
+                if (_mft == null) return;
 
                 using var sample = MediaFactory.MFCreateSample();
                 using var buffer = MediaFactory.MFCreateMemoryBuffer(nv12.Length);
@@ -204,7 +213,7 @@ internal sealed class VideoEncoder : IDisposable
             if ((uint)r.Code == Mf.StreamChange)
             {
                 outSample?.Dispose(); outBuffer?.Dispose();
-                ReapplyOutputTypeLocked(); // full rebuild (new IDR)
+                if (!ReapplyOutputTypeLocked()) return; // full rebuild (new IDR)
                 continue;
             }
             r.CheckError();
@@ -251,17 +260,42 @@ internal sealed class VideoEncoder : IDisposable
         catch { return Array.Empty<byte>(); }
     }
 
-    private void ReapplyOutputTypeLocked()
+    private bool ReapplyOutputTypeLocked()
     {
         // Rare; simplest correct handling is a full rebuild (new IDR).
-        RebuildLocked();
+        return RebuildLocked();
     }
 
-    private void RebuildLocked()
+    private const int MaxRebuildFailures = 3;
+    private int _rebuildFailures;
+
+    /// <summary>Rebuilds the transform. A failure does not leave a disposed one behind: the
+    /// partly built transform is released, the next keyframe request or bitrate change tries
+    /// again, and after <see cref="MaxRebuildFailures"/> failures in a row it stops trying
+    /// (logged once), so video stays off for the rest of the session instead of failing on
+    /// every frame.</summary>
+    private bool RebuildLocked()
     {
-        try { _mft.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, UIntPtr.Zero); } catch { }
-        try { _mft.Dispose(); } catch { }
-        Build();
+        if (_rebuildFailures >= MaxRebuildFailures) return false;
+        try { _mft?.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, UIntPtr.Zero); } catch { }
+        try { _mft?.Dispose(); } catch { }
+        _mft = null!;
+        try
+        {
+            Build();
+            _rebuildFailures = 0;
+            return true;
+        }
+        catch (Exception e)
+        {
+            try { _mft?.Dispose(); } catch { }
+            _mft = null!;
+            _rebuildFailures++;
+            Log.Line(_rebuildFailures >= MaxRebuildFailures
+                ? $"encoder: rebuild failed ({e.Message.Trim()}); giving up, no video until the client reconnects"
+                : $"encoder: rebuild failed ({e.Message.Trim()}); will try again at the next keyframe request");
+            return false;
+        }
     }
 
     public void RequestKeyframe() { lock (_lock) _rebuild = true; }
