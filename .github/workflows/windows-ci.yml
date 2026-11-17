@@ -18,6 +18,9 @@ jobs:
       - name: Input self-test (shared vectors, tests/vectors/input-v1.json)
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-input tests/vectors/input-v1.json
 
+      - name: Encoder self-test (the session's encoder path, synthetic frames, real AVCC out)
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-encoder
+
       - name: Live smoke test (real display enum, encoder probe, listener bind)
         # `selftest` above never touches DXGI/Media Foundation/HttpListener —
         # those need an actual display/session, which is exactly what nobody
