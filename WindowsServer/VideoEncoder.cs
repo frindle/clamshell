@@ -118,7 +118,11 @@ internal sealed class VideoEncoder : IDisposable
         }
 
         _mft.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, UIntPtr.Zero);
-        _mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, UIntPtr.Zero);
+        // The software H.264 encoder rejects NOTIFY_START_OF_STREAM with E_FAIL on
+        // the CI runner (CI showed every variant that stops at BeginStreaming
+        // works); the message is optional, so a failure here is not fatal.
+        try { _mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, UIntPtr.Zero); }
+        catch (Exception e) { Log.Line($"encoder: start-of-stream message refused ({e.Message}); continuing"); }
         _firstAfterBuild = true;
     }
 
