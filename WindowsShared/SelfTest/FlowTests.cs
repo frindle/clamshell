@@ -15,6 +15,7 @@ public static class FlowTests
         t.Group("known hosts store", () => StoreTests(t));
         t.Group("known hosts: fallback addresses", () => FallbackTests(t));
         t.Group("known hosts file", () => FileTests(t));
+        t.Group("known hosts file lock", () => CrossProcessLockTests(t));
         t.Group("flow: opening and challenge", () => OpeningTests(t));
         t.Group("flow: results", () => ResultTests(t));
         t.Group("flow: unverified and changed hosts", () => TrustTests(t));
@@ -280,6 +281,67 @@ public static class FlowTests
             Throws<KnownHostsFileException>(t, () => file.Load(), "a folder at the path refuses to load");
             Throws<KnownHostsFileException>(t, () => file.Apply(KnownHostsChange.AllowUnverified("a.local"), 1), "a folder at the path refuses a change");
             t.Check(Directory.Exists(file.FilePath), "the folder is left alone");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch (Exception) { /* temp folder */ }
+        }
+    }
+
+    /// <summary>Two instances on one folder stand for two programs: a change in
+    /// one waits for a change in the other, and no change is lost.</summary>
+    private static void CrossProcessLockTests(TestRun t)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "clamshell-kh-lock-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var key = TestKey.Random();
+            var viewer = new KnownHostsFile(dir) { LockWait = TimeSpan.FromMilliseconds(250) };
+            viewer.Apply(KnownHostsChange.RecordVerified(key.Public, "Mac", "mac.local"), 1);
+
+            // Another program holds the lock: this change gives up and the file is untouched.
+            var before = File.ReadAllBytes(viewer.FilePath);
+            using (new FileStream(viewer.FilePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+            {
+                Throws<KnownHostsFileException>(t, () => viewer.Apply(KnownHostsChange.AllowUnverified("a.local"), 2),
+                    "a change gives up while another program holds the lock");
+            }
+            t.Same(File.ReadAllBytes(viewer.FilePath), before, "a change that gave up left the file as it was");
+
+            // The other program finishes while this change waits: the change goes through.
+            var patient = new KnownHostsFile(dir) { LockWait = TimeSpan.FromSeconds(10) };
+            var held = new FileStream(patient.FilePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            var release = new Thread(() => { Thread.Sleep(300); held.Dispose(); });
+            release.Start();
+            patient.Apply(KnownHostsChange.AllowUnverified("b.local"), 3);
+            release.Join();
+            t.Equal(patient.Load().UnverifiedAllowed.Count, 1, "a change waits for the lock and then lands");
+
+            // A forget in one instance racing saves in another: both kinds of change survive.
+            var forgetter = new KnownHostsFile(dir);
+            var saver = new KnownHostsFile(dir);
+            string id = DeviceIdentity.Id(key.Public);
+            var failures = new List<string>();
+            var forgetting = new Thread(() =>
+            {
+                try { forgetter.Apply(KnownHostsChange.Forget(id), 4); }
+                catch (Exception e) { lock (failures) failures.Add(e.Message); }
+            });
+            var saving = new Thread(() =>
+            {
+                try
+                {
+                    for (int i = 0; i < 25; i++)
+                        saver.Apply(KnownHostsChange.AllowUnverified($"lan{i}.local"), 5 + i);
+                }
+                catch (Exception e) { lock (failures) failures.Add(e.Message); }
+            });
+            forgetting.Start(); saving.Start();
+            forgetting.Join(); saving.Join();
+            var end = new KnownHostsFile(dir).Load();
+            t.Equal(failures.Count, 0, "no change failed while two instances raced");
+            t.Equal(end.Hosts.Count, 0, "the forget was not undone by the saves");
+            t.Equal(end.UnverifiedAllowed.Count, 26, "every save survived the forget");
         }
         finally
         {

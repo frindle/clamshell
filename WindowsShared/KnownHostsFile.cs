@@ -71,10 +71,44 @@ public sealed class KnownHostsFile
     {
         lock (_gate)
         {
+            // The lock file keeps out other programs (a viewer and the
+            // forget-host command) and other instances of this class on the
+            // same folder; _gate alone only covers this instance.
+            using var fileLock = AcquireFileLock();
             var hosts = LoadUnlocked();
             change.Apply(hosts, now);
             Save(hosts);
             return hosts;
+        }
+    }
+
+    /// <summary>How long a change waits for another program's change to finish
+    /// before it gives up and leaves the file alone.</summary>
+    public TimeSpan LockWait { get; init; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>An exclusive lock on a file next to the store, held for one
+    /// read-modify-write. The file is never deleted: removing it while
+    /// another program waits on it would let two programs hold "the" lock.</summary>
+    private FileStream AcquireFileLock()
+    {
+        var path = FilePath + ".lock";
+        var deadline = DateTime.UtcNow + LockWait;
+        while (true)
+        {
+            try
+            {
+                Directory.CreateDirectory(FolderPath);
+                return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                if (DateTime.UtcNow >= deadline)
+                {
+                    throw new KnownHostsFileException(
+                        $"The saved Macs file ({FilePath}) is in use by another program: {e.Message} Nothing was changed.");
+                }
+                Thread.Sleep(20);
+            }
         }
     }
 
