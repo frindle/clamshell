@@ -31,6 +31,8 @@
   <ItemGroup>
     <!-- Device-auth handshake, shared with tests/ (the macOS interop project). -->
     <Compile Include="..\WindowsShared\**\*.cs" Link="WindowsShared\%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Windows-only code the viewer and the server both use (the CNG key). -->
+    <Compile Include="..\WindowsCommon\**\*.cs" Link="WindowsCommon\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>
