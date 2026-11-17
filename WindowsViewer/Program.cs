@@ -8,7 +8,7 @@ namespace Clamshell;
 //
 // Usage:
 //   ClamshellWindowViewer <host> <port> [codec]      GUI mode (default)
-//   ClamshellWindowViewer --verify <host> <port> [codec] [timeoutSec]
+//   ClamshellWindowViewer --verify <host> <port> [codec] [timeoutSec] [--allow-unverified]
 //                                                     headless CI verification
 //                                                     -- see the report for
 //                                                     what this proves and
@@ -17,13 +17,23 @@ namespace Clamshell;
 //                                                     elementary stream file
 //                                                     directly (no network)
 //   ClamshellWindowViewer selftest                    pure protocol-logic checks
+//   ClamshellWindowViewer known-hosts                 list saved Macs
+//   ClamshellWindowViewer forget-host <addr|fingerprint>
+//   ClamshellWindowViewer selftest-screens            build each screen once
 internal static class Program
 {
     [STAThread]
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-auth") return AuthSelfTestMain(args[1..]);
+        if (args.Length > 0 && args[0] == "selftest-keystore") return KeyStoreSelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-screens") return AuthScreens.SelfTest() == 0 ? 0 : 1;
+        if (args.Length > 0 && args[0] == "known-hosts") return KnownHostsMain();
+        if (args.Length > 0 && args[0] == "forget-host") return ForgetHostMain(args[1..]);
         if (args.Length > 0 && args[0] == "--verify") return VerifyMain(args[1..]);
+        // --allow-unverified belongs to --verify only. Anywhere else it is ignored.
+        args = args.Where(a => a != "--allow-unverified").ToArray();
         if (args.Length > 0 && args[0] == "decode-file") return DecodeFileMain(args[1..]);
 
         if (args.Length < 2)
@@ -44,6 +54,64 @@ internal static class Program
         return 0;
     }
 
+    /// <summary>Prints one line per saved Mac: address, name, fingerprint. Changes nothing.</summary>
+    private static int KnownHostsMain()
+    {
+        Clamshell.Auth.KnownHosts hosts;
+        try { hosts = new Clamshell.Auth.KnownHostsFile(ViewerPaths.DataFolder).Load(); }
+        catch (Clamshell.Auth.KnownHostsFileException e) { Console.Error.WriteLine(e.Message); return 1; }
+        foreach (var h in hosts.Hosts)
+        {
+            var addresses = h.Addresses.Count == 0 ? new List<string> { "-" } : h.Addresses.Select(a => a.Address).ToList();
+            foreach (var a in addresses) Console.WriteLine($"{a}\t{h.Name}\t{h.Fingerprint}");
+        }
+        return 0;
+    }
+
+    /// <summary>Forgets one saved Mac, named by an address or a fingerprint. The
+    /// next connection treats it as a computer never met.</summary>
+    private static int ForgetHostMain(string[] args)
+    {
+        if (args.Length != 1)
+        {
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer forget-host <address or fingerprint>");
+            return 1;
+        }
+        var file = new Clamshell.Auth.KnownHostsFile(ViewerPaths.DataFolder);
+        Clamshell.Auth.KnownHosts hosts;
+        try { hosts = file.Load(); }
+        catch (Clamshell.Auth.KnownHostsFileException e) { Console.Error.WriteLine(e.Message); return 1; }
+        string what = args[0].Trim();
+        var matches = hosts.Hosts.Where(h =>
+            h.Fingerprint.Equals(what, StringComparison.OrdinalIgnoreCase)
+            || h.Addresses.Any(a => a.Address.Equals(what, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (matches.Count != 1)
+        {
+            Console.Error.WriteLine(matches.Count == 0
+                ? $"No saved Mac matches {what}. Run known-hosts to list them."
+                : $"{matches.Count} saved Macs match {what}. Use the fingerprint.");
+            return 1;
+        }
+        try { file.Apply(Clamshell.Auth.KnownHostsChange.Forget(matches[0].Id), DateTimeOffset.UtcNow.ToUnixTimeSeconds()); }
+        catch (Clamshell.Auth.KnownHostsFileException e) { Console.Error.WriteLine(e.Message); return 1; }
+        Console.WriteLine($"Forgot {matches[0].Name} ({matches[0].Fingerprint}).");
+        return 0;
+    }
+
+    /// <summary>Device-auth checks that need no network and no window.</summary>
+    private static int AuthSelfTestMain(string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer selftest-auth <auth-v1.json>");
+            return 1;
+        }
+        var run = new Clamshell.Auth.TestRun(Log.Line);
+        Clamshell.Auth.AuthTests.Run(run, args[0]);
+        Log.Line($"selftest-auth: {run.Passed} passed, {run.Failed} failed");
+        return run.Failed == 0 ? 0 : 1;
+    }
+
     /// <summary>Headless end-to-end verification: real WebSocket connect, real
     /// HELLO/HELLO_ACK, real VIDEO_FRAME decode via VideoDecoder -- no WPF
     /// window, no Dispatcher, so it runs cleanly in a CI job with no
@@ -54,9 +122,13 @@ internal static class Program
     /// throw".</summary>
     private static int VerifyMain(string[] args)
     {
+        // The one yes that rule 6 asks of a person, for a headless run with no
+        // person. It answers that question only and is never saved.
+        bool allowUnverified = args.Contains("--allow-unverified");
+        args = args.Where(a => a != "--allow-unverified").ToArray();
         if (args.Length < 2)
         {
-            Console.Error.WriteLine("Usage: ClamshellWindowViewer --verify <host> <port> [h264|hevc] [timeoutSec]");
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer --verify <host> <port> [h264|hevc] [timeoutSec] [--allow-unverified]");
             return 1;
         }
         string host = args[0];
@@ -65,7 +137,16 @@ internal static class Program
             ? StreamCodec.Hevc : StreamCodec.H264;
         int timeoutSec = args.Length > 3 ? int.Parse(args[3]) : 20;
 
-        using var client = new ViewerClient();
+        ViewerClient client;
+        try { client = ViewerClient.OpenDefault(); }
+        catch (DeviceKeyException e)
+        {
+            Log.Line($"verify: FAIL -- {e.Message}");
+            return 1;
+        }
+        using var disposeClient = client;
+        client.AllowUnverified = allowUnverified;
+        client.OnState = state => Log.Line($"verify: state {state.Kind}");
         var done = new TaskCompletionSource<bool>();
         int frameCount = 0;
         string failReason = "timed out waiting for a decoded frame";

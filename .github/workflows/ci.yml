@@ -62,6 +62,14 @@ jobs:
       - name: Web client auth against the real host
         timeout-minutes: 3
         run: node tests/test-webclient-auth-interop.js .build/debug/Clamshell 5994
+      # The same host set-up, driven by the C# client flow that the Windows
+      # viewer uses (WindowsShared/), over a plain ClientWebSocket.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Windows viewer client flow against the real host
+        timeout-minutes: 5
+        run: dotnet run --project tests/WindowsViewerInterop/WindowsViewerInterop.csproj -c Release -- "$PWD/.build/debug/Clamshell" 5995
       - name: Lint probe plists
         run: plutil -lint scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist
       - name: Lint login-window agent scripts
