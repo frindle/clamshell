@@ -164,7 +164,7 @@ final class DeviceApprovalPanelController: NSWindowController {
         // Everything shown about the device except how long ago it asked: if
         // any of it changes under the user's eyes, the buttons are off again
         // for the full delay.
-        let signature = [device.id, device.label, device.fingerprint, device.address,
+        let signature = [device.id, device.label, device.fingerprint, device.fromText,
                          connectedNow ? "connected" : "not connected",
                          nameIsTaken ? "name taken" : "name free"].joined(separator: "\u{1f}")
         let unchanged = sameDevice && signature == shownSignature
@@ -178,7 +178,7 @@ final class DeviceApprovalPanelController: NSWindowController {
         fingerprintLabel.stringValue = device.fingerprint
         hintLabel.stringValue = "Approve it only if the device shows this same fingerprint on its own screen."
         hintLabel.isHidden = false
-        let from = device.address.isEmpty ? "an unknown address" : device.address
+        let from = device.fromText
         let asked = DeviceCommands.ago(device.firstSeen, now: Date().timeIntervalSince1970)
         detailLabel.stringValue = "Asked \(asked) from \(from)."
             + (connectedNow ? "" : " It is not connected right now.")

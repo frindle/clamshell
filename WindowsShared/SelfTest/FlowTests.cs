@@ -13,7 +13,10 @@ public static class FlowTests
     public static void Run(TestRun t)
     {
         t.Group("known hosts store", () => StoreTests(t));
+        t.Group("known hosts: fallback addresses", () => FallbackTests(t));
+        t.Group("home-network addresses first", () => HomeFirstTests(t));
         t.Group("known hosts file", () => FileTests(t));
+        t.Group("known hosts file lock", () => CrossProcessLockTests(t));
         t.Group("flow: opening and challenge", () => OpeningTests(t));
         t.Group("flow: results", () => ResultTests(t));
         t.Group("flow: unverified and changed hosts", () => TrustTests(t));
@@ -184,6 +187,106 @@ public static class FlowTests
         t.Check(KnownHosts.Decode(Json(broken)).Damaged, "an entry with a bad key is damaged");
     }
 
+    // MARK: Fallback addresses
+
+    private static string Joined(IEnumerable<string> urls) => string.Join(" ", urls.OrderBy(x => x, StringComparer.Ordinal));
+
+    private static void FallbackTests(TestRun t)
+    {
+        using var key = TestKey.Random();
+        var id = DeviceIdentity.Id(key.Public);
+        var k = new KnownHosts();
+        k.RecordVerified(key.Public, "Example Mac", "ws://192.0.2.10:5903", 1);
+        k.RecordVerified(key.Public, "Example Mac", "ws://192.0.2.10:5904", 2);
+        k.RecordVerified(key.Public, "Example Mac", "ws://198.51.100.7:5903", 3);
+        k.RecordVerified(key.Public, "Example Mac", "wss://mac.example.com/ws/a", 4);
+
+        t.Equal(k.Host(id)!.Addresses.First(a => a.Address == "mac.example.com:443").Path, "/ws/a", "the tunnel path is kept");
+        t.Check(k.Host(id)!.Addresses.First(a => a.Address == "192.0.2.10:5903").Path is null, "a direct address has no path");
+        var (back, damaged) = KnownHosts.Decode(k.Encoded());
+        t.Check(!damaged, "a copy with paths decodes");
+        t.Same(back.Encoded(), k.Encoded(), "the path survives a save and a load");
+
+        t.Equal(Joined(k.FallbackUrls(id, "ws://192.0.2.10:5903")),
+            "ws://198.51.100.7:5903 wss://mac.example.com/ws/a", "display A: same port, tunnel on /ws/a, never port 5904");
+        t.Equal(Joined(k.FallbackUrls(id, "ws://192.0.2.10:5904")),
+            "wss://mac.example.com/ws/b", "display B: the tunnel is dialled with /ws/b");
+        t.Equal(Joined(k.FallbackUrls(id, "wss://mac.example.com/ws/b")),
+            "ws://192.0.2.10:5904", "from a tunnel for B: only the B port");
+        t.Equal(Joined(k.FallbackUrls(id, "wss://mac.example.com/ws/a")),
+            "ws://192.0.2.10:5903 ws://198.51.100.7:5903", "from a tunnel for A: only the A port");
+
+        // A copy saved before paths were kept: still loads, gives no tunnel fallback until the next connection.
+        var old = new KnownHosts();
+        old.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 1);
+        old.RecordVerified(key.Public, "Example Mac", "wss://mac.example.com", 2);
+        var oldJson = Encoding.UTF8.GetString(old.Encoded());
+        t.Check(!oldJson.Contains("\"path\""), "no path is written when there is none");
+        var (loaded, oldDamaged) = KnownHosts.Decode(Json(oldJson));
+        t.Check(!oldDamaged, "an old copy still loads");
+        t.Equal(Joined(loaded.FallbackUrls(id, "ws://192.0.2.10:5903")), "", "no tunnel fallback without a saved path");
+        loaded.Bind("wss://mac.example.com/ws/a", id, 9);
+        t.Equal(Joined(loaded.FallbackUrls(id, "ws://192.0.2.10:5903")), "wss://mac.example.com/ws/a", "the next connection saves the path");
+
+        // A hint fills in a missing path and never moves an address.
+        var other = TestKey.Random();
+        var h = new KnownHosts();
+        h.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 1);
+        h.RecordVerified(other.Public, "Other Mac", "198.51.100.9", 1);
+        h.AddHints(new[] { "wss://mac.example.com/ws/a", "ws://198.51.100.9:5903" }, id, 2);
+        t.Equal(h.Host(id)!.Addresses.First(a => a.Address == "mac.example.com:443").Path, "/ws/a", "a hint carries its path");
+        t.Equal(h.Standing("198.51.100.9:5903").HostId, DeviceIdentity.Id(other.Public), "a hint cannot take an address");
+        other.Dispose();
+
+        t.Equal(KnownHosts.DisplayPath("wss://mac.example.com/tunnel/ws/b"), "/tunnel/ws/b", "a prefix is allowed");
+        t.Check(KnownHosts.DisplayPath("wss://mac.example.com") is null, "no path, no display path");
+        t.Check(KnownHosts.DisplayPath("wss://mac.example.com/ws/ab") is null, "one letter only");
+        t.Check(KnownHosts.DisplayPath("ws://192.0.2.10:5903/ws/a") is null, "only a tunnel keeps a path");
+        t.Equal(KnownHosts.DisplayIndex("ws://192.0.2.10:5905"), (int?)2, "port 5905 is display C");
+        t.Check(KnownHosts.DisplayIndex("ws://192.0.2.10:8443") is null, "a custom port names no display");
+    }
+
+    // MARK: Home-network addresses first
+
+    private static void HomeFirstTests(TestRun t)
+    {
+        foreach (var text in new[] { "10.0.0.5", "172.16.0.1", "172.31.255.1", "192.168.1.1", "169.254.3.4", "[fd00::5]:5903",
+                                     "[fc00::1]:5903", "[fe80::1]:5903", "[febf::1]:5903", "ws://[fd00::5]:5903", "mac.local",
+                                     "ws://Mac.Local:5905" })
+            t.Check(KnownHosts.IsPrivateAddress(text), "home network: " + text);
+        foreach (var text in new[] { "172.15.0.1", "172.32.0.1", "192.169.0.1", "100.64.0.1", "11.0.0.1", "192.0.2.1", "198.51.100.7",
+                                     "[2001:db8::1]:5903", "[fec0::1]:5903", "mac.example.com", "wss://mac.example.com/ws/a", "local",
+                                     "mac.local.example.com", "", "not an address" })
+            t.Check(!KnownHosts.IsPrivateAddress(text), "not a home network: " + text);
+
+        using var key = TestKey.Random();
+        var id = DeviceIdentity.Id(key.Public);
+        string Order(IEnumerable<string> urls) => string.Join(" ", urls);
+
+        var k = new KnownHosts();
+        k.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 1);
+        k.RecordVerified(key.Public, "Example Mac", "10.0.0.5", 2);
+        k.RecordVerified(key.Public, "Example Mac", "192.0.2.10", 30);
+        t.Equal(Order(k.DialOrder(id)), "10.0.0.5:5903 192.0.2.10:5903", "a verified home address is dialled first, even if another succeeded later");
+        k.AddHints(new[] { "ws://10.0.0.9:5903" }, id, 31);
+        t.Equal(Order(k.DialOrder(id)), "10.0.0.5:5903 192.0.2.10:5903 10.0.0.9:5903", "a hint at a home address waits with the rest");
+        k.RecordVerified(key.Public, "Example Mac", "[fd00::7]:5903", 5);
+        t.Equal(Order(k.DialOrder(id).Take(3)), "[fd00::7]:5903 10.0.0.5:5903 192.0.2.10:5903", "among home addresses the newest success is first");
+
+        var t2 = new KnownHosts();
+        t2.RecordVerified(key.Public, "Example Mac", "wss://mac.example.com/ws/a", 1);
+        t2.RecordVerified(key.Public, "Example Mac", "ws://10.0.0.5:5903", 2);
+        t2.RecordVerified(key.Public, "Example Mac", "ws://10.0.0.6:5904", 3);
+        t.Equal(Order(t2.DialUrls(id, "wss://mac.example.com/ws/a")), "ws://10.0.0.5:5903 wss://mac.example.com/ws/a",
+            "display A: the home address for A goes before a picked tunnel");
+        t.Equal(Order(t2.DialUrls(id, "wss://mac.example.com/ws/b")), "ws://10.0.0.6:5904 wss://mac.example.com/ws/b",
+            "display B: the home address for B goes before a picked tunnel");
+        t2.AddHints(new[] { "ws://10.0.0.8:5903" }, id, 4);
+        t.Equal(Order(t2.DialUrls(id, "wss://mac.example.com/ws/a")), "ws://10.0.0.5:5903 wss://mac.example.com/ws/a ws://10.0.0.8:5903",
+            "an unverified home address stays behind the picked one");
+        t.Equal(Order(t2.DialUrls(id, "ws://10.0.0.5:5903")).Split(' ')[0], "ws://10.0.0.5:5903", "a picked home address stays first");
+    }
+
     // MARK: File
 
     private static void FileTests(TestRun t)
@@ -220,6 +323,67 @@ public static class FlowTests
             Throws<KnownHostsFileException>(t, () => file.Load(), "a folder at the path refuses to load");
             Throws<KnownHostsFileException>(t, () => file.Apply(KnownHostsChange.AllowUnverified("a.local"), 1), "a folder at the path refuses a change");
             t.Check(Directory.Exists(file.FilePath), "the folder is left alone");
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch (Exception) { /* temp folder */ }
+        }
+    }
+
+    /// <summary>Two instances on one folder stand for two programs: a change in
+    /// one waits for a change in the other, and no change is lost.</summary>
+    private static void CrossProcessLockTests(TestRun t)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "clamshell-kh-lock-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var key = TestKey.Random();
+            var viewer = new KnownHostsFile(dir) { LockWait = TimeSpan.FromMilliseconds(250) };
+            viewer.Apply(KnownHostsChange.RecordVerified(key.Public, "Mac", "mac.local"), 1);
+
+            // Another program holds the lock: this change gives up and the file is untouched.
+            var before = File.ReadAllBytes(viewer.FilePath);
+            using (new FileStream(viewer.FilePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+            {
+                Throws<KnownHostsFileException>(t, () => viewer.Apply(KnownHostsChange.AllowUnverified("a.local"), 2),
+                    "a change gives up while another program holds the lock");
+            }
+            t.Same(File.ReadAllBytes(viewer.FilePath), before, "a change that gave up left the file as it was");
+
+            // The other program finishes while this change waits: the change goes through.
+            var patient = new KnownHostsFile(dir) { LockWait = TimeSpan.FromSeconds(10) };
+            var held = new FileStream(patient.FilePath + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            var release = new Thread(() => { Thread.Sleep(300); held.Dispose(); });
+            release.Start();
+            patient.Apply(KnownHostsChange.AllowUnverified("b.local"), 3);
+            release.Join();
+            t.Equal(patient.Load().UnverifiedAllowed.Count, 1, "a change waits for the lock and then lands");
+
+            // A forget in one instance racing saves in another: both kinds of change survive.
+            var forgetter = new KnownHostsFile(dir);
+            var saver = new KnownHostsFile(dir);
+            string id = DeviceIdentity.Id(key.Public);
+            var failures = new List<string>();
+            var forgetting = new Thread(() =>
+            {
+                try { forgetter.Apply(KnownHostsChange.Forget(id), 4); }
+                catch (Exception e) { lock (failures) failures.Add(e.Message); }
+            });
+            var saving = new Thread(() =>
+            {
+                try
+                {
+                    for (int i = 0; i < 25; i++)
+                        saver.Apply(KnownHostsChange.AllowUnverified($"lan{i}.local"), 5 + i);
+                }
+                catch (Exception e) { lock (failures) failures.Add(e.Message); }
+            });
+            forgetting.Start(); saving.Start();
+            forgetting.Join(); saving.Join();
+            var end = new KnownHostsFile(dir).Load();
+            t.Equal(failures.Count, 0, "no change failed while two instances raced");
+            t.Equal(end.Hosts.Count, 0, "the forget was not undone by the saves");
+            t.Equal(end.UnverifiedAllowed.Count, 26, "every save survived the forget");
         }
         finally
         {
@@ -436,6 +600,38 @@ public static class FlowTests
             var res = r2.Result(AuthStatus.Accepted);
             t.Check(res.Any(x => x.Kind == FlowActionKind.Change && x.Change!.Kind == ChangeKind.Bind), "R9: the address is bound once a result verifies");
             t.Equal(Shown(res)?.Kind, FlowStateKind.Connected, "R9: and it connects");
+        }
+        using (var first = new Rig())
+        using (var other = TestKey.Random())
+        {
+            // Two saved Macs; the address of the first now reaches the second.
+            var known = KnowHost(first.HostKey);
+            known.RecordVerified(other.Public, "Other Mac", "ws://192.0.2.21:5903", 1001);
+            using var r = new Rig(known, hostKey: other);
+            r.Flow.Opened();
+            r.Challenge();
+            var res = r.Result(AuthStatus.Accepted);
+            t.Equal(Ended(res)?.Kind, FlowEndKind.NextAddress, "a different saved Mac at this address is not a success");
+            t.Equal(Shown(res)?.Message, "This address now reaches Other Mac", "and says which Mac it reaches now");
+            t.Check(res.Any(x => x.Kind == FlowActionKind.Change && x.Change!.Kind == ChangeKind.Bind
+                && x.Change.HostId == DeviceIdentity.Id(other.Public)), "the address moves to the Mac that answered");
+            t.Equal(Sends(res), 0, "no HELLO and no session");
+            t.Check(!r.Flow.IsSecure && r.Flow.IsEnded, "the attempt is over");
+        }
+        using (var first = new Rig())
+        using (var other = TestKey.Random())
+        {
+            // The caller says which Mac it picked; that holds for an address no saved Mac owns yet.
+            var known = KnowHost(first.HostKey, "ws://192.0.2.20:5903");
+            known.RecordVerified(other.Public, "Other Mac", "ws://192.0.2.21:5903", 1001);
+            using var r = new Rig(known, url: "ws://192.0.2.99:5903", hostKey: first.HostKey);
+            r.Config.ExpectedHostId = DeviceIdentity.Id(other.Public);
+            r.Flow = new ClientAuthFlow(r.Config, known);
+            r.Flow.Opened();
+            r.Challenge();
+            var res = r.Result(AuthStatus.Accepted);
+            t.Equal(Ended(res)?.Kind, FlowEndKind.NextAddress, "the Mac the caller picked is the one that must answer");
+            t.Equal(Shown(res)?.Message, "This address now reaches Test Mac", "and the saved name of the Mac that answered is shown");
         }
     }
 

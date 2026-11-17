@@ -203,13 +203,17 @@ if args.count > 1 {
     case "auth-gate-selftest":
         // Device approval in front of the stream listeners: real loopback
         // listeners and clients, a device list in a temporary directory.
-        // Captures nothing and types nothing.
+        // Its listeners are made to start no capture and no input.
         exit(AuthGateSelfTest.run())
+#if DEBUG
     case "auth-interop-host":
-        // A loopback-only listener with device approval on, for the web
-        // client's interop test (tests/test-webclient-auth-interop.js). Needs
+        // A loopback-only listener with device approval on, for the client
+        // interop tests (tests/test-webclient-auth-interop.js and
+        // tests/WindowsViewerInterop). Starts no capture and no input. Needs
         // CLAMSHELL_STATE_DIR to name a directory that is not the real one.
+        // Debug builds only: a release build does not contain it.
         exit(AuthInteropHost.run(Array(args.dropFirst(2))))
+#endif
     case "discovery-selftest":
         // The local-network announcement, registered so that only this
         // machine can see it and read back from the system's discovery
@@ -254,7 +258,7 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "auth-gate-selftest | auth-interop-host | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
+              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
               "devices | approve | deny | revoke | forget]")
         exit(64)
     }

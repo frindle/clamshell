@@ -171,6 +171,29 @@ struct SavedMachinesView: View {
     }
 }
 
+/// Shown only when the saved Macs could not be read. Connecting is refused
+/// until the person resets them, which keeps the damaged copy aside.
+struct SavedMacsDamagedView: View {
+    @ObservedObject private var known = KnownHostsStore.shared
+    @State private var confirming = false
+
+    var body: some View {
+        if let damage = known.damage {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(damage).font(.footnote).foregroundStyle(.orange)
+                Button("Reset saved Macs\u{2026}", role: .destructive) { confirming = true }
+                    .font(.footnote)
+            }
+            .frame(maxWidth: 420, alignment: .leading)
+            .confirmationDialog("Every Mac will have to be confirmed again. The damaged copy is kept aside, not deleted.",
+                                isPresented: $confirming, titleVisibility: .visible) {
+                Button("Reset saved Macs", role: .destructive) { known.resetDamaged() }
+                Button("Cancel", role: .cancel) {}
+            }
+        }
+    }
+}
+
 /// The identity this app saved for a Mac (the fingerprint of its key), and the
 /// way to forget it. Shows nothing for a Mac this app has not verified yet.
 struct SavedIdentityRow: View {

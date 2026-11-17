@@ -79,6 +79,14 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// Listen on this machine's loopback address only. For selftests, so a
     /// test listener is never reachable from the network.
     private let loopbackOnly: Bool
+    /// False for a listener that must never capture the screen or inject
+    /// input, whatever a client sends: a HELLO is then logged and ignored, so
+    /// no capture session, encoder, clipboard bridge or input injector starts.
+    /// Only the test host in `AuthInteropHost` and the gate selftest turn it off.
+    private let startsMedia: Bool
+    /// How many times a HELLO got as far as starting a capture session (read
+    /// through `mediaStartCount`; touched on `queue`).
+    private var mediaStarts = 0
 
     private var listener: NWListener?
     /// Decides which connections get in (see StreamLink.swift). Nothing in
@@ -160,11 +168,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// `displayIndex` is this listener's place among the host's displays
     /// (0 = Display A), told to clients in HOST_INFO; nil for a window.
     init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true,
-         auth: HostAuth = .shared, displayIndex: Int? = nil, loopbackOnly: Bool = false) {
+         auth: HostAuth = .shared, displayIndex: Int? = nil, loopbackOnly: Bool = false,
+         startsMedia: Bool = true) {
         self.source = source
         self.port = port
         self.isPrimary = isPrimary
         self.loopbackOnly = loopbackOnly
+        self.startsMedia = startsMedia
         self.auth = auth
         let queue = DispatchQueue(label: "clamshell.stream")
         self.queue = queue
@@ -198,6 +208,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         // Nothing a client sends is anywhere near this size; the room above
         // the largest message is for the SECURE wrapping.
         ws.maximumMessageSize = StreamGate.sessionMaxPayload + 4096
+        // The upgrade request's headers say who is behind a proxy (see
+        // ClientAddress); the gate reads them when the connection is ready.
+        let upgradeHeaders = gate.upgradeHeaders
+        ws.setClientRequestHandler(queue) { _, headers in
+            upgradeHeaders.record(headers)
+            return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+        }
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             clog("STREAM: invalid listen port \(port)")
@@ -294,6 +311,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     var portNumber: UInt16 { port }
     var primary: Bool { isPrimary }
     var isClientConnected: Bool { queue.sync { connection != nil } }
+    /// How many HELLOs have started a capture session on this server. Always 0
+    /// when `startsMedia` is false.
+    var mediaStartCount: Int { queue.sync { mediaStarts } }
+    /// Whether an input injector exists (only a started session creates one).
+    var hasInputInjector: Bool { queue.sync { injector != nil } }
 
     // MARK: - Connection lifecycle (on `queue`)
 
@@ -457,6 +479,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     // MARK: - Capture session
 
     private func startSession(requestedCodec: StreamCodec) {
+        guard startsMedia else {
+            clog("STREAM: HELLO ignored — this listener starts no capture and no input")
+            return
+        }
+        mediaStarts += 1
         let source = self.source
         // Pin this session to the connection that sent HELLO. A second client
         // can connect (tearing down `connection` and installing a new one)

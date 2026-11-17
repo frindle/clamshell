@@ -334,6 +334,17 @@ test('normalizeAddress: bare hosts, ws and wss, ports and paths', () => {
   assert.strictEqual(A.normalizeAddress('ws://example.com:0'), null);
 });
 
+test('normalizeAddress drops an IPv6 zone id, as the Swift and C# code do', () => {
+  assert.strictEqual(A.normalizeAddress('ws://[fe80::1%en0]:5903'), '[fe80::1]:5903');
+  assert.strictEqual(A.normalizeAddress('ws://[fe80::1%25en0]:5903'), '[fe80::1]:5903');
+  assert.strictEqual(A.normalizeAddress('wss://[2001:db8::1%eth0]/ws/a'), '[2001:db8::1]:443');
+  assert.strictEqual(A.normalizeAddress('[fe80::1%en0]'), '[fe80::1]:5903');
+  // The same Mac with and without a zone is one address.
+  assert.strictEqual(A.normalizeAddress('ws://[fe80::1%en0]:5903'), A.normalizeAddress('ws://[fe80::1]:5903'));
+  // Nothing else changes: a percent sign elsewhere is still not an address.
+  assert.strictEqual(A.normalizeAddress('ws://[%en0]:5903'), null);
+});
+
 test('hintAddress keeps the spec’s limits', () => {
   assert.strictEqual(A.hintAddress('wss://mac.example.com/ws/a'), 'mac.example.com:443');
   assert.strictEqual(A.hintAddress('ws://192.0.2.7:5903'), '192.0.2.7:5903');
@@ -491,6 +502,68 @@ test('known hosts: load and save through a store', async () => {
   assert.strictEqual(again.known.hosts.length, 1);
   const broken = await A.loadKnownHosts({ async get() { throw new Error('x'); } }, cr);
   assert.strictEqual(broken.damaged, true);
+});
+
+// ── Fallback addresses reach the same display ───────────────────────────
+function twoRoutes() {
+  const k = new A.KnownHosts();
+  k.recordVerified({ key: KEY_A, id: ID_A, name: 'Example Mac', address: 'ws://192.0.2.10:5903' }, 1);
+  k.recordVerified({ key: KEY_A, id: ID_A, name: 'Example Mac', address: 'ws://192.0.2.10:5904' }, 2);
+  k.recordVerified({ key: KEY_A, id: ID_A, name: 'Example Mac', address: 'ws://198.51.100.7:5903' }, 3);
+  k.recordVerified({ key: KEY_A, id: ID_A, name: 'Example Mac', address: 'wss://mac.example.com/ws/a' }, 4);
+  return k;
+}
+const sorted = (list) => [...list].sort();
+
+test('fallback: the tunnel path is kept when an address is saved, and survives a save and a load', async () => {
+  const k = twoRoutes();
+  assert.strictEqual(k.host(ID_A).addresses.find((x) => x.address === 'mac.example.com:443').path, '/ws/a');
+  assert.strictEqual(k.host(ID_A).addresses.find((x) => x.address === '192.0.2.10:5903').path, undefined);
+  const r = await A.KnownHosts.decode(k.encode(), cr);
+  assert.strictEqual(r.damaged, false);
+  assert.deepStrictEqual(r.known.hosts, k.hosts);
+});
+
+test('fallback: a fallback for display A keeps to display A, and B to B', () => {
+  const k = twoRoutes();
+  assert.deepStrictEqual(sorted(k.fallbackUrls(ID_A, 'ws://192.0.2.10:5903')),
+    ['ws://198.51.100.7:5903', 'wss://mac.example.com/ws/a']);
+  assert.deepStrictEqual(k.fallbackUrls(ID_A, 'ws://192.0.2.10:5904'), ['wss://mac.example.com/ws/b']);
+  assert.deepStrictEqual(k.fallbackUrls(ID_A, 'wss://mac.example.com/ws/b'), ['ws://192.0.2.10:5904']);
+  assert.deepStrictEqual(sorted(k.fallbackUrls(ID_A, 'wss://mac.example.com/ws/a')),
+    ['ws://192.0.2.10:5903', 'ws://198.51.100.7:5903']);
+});
+
+test('fallback: a saved tunnel with no path gives no tunnel fallback; an old copy still loads', async () => {
+  const k = new A.KnownHosts();
+  k.recordVerified({ key: KEY_A, id: ID_A, name: 'Example Mac', address: '192.0.2.10' }, 1);
+  k.recordVerified({ key: KEY_A, id: ID_A, name: 'Example Mac', address: 'wss://mac.example.com' }, 2);
+  assert.deepStrictEqual(k.fallbackUrls(ID_A, 'ws://192.0.2.10:5903'), []);
+  const r = await A.KnownHosts.decode(k.encode(), cr);
+  assert.strictEqual(r.damaged, false);
+  assert.deepStrictEqual(r.known.fallbackUrls(ID_A, 'ws://192.0.2.10:5903'), []);
+  r.known.bind('wss://mac.example.com/ws/a', ID_A, 9);
+  assert.deepStrictEqual(r.known.fallbackUrls(ID_A, 'ws://192.0.2.10:5903'), ['wss://mac.example.com/ws/a']);
+});
+
+test('fallback: a hint fills in a missing path and never moves an address', () => {
+  const k = new A.KnownHosts();
+  k.recordVerified({ key: KEY_A, id: ID_A, name: 'Example Mac', address: '192.0.2.10' }, 1);
+  k.recordVerified({ key: KEY_B, id: ID_B, name: 'Other Mac', address: '198.51.100.9' }, 1);
+  k.addHints(['wss://mac.example.com/ws/a', 'ws://198.51.100.9:5903'], ID_A, 2);
+  assert.strictEqual(k.host(ID_A).addresses.find((x) => x.address === 'mac.example.com:443').path, '/ws/a');
+  assert.deepStrictEqual(k.standing('198.51.100.9:5903'), { kind: 'host', id: ID_B });
+});
+
+test('fallback: only a display path is kept', () => {
+  assert.strictEqual(A.displayPath('wss://mac.example.com/tunnel/ws/b'), '/tunnel/ws/b');
+  assert.strictEqual(A.displayPath('wss://mac.example.com'), null);
+  assert.strictEqual(A.displayPath('wss://mac.example.com/ws/ab'), null);
+  assert.strictEqual(A.displayPath('ws://192.0.2.10:5903/ws/a'), null);
+  assert.strictEqual(A.displayIndex('ws://192.0.2.10:5905'), 2);
+  assert.strictEqual(A.displayIndex('192.0.2.10'), 0);
+  assert.strictEqual(A.displayIndex('ws://192.0.2.10:8443'), null);
+  assert.strictEqual(A.displayIndex('wss://mac.example.com'), null);
 });
 
 test('ClientInfo helpers: cleanURL and HOST_INFO urls', () => {

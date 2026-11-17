@@ -21,6 +21,11 @@ public sealed class KnownAddress
     public double LastUsed { get; set; }
     /// <summary>The last verified handshake here.</summary>
     public double? LastSuccess { get; set; }
+    /// <summary>For a tunnel (wss) address only: the path the host answers on,
+    /// which ends in /ws/&lt;letter&gt;. The address itself has no path, so
+    /// without this a tunnel could not be dialled for the right display. null
+    /// for a direct address and for a copy saved before this was kept.</summary>
+    public string? Path { get; set; }
 
     public KnownAddress Clone() => (KnownAddress)MemberwiseClone();
 }
@@ -189,6 +194,95 @@ public sealed class KnownHosts
         return NormalizeAddress(url);
     }
 
+    // MARK: Displays
+
+    /// <summary>The path of a wss URL when it names a display: ends in
+    /// /ws/&lt;letter&gt;, at most 64 bytes, only letters, digits and / _ . -.
+    /// null otherwise.</summary>
+    public static string? DisplayPath(string text)
+    {
+        int sep = text.IndexOf("://", StringComparison.Ordinal);
+        if (sep < 0 || !string.Equals(text.Substring(0, sep), "wss", StringComparison.OrdinalIgnoreCase)) return null;
+        var rest = text.Substring(sep + 3);
+        int slash = rest.IndexOf('/');
+        if (slash < 0) return null;
+        int end = rest.IndexOfAny(new[] { '?', '#' }, slash);
+        var path = end < 0 ? rest.Substring(slash) : rest.Substring(slash, end - slash);
+        if (path.Length > 64) return null;
+        return System.Text.RegularExpressions.Regex.IsMatch(path, @"\A[A-Za-z0-9/_.\-]*/ws/[a-z]\z") ? path : null;
+    }
+
+    /// <summary>The port of a normalized host:port.</summary>
+    public static int? PortOf(string address)
+    {
+        int colon = address.LastIndexOf(':');
+        if (colon < 0) return null;
+        if (!int.TryParse(address.AsSpan(colon + 1), System.Globalization.NumberStyles.None,
+                System.Globalization.CultureInfo.InvariantCulture, out var port)) return null;
+        return port;
+    }
+
+    /// <summary>Which display a dialled address is for, counting from 0 (A). A
+    /// /ws/&lt;letter&gt; path names it; a direct address is on port 5903 + n.
+    /// null when neither says (a bare tunnel hostname, or a custom port).</summary>
+    public static int? DisplayIndex(string text)
+    {
+        var path = DisplayPath(text);
+        if (path is not null) return path[path.Length - 1] - 'a';
+        var a = NormalizeAddress(text);
+        if (a is null) return null;
+        var port = PortOf(a);
+        if (port is null || port == 443) return null;
+        int n = port.Value - DefaultPort;
+        if (n < 0 || n >= 26) return null;
+        return n;
+    }
+
+    /// <summary>wss://host + the saved path with its final display letter replaced.</summary>
+    public static string? TunnelUrl(string host, string path, int display)
+    {
+        if (display < 0 || display > 25 || DisplayPath("wss://" + host + path) != path) return null;
+        return "wss://" + host + path.Substring(0, path.Length - 1) + (char)('a' + display);
+    }
+
+    /// <summary>The URLs to try after <paramref name="picked"/> for a host, in
+    /// dial order, every one for the same display as <paramref name="picked"/>:
+    /// a direct address on the same port (or on the picked display's port, when
+    /// picked is a tunnel), and a tunnel address with the saved path switched
+    /// to the picked display's letter. An address with no saved path (a copy
+    /// from before the path was kept) gives no tunnel fallback until the next
+    /// connection that reaches it.</summary>
+    public List<string> FallbackUrls(string hostId, string picked)
+    {
+        var result = new List<string>();
+        var pickedAddress = NormalizeAddress(picked);
+        var h = Host(hostId);
+        if (pickedAddress is null || h is null) return result;
+        int? index = DisplayIndex(picked);
+        int? pickedPort = PortOf(pickedAddress);
+        bool pickedIsTunnel = pickedPort == 443;
+        foreach (var address in DialOrder(hostId))
+        {
+            if (address == pickedAddress) continue;
+            var port = PortOf(address);
+            if (port is null) continue;
+            var name = address.Substring(0, address.LastIndexOf(':'));
+            if (port == 443)
+            {
+                var saved = h.Addresses.First(k => k.Address == address).Path;
+                if (index is null || saved is null) continue;
+                var url = TunnelUrl(name, saved, index.Value);
+                if (url is not null) result.Add(url);
+            }
+            else
+            {
+                int? want = pickedIsTunnel ? (index.HasValue ? DefaultPort + index.Value : (int?)null) : pickedPort;
+                if (want == port) result.Add("ws://" + name + ":" + port.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+        }
+        return result;
+    }
+
     // MARK: Questions
 
     public KnownHost? Host(string id) => _hosts.FirstOrDefault(h => h.Id == id);
@@ -211,15 +305,63 @@ public sealed class KnownHosts
         return h.Addresses.Any(k => k.Address == a && k.Verified);
     }
 
-    /// <summary>The addresses to try for a host: the last successful first,
-    /// then the verified ones by recency, then the hints by recency.</summary>
+    /// <summary>True for an address on a home network: IPv4 10/8, 172.16/12,
+    /// 192.168/16 and 169.254/16; IPv6 fc00::/7 and fe80::/10; a name ending
+    /// in .local. Nothing else (100.64/10 included). Takes an address or a
+    /// URL; false when the text is not an address.</summary>
+    public static bool IsPrivateAddress(string text)
+    {
+        var a = NormalizeAddress(text);
+        if (a is null) return false;
+        var host = a.Substring(0, a.LastIndexOf(':'));
+        if (host.StartsWith('[')) host = host.Substring(1, host.Length - 2);
+        if (host.Contains(':'))
+        {
+            if (!System.Net.IPAddress.TryParse(host, out var v6) ||
+                v6.AddressFamily != System.Net.Sockets.AddressFamily.InterNetworkV6) return false;
+            if (v6.IsIPv4MappedToIPv6) return IsPrivateIPv4(v6.MapToIPv4().GetAddressBytes());
+            var b = v6.GetAddressBytes();
+            return (b[0] & 0xfe) == 0xfc || (b[0] == 0xfe && (b[1] & 0xc0) == 0x80);
+        }
+        var parts = host.Split('.');
+        if (parts.Length == 4 && parts.All(p => p.Length is >= 1 and <= 3 && p.All(char.IsAsciiDigit)) &&
+            parts.All(p => int.Parse(p, System.Globalization.CultureInfo.InvariantCulture) <= 255))
+        {
+            return IsPrivateIPv4(parts.Select(p => (byte)int.Parse(p, System.Globalization.CultureInfo.InvariantCulture)).ToArray());
+        }
+        return host.EndsWith(".local", StringComparison.Ordinal);
+    }
+
+    private static bool IsPrivateIPv4(byte[] b) =>
+        b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168) ||
+        (b[0] == 169 && b[1] == 254);
+
+    /// <summary>The URLs to dial for a host the user picked an address of: the
+    /// picked one first, then its fallbacks. When the picked address is not on
+    /// a home network, the verified home-network fallbacks for the same
+    /// display go before it.</summary>
+    public List<string> DialUrls(string hostId, string picked)
+    {
+        var others = FallbackUrls(hostId, picked);
+        if (IsPrivateAddress(picked)) { others.Insert(0, picked); return others; }
+        var home = others.Where(u => IsPrivateAddress(u) && IsVerified(u, hostId)).ToList();
+        var result = new List<string>(home) { picked };
+        result.AddRange(others.Where(u => !home.Contains(u)));
+        return result;
+    }
+
+    /// <summary>The addresses to try for a host: verified home-network
+    /// addresses first, the last successful first among them; then the last
+    /// successful, then the verified ones by recency, then the hints by
+    /// recency.</summary>
     public List<string> DialOrder(string hostId)
     {
         var h = Host(hostId);
         if (h is null) return new List<string>();
         return h.Addresses
             .Select((a, i) => (a, i))
-            .OrderByDescending(x => x.a.LastSuccess ?? double.NegativeInfinity)
+            .OrderByDescending(x => x.a.Verified && IsPrivateAddress(x.a.Address))
+            .ThenByDescending(x => x.a.LastSuccess ?? double.NegativeInfinity)
             .ThenByDescending(x => x.a.Verified)
             .ThenByDescending(x => x.a.LastUsed)
             .ThenBy(x => x.i)
@@ -247,7 +389,7 @@ public sealed class KnownHosts
         {
             _hosts.Add(new KnownHost { Key = (byte[])key.Clone(), Name = shown });
         }
-        Bind(a, id, now);
+        Bind(address, id, now);
     }
 
     /// <summary>Binds an address to a host that is already known. Does nothing
@@ -257,6 +399,8 @@ public sealed class KnownHosts
         var a = NormalizeAddress(address);
         int i = _hosts.FindIndex(h => h.Id == hostId);
         if (a is null || i < 0) return;
+        // address may be the URL that was dialled: its display path is kept.
+        var path = DisplayPath(address);
         for (int j = 0; j < _hosts.Count; j++)
         {
             if (j != i) _hosts[j].Addresses.RemoveAll(k => k.Address == a);
@@ -268,10 +412,11 @@ public sealed class KnownHosts
             existing.Verified = true;
             existing.LastUsed = now;
             existing.LastSuccess = now;
+            if (path is not null) existing.Path = path;
         }
         else
         {
-            _hosts[i].Addresses.Add(new KnownAddress { Address = a, Verified = true, LastUsed = now, LastSuccess = now });
+            _hosts[i].Addresses.Add(new KnownAddress { Address = a, Verified = true, LastUsed = now, LastSuccess = now, Path = path });
         }
         _allowed.RemoveAll(x => x == a);
         Trim(i);
@@ -294,8 +439,15 @@ public sealed class KnownHosts
                 if (j != i && _hosts[j].Addresses.Any(k => k.Address == a)) otherHost = true;
             }
             if (otherHost) continue;
-            if (_hosts[i].Addresses.Any(k => k.Address == a)) continue;
-            _hosts[i].Addresses.Add(new KnownAddress { Address = a, Verified = false, LastUsed = now, LastSuccess = null });
+            var path = DisplayPath(url);
+            var existing = _hosts[i].Addresses.FirstOrDefault(k => k.Address == a);
+            if (existing is not null)
+            {
+                // Already known: only fill in a display path it does not have yet.
+                if (existing.Path is null && path is not null) existing.Path = path;
+                continue;
+            }
+            _hosts[i].Addresses.Add(new KnownAddress { Address = a, Verified = false, LastUsed = now, LastSuccess = null, Path = path });
             _allowed.RemoveAll(x => x == a);
             Trim(i);
         }
@@ -370,6 +522,7 @@ public sealed class KnownHosts
                     w.WriteString("address", a.Address);
                     if (a.LastSuccess is double ls) w.WriteNumber("lastSuccess", ls);
                     w.WriteNumber("lastUsed", a.LastUsed);
+                    if (a.Path is not null) w.WriteString("path", a.Path);
                     w.WriteBoolean("verified", a.Verified);
                     w.WriteEndObject();
                 }
@@ -412,12 +565,19 @@ public sealed class KnownHosts
                 if (ls.ValueKind != JsonValueKind.Number || !ls.TryGetDouble(out var v)) return null;
                 lastSuccess = v;
             }
+            string? path = null;
+            if (item.TryGetProperty("path", out var pa) && pa.ValueKind != JsonValueKind.Null)
+            {
+                if (pa.ValueKind != JsonValueKind.String) return null;
+                path = pa.GetString();
+            }
             host.Addresses.Add(new KnownAddress
             {
                 Address = ad.GetString() ?? "",
                 Verified = ve.GetBoolean(),
                 LastUsed = lastUsed,
                 LastSuccess = lastSuccess,
+                Path = path,
             });
         }
         return host;
@@ -464,6 +624,8 @@ public sealed class KnownHosts
                         damaged = true;
                         continue;
                     }
+                    // A path that is not a display path is dropped, not trusted.
+                    if (a.Path is not null && (PortOf(n) != 443 || DisplayPath("wss://x" + a.Path) != a.Path)) a.Path = null;
                     addresses.Add(a);
                 }
                 int i = output._hosts.FindIndex(x => x.Id == host.Id);

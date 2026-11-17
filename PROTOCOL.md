@@ -481,9 +481,25 @@ After any status other than 0 or 1 the host closes the connection.
   came from, reduced to a group: an IPv4 address as it is, an IPv4-mapped
   IPv6 address as its IPv4 address, any other IPv6 address as its first 64
   bits, and "unknown" when there is no usable address. The group is used only
-  for this and is never a reason to trust a device. Connections that come
-  through the web relay or a tunnel all show the relay's address, so they
-  share one group.
+  for this, and is never a reason to trust a device. Connections that come
+  through the web relay or a tunnel reach the host from 127.0.0.1, so the host
+  looks at their upgrade request when the TCP peer is a trusted proxy: this
+  Mac itself always, and any address or CIDR range listed in the host's
+  `trustedProxies` setting (empty by default). The reported address is
+  `CF-Connecting-IP`, or else the right-most `X-Forwarded-For` entry that is
+  not itself a trusted proxy; with neither, or nothing that reads as an
+  address, there is none. The upgrade handler cannot tell which connection a
+  request belongs to, so the headers are used only when no doubt is possible:
+  when a connection reaches ready, exactly one request is outstanding and this
+  is the only connection not yet ready. Otherwise, and whenever a connection
+  closes before it is ready, the outstanding requests are dropped and the
+  connection keeps the TCP peer. The web relay applies the same rule to its
+  browser and passes the result to the host in `X-Forwarded-For`.
+  The TCP peer is the address the host shows and stores. A reported address
+  is the client's own header, believed only far enough to pick the group, and
+  the host shows it only as "the proxy reported ...; not verified". For a
+  loopback peer the host says it came through a local proxy. Groups are not
+  a security boundary: a process on the Mac itself can choose any group.
 
   | Table | Size | Share per group | May be replaced | First to go |
   |---|---|---|---|---|
@@ -638,6 +654,9 @@ from a device that is trusted at that moment (see below).
   `accepted` when devices are waiting and again whenever the list changes
   (an empty list means none are):
   `{"devices":[{"id":"<64 hex>","name":"iPhone","fingerprint":"AB12-CD34-EF56-7890","firstSeen":1794000000,"address":"192.168.1.23"}]}`
+  `address` is the TCP peer as the host saw it. `reportedAddress` is added
+  only when a proxy on the host claimed another one (see "Host rules"); it is
+  not verified and a client shows it only as the proxy's claim.
 - **DEVICE_DECISION** (trusted client → host), UTF-8 JSON:
   `{"id":"<64 hex>","decision":"approve"}` or `"deny"`. The client sends it
   only after showing the name and fingerprint and getting an explicit answer
@@ -676,6 +695,13 @@ more than any other network hop. Browsers offer WebCrypto only to pages loaded
 over HTTPS (or from `localhost`), so the browser client needs the tunnel
 hostname or the host's own LAN certificate; it cannot authenticate from a
 plain `http://` page.
+
+The browser client keeps the host's identity key in the browser's own storage,
+the same trust on first use as any other client. That key protects a saved
+Mac against a changed host or a relay that tampers with the handshake after
+the first connection. It does not protect against whoever serves the page and
+its scripts (`auth.js` included): they can skip the check or read what the
+page can read. The first connection to a Mac is not protected either.
 
 ## Capabilities
 

@@ -1,11 +1,16 @@
+#if DEBUG
 import CoreGraphics
 import Foundation
 
-// A real stream listener for tests/test-webclient-auth-interop.js, which checks
-// the web client's auth.js against this host. Nothing else uses it.
+// A real stream listener for the client interop tests
+// (tests/test-webclient-auth-interop.js and tests/WindowsViewerInterop), which
+// check the web client's auth.js and the Windows client flow against this
+// host. Nothing else uses it, and it is compiled into debug builds only.
 //
-// One listener on this machine's loopback address, not primary (it captures
-// nothing and types nothing), device approval on, no Bonjour. The device list
+// One listener on this machine's loopback address, not primary, with
+// `startsMedia` off so that a HELLO starts no capture and no input injector
+// (the server counts the starts, and the gate selftest checks the count stays
+// at zero), device approval on, no Bonjour. The device list
 // lives in the directory named by CLAMSHELL_STATE_DIR, so the test can run
 // `clamshell approve` and `clamshell revoke` against the same directory. The
 // host refuses to start without that variable, with a directory that does not
@@ -44,7 +49,7 @@ enum AuthInteropHost {
         // processes and this one has to notice what they save.
         let auth = HostAuth(directory: stateDir, requireApproval: true, watch: true)
         let server = StreamServer(source: .display(CGMainDisplayID()), port: raw, isPrimary: false,
-                                  auth: auth, displayIndex: 0, loopbackOnly: true)
+                                  auth: auth, displayIndex: 0, loopbackOnly: true, startsMedia: false)
         do {
             try server.start()
         } catch {
@@ -74,3 +79,4 @@ enum AuthInteropHost {
         return 0
     }
 }
+#endif

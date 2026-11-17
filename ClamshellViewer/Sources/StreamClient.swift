@@ -150,9 +150,24 @@ final class StreamClient: ObservableObject {
     private let openTimeoutInterval: TimeInterval = 10
     /// The same wait when the Mac has other saved addresses to try next.
     private let alternateOpenTimeoutInterval: TimeInterval = 4
+    /// The same wait for an address on a home network when there are others to
+    /// try next: away from home it costs little to find that out.
+    private let privateOpenTimeoutInterval: TimeInterval = 2
     /// Which of the saved Mac's addresses the next attempt dials (0 is the
-    /// address the user picked). Moves on only when a socket never opened.
+    /// first one in the plan: a verified home-network address when there is
+    /// one, otherwise the address the user picked). Moves on only when a
+    /// socket never opened.
     private var dialIndex = 0
+    /// The addresses to dial for the current `connect`, and the saved Mac the
+    /// user picked (nil when the address is not a saved Mac's).
+    private var dialPlan: [String] = []
+    private var pickedHostId: String?
+    /// The address the user picked (as dialled), to tell it from the ones this
+    /// client added from the saved Mac's list.
+    private var pickedURL: String?
+    /// An alarm (changed key, no identification) an address the client chose
+    /// itself ended with. Shown only when no other address connects.
+    private var heldAlarm: (state: FlowState, address: String)?
 
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
@@ -162,7 +177,12 @@ final class StreamClient: ObservableObject {
         authState = nil
         flowCarry = FlowCarry()
         dialIndex = 0
+        heldAlarm = nil
         connectHost = host
+        pickedURL = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
+        let plan = makeDialPlan(for: host)
+        dialPlan = plan.urls
+        pickedHostId = plan.hostId
         openSocket()
     }
 
@@ -170,25 +190,18 @@ final class StreamClient: ObservableObject {
     /// then the others its key is known at, last successful first. Each one
     /// goes through the same flow against the same saved key, so another
     /// address can never stand in for a different Mac.
-    private func dialURLs(for host: String) -> [String] {
+    /// Worked out once per `connect`, so an address that moves to another saved
+    /// Mac while the attempts run cannot change which Mac was picked.
+    private func makeDialPlan(for host: String) -> (urls: [String], hostId: String?) {
         let primary = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
         let known = KnownHostsStore.shared.hosts
         guard let normalized = KnownHosts.normalizeAddress(primary),
-              case let .host(id) = known.standing(of: normalized) else { return [primary] }
-        var urls = [primary]
-        for address in known.dialOrder(hostId: id) where address != normalized {
-            if let url = Self.url(forAddress: address) { urls.append(url) }
-        }
-        return urls
-    }
-
-    /// A dialable URL for a normalized `host:port` (port 443 means wss, as
-    /// the spec's default for that scheme; the path is not kept).
-    private static func url(forAddress address: String) -> String? {
-        guard let colon = address.lastIndex(of: ":") else { return nil }
-        let host = String(address[..<colon]), port = String(address[address.index(after: colon)...])
-        guard !host.isEmpty, UInt16(port) != nil else { return nil }
-        return port == "443" ? "wss://\(host)" : "ws://\(host):\(port)"
+              case let .host(id) = known.standing(of: normalized) else { return ([primary], nil) }
+        // Every fallback is for the same display as the one picked: the same
+        // port for a direct address, the same /ws/<letter> path for a tunnel.
+        // A verified home-network address for that display goes before a
+        // picked address that is not one (see `KnownHosts.dialURLs`).
+        return (known.dialURLs(hostId: id, picked: primary), id)
     }
 
     /// The user's answer to a question the connection flow asked ("Connect"
@@ -234,7 +247,22 @@ final class StreamClient: ObservableObject {
     private func openSocket() {
         teardownSocket()
         guard let host = connectHost else { return }
-        let urls = dialURLs(for: host)
+        // A saved Macs list that cannot be read stops the connection: it is
+        // never treated as empty (every Mac would be trusted on first use
+        // again) and never written over. "Reset saved Macs..." is the way out.
+        if let damage = KnownHostsStore.shared.damage {
+            clogViewer("connect FAILED: the saved Macs could not be read")
+            wantConnection = false
+            authState = .failed(damage)
+            status = .failed(damage)
+            return
+        }
+        if dialPlan.isEmpty {
+            let plan = makeDialPlan(for: host)
+            dialPlan = plan.urls
+            pickedHostId = plan.hostId
+        }
+        let urls = dialPlan
         if dialIndex >= urls.count { dialIndex = 0 }
         let urlString = urls[dialIndex]
         guard let url = URL(string: urlString) else {
@@ -269,13 +297,19 @@ final class StreamClient: ObservableObject {
                                           return DispatchQueue.main.sync { self.makeHelloMessage() }
                                       })
         config.fallbackDeviceName = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        config.expectedHostId = pickedHostId
+        // An address from the saved list that the user did not type may fall
+        // through to the next one; the picked one raises its alarm at once.
+        config.fallsThrough = urlString != pickedURL && dialIndex + 1 < urls.count
         let flow = ClientAuthFlow(config: config, known: KnownHostsStore.shared.hosts, carry: flowCarry)
 
         socketDelegate.onOpen = { [weak self] task in self?.socketOpened(task) }
         let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20 // keyframes at full display resolution
         let attempt = Attempt(task: task, flow: flow,
-                              openTimeout: urls.count > 1 ? alternateOpenTimeoutInterval : openTimeoutInterval)
+                              openTimeout: urls.count == 1 ? openTimeoutInterval
+                                  : KnownHosts.isPrivateAddress(urlString) ? privateOpenTimeoutInterval
+                                  : alternateOpenTimeoutInterval)
         attempt.parser.onMessage = { [weak self, weak attempt] type, payload in
             guard let self, let attempt, !attempt.ended else { return }
             self.perform(attempt.flow.received(type: type.rawValue, payload: payload), on: attempt)
@@ -391,6 +425,7 @@ final class StreamClient: ObservableObject {
         authState = state
         if case let .connected(verified, _) = state {
             reconnectAttempt = 0
+            heldAlarm = nil
             clogViewer(verified ? "connected and verified" : "connected, NOT verified")
         }
     }
@@ -411,18 +446,54 @@ final class StreamClient: ObservableObject {
             default:
                 status = .failed(Self.describe(shown) ?? reason)
             }
-        case .failure:
-            if !opened, wantConnection, let host = connectHost {
-                // The socket never opened: try the Mac's next saved address
-                // at once; only after the last one does the back-off apply.
-                if dialIndex + 1 < dialURLs(for: host).count {
+        case .failure, .nextAddress:
+            // The socket never opened, or the address reached a different saved
+            // Mac than the one picked: try the Mac's next saved address at
+            // once; only after the last one does the back-off apply.
+            var wrongMac = false
+            if case .nextAddress = end { wrongMac = true }
+            // An address this client chose that opened but never got as far as
+            // a session (not connected, not waiting for approval) also moves on.
+            var failedEarly = false
+            if opened, dialPlan.indices.contains(dialIndex), dialPlan[dialIndex] != pickedURL {
+                switch shown {
+                case .connected?, .waitingForApproval?, .busy?: break
+                default: failedEarly = true
+                }
+            }
+            // A key that is not the saved one, or no identification, at an
+            // address the user did not pick: remember it, and say so only if
+            // no other address connects.
+            switch shown {
+            case .changedIdentity?, .didNotIdentify?:
+                if wrongMac, let s = shown, dialIndex < dialPlan.count {
+                    if heldAlarm == nil { heldAlarm = (s, dialPlan[dialIndex]) }
+                    clogViewer("alarm held for \(dialPlan[dialIndex]); trying the next saved address")
+                }
+            default: break
+            }
+            if (!opened || wrongMac || failedEarly), wantConnection, connectHost != nil {
+                if dialIndex + 1 < dialPlan.count {
                     dialIndex += 1
-                    clogViewer("that address did not answer; trying the next saved one")
+                    clogViewer(wrongMac ? "that address reaches a different saved Mac, or not the saved key; trying the next saved one"
+                                        : "that address did not answer; trying the next saved one")
                     teardownSocket()
                     openSocket()
                     return
                 }
                 dialIndex = 0
+                if let held = heldAlarm {
+                    // Every address was tried: now the alarm is shown, naming
+                    // the address that raised it.
+                    heldAlarm = nil
+                    wantConnection = false
+                    teardownSocket()
+                    authState = held.state
+                    let text = (Self.describe(held.state) ?? "This Mac could not be verified") + " (at \(held.address))"
+                    status = .failed(text)
+                    lastError = text
+                    return
+                }
             }
             if case let .failed(text)? = shown { lastError = "Could not connect securely: \(text)" }
             scheduleReconnect()
@@ -618,6 +689,14 @@ final class StreamClient: ObservableObject {
                 switch result {
                 case .success(let message):
                     if case .data(let data) = message {
+                        // A message proves the socket is open, even when the
+                        // delegate's "open" has not run yet (the flow takes a
+                        // challenge that comes first as the open).
+                        if !a.opened {
+                            a.opened = true
+                            a.openTimer?.cancel()
+                            a.openTimer = nil
+                        }
                         a.parser.feed(data)
                         if a.parser.corrupt {
                             self.perform([.end(.failure, "the stream is corrupt")], on: a)

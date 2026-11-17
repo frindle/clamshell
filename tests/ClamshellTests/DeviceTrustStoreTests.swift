@@ -116,6 +116,37 @@ final class DeviceTrustStoreTests: XCTestCase {
         XCTAssertEqual(s.record(id: id(unnamed))?.label, "Unnamed device")
     }
 
+    func testAReportedAddressIsKeptApartFromThePeer() throws {
+        let s = store()
+        let key = newKey()
+        _ = s.ask(publicKey: key, name: "Pad", address: "127.0.0.1", reported: " 203.0.113.5 ",
+                  hasOpenConnection: { _ in false })
+        let record = try XCTUnwrap(s.record(id: id(key)))
+        XCTAssertEqual(record.address, "127.0.0.1")
+        XCTAssertEqual(record.reportedAddress, "203.0.113.5")
+        XCTAssertEqual(record.fromText,
+                       "127.0.0.1, through a local proxy (the proxy reported 203.0.113.5; not verified)")
+        // It survives a reload.
+        XCTAssertEqual(store().record(id: id(key))?.reportedAddress, "203.0.113.5")
+        // A later connection without one clears it.
+        clock += 20
+        _ = s.ask(publicKey: key, name: "Pad", address: "192.0.2.7", hasOpenConnection: { _ in false })
+        XCTAssertNil(s.record(id: id(key))?.reportedAddress)
+        XCTAssertEqual(s.record(id: id(key))?.fromText, "192.0.2.7")
+    }
+
+    func testRecordsSavedBeforeReportedAddressesExistStillLoad() throws {
+        let key = newKey()
+        let old: [String: Any] = ["id": id(key), "publicKey": Hex.encode(key), "name": "Old Pad",
+                                  "state": "trusted", "firstSeen": 1, "lastSeen": 2, "address": "192.0.2.7"]
+        try makeDirectory(dir)
+        try JSONSerialization.data(withJSONObject: ["version": 1, "devices": [old]]).write(to: listFile)
+        let record = try XCTUnwrap(store().record(id: id(key)))
+        XCTAssertEqual(record.state, .trusted)
+        XCTAssertEqual(record.address, "192.0.2.7")
+        XCTAssertNil(record.reportedAddress)
+    }
+
     func testDeniedDeviceCannotMakeTheHostWrite() throws {
         let s = store()
         let key = newKey()

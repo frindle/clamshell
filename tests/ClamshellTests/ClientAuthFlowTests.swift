@@ -261,7 +261,7 @@ final class ClientAuthFlowTests: XCTestCase {
         // Then accepted: remembered, session up.
         let accepted = try h.result(.accepted, response: device.response, sign: hostSigner())
         let up = flow.received(type: resultType, payload: accepted)
-        XCTAssertEqual(changes(up), [.recordVerified(key: hostPub, name: "Studio", address: address)])
+        XCTAssertEqual(changes(up), [.recordVerified(key: hostPub, name: "Studio", address: url)])
         XCTAssertTrue(flow.isSecure)
         XCTAssertEqual(sent(up).count, 2)
     }
@@ -297,6 +297,47 @@ final class ClientAuthFlowTests: XCTestCase {
                                                     nowFingerprint: DeviceIdentity.fingerprint(ofPublicKey: hostPub))])
         XCTAssertTrue(changes(a).isEmpty)
         XCTAssertTrue(flow.isEnded)
+    }
+
+    // MARK: an address the client chose itself falls through
+
+    private func chosen(key: Data? = nil, falls: Bool) -> ClientAuthFlow {
+        var c = config()
+        c.fallsThrough = falls
+        return ClientAuthFlow(config: c, known: known(key: key))
+    }
+
+    func testAnUnknownKeyAtAnAddressTheClientChoseMovesOnAndKeepsTheAlarm() throws {
+        let other = P256.Signing.PrivateKey().publicKey.x963Representation
+        var flow = chosen(key: other, falls: true)
+        _ = flow.opened()
+        let a = flow.received(type: challengeType, payload: try host().challenge.payload)
+        XCTAssertTrue(sent(a).isEmpty)
+        XCTAssertTrue(changes(a).isEmpty)
+        XCTAssertEqual(end(a), .nextAddress)
+        XCTAssertEqual(states(a), [.changedIdentity(address: address,
+                                                    savedFingerprint: DeviceIdentity.fingerprint(ofPublicKey: other),
+                                                    nowFingerprint: DeviceIdentity.fingerprint(ofPublicKey: hostPub))])
+        XCTAssertTrue(flow.isEnded)
+    }
+
+    func testNoChallengeAtAnAddressTheClientChoseMovesOnAndKeepsTheAlarm() throws {
+        var flow = chosen(falls: true)
+        _ = flow.opened()
+        let a = flow.timerFired(.challenge)
+        XCTAssertTrue(sent(a).isEmpty)
+        XCTAssertEqual(states(a), [.didNotIdentify(hostName: "Studio")])
+        XCTAssertEqual(end(a), .nextAddress)
+    }
+
+    func testTheAddressTheUserPickedStillStopsWithTheAlarm() throws {
+        let other = P256.Signing.PrivateKey().publicKey.x963Representation
+        var key = chosen(key: other, falls: false)
+        _ = key.opened()
+        XCTAssertEqual(end(key.received(type: challengeType, payload: try host().challenge.payload)), .stop)
+        var silent = chosen(falls: false)
+        _ = silent.opened()
+        XCTAssertEqual(end(silent.timerFired(.challenge)), .stop)
     }
 
     func testSilentKnownHostIsRefusedWithoutAClearHello() throws {
@@ -529,7 +570,7 @@ final class ClientAuthFlowTests: XCTestCase {
         XCTAssertEqual(end(declined), .stop)
 
         let yes = flow.answered(true)
-        XCTAssertEqual(changes(yes), [.recordVerified(key: hostPub, name: "Studio", address: address)])
+        XCTAssertEqual(changes(yes), [.recordVerified(key: hostPub, name: "Studio", address: url)])
         XCTAssertTrue(sent(yes).isEmpty)
         XCTAssertEqual(end(yes), .reconnect(after: 0, carry: FlowCarry()))
     }
@@ -540,8 +581,57 @@ final class ClientAuthFlowTests: XCTestCase {
         let (_, response) = challenge(&flow, h)
         let device = try h.verify(responsePayload: try XCTUnwrap(response))
         let a = flow.received(type: resultType, payload: try h.result(.pending, response: device.response, sign: hostSigner()))
-        XCTAssertEqual(changes(a), [.bind(hostId: DeviceIdentity.id(ofPublicKey: hostPub), address: "mac.example.com:443")])
+        XCTAssertEqual(changes(a), [.bind(hostId: DeviceIdentity.id(ofPublicKey: hostPub), address: "wss://mac.example.com/ws/a")])
         XCTAssertTrue(sent(a).isEmpty)
+    }
+
+    // MARK: an address that now reaches a different saved Mac
+
+    /// Two saved Macs; the address of the first now reaches the second.
+    private func swapped(expected: String? = nil) throws -> (flow: ClientAuthFlow, actions: [FlowAction], otherId: String) {
+        let otherKey = P256.Signing.PrivateKey()
+        let otherPub = otherKey.publicKey.x963Representation
+        var k = known()
+        k.recordVerified(key: otherPub, name: "Other Mac", address: "192.168.1.21:5903", now: 2)
+        var c = config()
+        c.expectedHostId = expected
+        var flow = ClientAuthFlow(config: c, known: k)
+        let h = try HostHandshake(identityKey: otherPub, capabilities: [.relativeMouse], name: "Other Mac")
+        let (_, response) = challenge(&flow, h)
+        let device = try h.verify(responsePayload: try XCTUnwrap(response))
+        let result = try h.result(.accepted, response: device.response, sign: AuthSignature.signer(otherKey))
+        // The actions first: the flow is a value, and the copy returned with
+        // them has to be the one the result was fed to.
+        let actions = flow.received(type: resultType, payload: result)
+        return (flow, actions, DeviceIdentity.id(ofPublicKey: otherPub))
+    }
+
+    func testAnAddressThatNowReachesADifferentSavedMacIsNotASuccess() throws {
+        var s = try swapped()
+        // The address moves to the Mac that answered, and the attempt ends so
+        // the caller can try the next address. No session, no HELLO.
+        XCTAssertEqual(changes(s.actions), [.bind(hostId: s.otherId, address: url)])
+        XCTAssertEqual(states(s.actions), [.failed("This address now reaches Other Mac")])
+        XCTAssertEqual(end(s.actions), .nextAddress)
+        XCTAssertTrue(sent(s.actions).isEmpty)
+        XCTAssertFalse(s.flow.isSecure)
+        XCTAssertTrue(s.flow.isEnded)
+        XCTAssertTrue(s.flow.socketClosed().isEmpty)
+    }
+
+    func testThePickedMacCountsEvenWhenTheAddressWasMovedAlready() throws {
+        // The caller says it picked the first Mac (its pick is kept across
+        // attempts even after the address moved). Still not a success.
+        let firstId = DeviceIdentity.id(ofPublicKey: hostPub)
+        let s = try swapped(expected: firstId)
+        XCTAssertEqual(end(s.actions), .nextAddress)
+        XCTAssertEqual(states(s.actions), [.failed("This address now reaches Other Mac")])
+    }
+
+    func testTheSameMacAtTheSameAddressStillConnects() throws {
+        let l = try live()
+        XCTAssertEqual(states(l.up), [.connected(verified: true, hostName: "Studio")])
+        XCTAssertTrue(l.flow.isSecure)
     }
 
     func testNothingTheAppSendsBeforeAcceptedGoesOut() throws {
@@ -554,6 +644,31 @@ final class ClientAuthFlowTests: XCTestCase {
         let device = try h.verify(responsePayload: try XCTUnwrap(response))
         _ = flow.received(type: resultType, payload: try h.result(.pending, response: device.response, sign: hostSigner()))
         XCTAssertTrue(flow.send(key).isEmpty)
+    }
+
+    func testAChallengeThatArrivesBeforeTheOpenEventIsStillAnswered() throws {
+        var flow = ClientAuthFlow(config: config(), known: known())
+        let h = try host()
+        // No opened() first: the socket's open callback has not run yet.
+        let a = flow.received(type: challengeType, payload: h.challenge.payload)
+        let response = try XCTUnwrap(sent(a).first { $0.first == StreamMessageType.authResponse.rawValue })
+        _ = try h.verify(responsePayload: payload(response))
+        XCTAssertNil(end(a))
+        XCTAssertFalse(flow.isEnded)
+        // The late open event changes nothing and sends nothing.
+        XCTAssertTrue(flow.opened().isEmpty)
+        // The result still works.
+        let device = try h.verify(responsePayload: payload(response))
+        let up = flow.received(type: resultType, payload: try h.result(.accepted, response: device.response, sign: hostSigner()))
+        XCTAssertTrue(flow.isSecure)
+        XCTAssertEqual(states(up), [.connected(verified: true, hostName: "Studio")])
+    }
+
+    func testAnythingElseBeforeTheOpenEventIsStillIgnored() throws {
+        var flow = ClientAuthFlow(config: config(), known: known())
+        XCTAssertTrue(flow.received(type: StreamMessageType.ping.rawValue, payload: Data()).isEmpty)
+        XCTAssertTrue(flow.received(type: resultType, payload: Data(count: 70)).isEmpty)
+        XCTAssertFalse(flow.isEnded)
     }
 
     func testTheClientSendsNothingWhenTheSocketOpens() throws {

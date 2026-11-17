@@ -34,6 +34,12 @@ enum FlowEnd: Equatable {
     case failure
     /// Close and connect again after this many seconds, carrying this.
     case reconnect(after: Double, carry: FlowCarry)
+    /// Close; this address reached a different saved Mac than the one picked,
+    /// or (with `fallsThrough`) a host whose key is not the saved one or that
+    /// did not identify itself; the last state says which.
+    /// The caller tries the picked Mac's next saved address at once, and uses
+    /// its own back-off after the last one.
+    case nextAddress
 }
 
 /// What the screen shows. Values only: no key, signature or message content.
@@ -87,6 +93,16 @@ struct ClientAuthConfig {
     var appVersion: String
     /// The WebSocket URL actually dialled.
     var dialledURL: String
+    /// The saved Mac the user picked, when the caller knows it. When it is nil
+    /// the saved Mac the dialled address belonged to is taken as the pick.
+    var expectedHostId: String?
+    /// True when the caller chose this address itself from the saved Mac's
+    /// list (not the one the user picked) and has another one to try after it.
+    /// An unknown key or no challenge there ends the attempt with
+    /// `nextAddress` instead of `stop`: the state still tells what was wrong,
+    /// the caller decides when to show it. The pin is not weakened: nothing is
+    /// answered or sent to that host and nothing is saved.
+    var fallsThrough = false
     /// A whole HELLO message (framed). Called when HELLO is sent.
     var makeHello: () -> Data
     /// For tests: response extensions, a fixed ephemeral key and a fixed nonce.
@@ -204,9 +220,9 @@ struct ClientAuthFlow {
                     .hostCapabilities([]),
                     .state(.connected(verified: false, hostName: ""))]
         case .askingHost:
-            guard yes, let h = handshake, let address else { return finish(.stop, "user declined", state: nil) }
+            guard yes, let h = handshake, address != nil else { return finish(.stop, "user declined", state: nil) }
             phase = .ended
-            return [.change(.recordVerified(key: h.hostIdentityKey, name: h.hostName, address: address)),
+            return [.change(.recordVerified(key: h.hostIdentityKey, name: h.hostName, address: config.dialledURL)),
                     .end(.reconnect(after: 0, carry: FlowCarry()), "host confirmed by the user")]
         default:
             return []
@@ -216,7 +232,18 @@ struct ClientAuthFlow {
     /// One message from the host: its type byte and payload.
     mutating func received(type: UInt8, payload: Data) -> [FlowAction] {
         switch phase {
-        case .idle, .ended, .askingHost:
+        case .idle:
+            // The host speaks first, and the socket's "open" and its first
+            // message are two separate callbacks with no promised order. A
+            // challenge that is handed over first counts as the open: it is
+            // answered, never dropped (a dropped challenge from a saved host
+            // would end as "did not identify itself" 2 s later). Anything else
+            // before the open is still ignored.
+            guard type == StreamMessageType.authChallenge.rawValue else { return [] }
+            let open = opened()
+            guard phase == .awaitingChallenge else { return open }
+            return open + handleChallenge(payload)
+        case .ended, .askingHost:
             return []
         case .awaitingChallenge, .askingUnverified:
             guard type == StreamMessageType.authChallenge.rawValue else {
@@ -274,7 +301,8 @@ struct ClientAuthFlow {
     private mutating func challengeTimedOut() -> [FlowAction] {
         if case let .host(id) = standing {
             let name = known.host(id: id)?.name ?? ""
-            return finish(.stop, "a saved host did not identify itself", state: .didNotIdentify(hostName: name))
+            return finish(config.fallsThrough ? .nextAddress : .stop,
+                          "a saved host did not identify itself", state: .didNotIdentify(hostName: name))
         }
         guard let address else { return fail("the address cannot be used") }
         if standing == .unknownAllowed {
@@ -292,9 +320,12 @@ struct ClientAuthFlow {
             return fail("the challenge is not valid")
         }
         let id = DeviceIdentity.id(ofPublicKey: challenge.hello.identityKey)
-        if case let .host(savedId) = standing, savedId != id {
+        // Rule 4, unless the key that answered is another saved Mac's: that one
+        // passes its own pin, and the result step below decides what to do
+        // (the address moves, and the attempt ends so the next address is tried).
+        if case let .host(savedId) = standing, savedId != id, known.host(id: id) == nil {
             let saved = DeviceIdentity.fingerprint(ofId: savedId)
-            return finish(.stop, "identity changed", state: .changedIdentity(
+            return finish(config.fallsThrough ? .nextAddress : .stop, "identity changed", state: .changedIdentity(
                 address: address ?? "", savedFingerprint: saved,
                 nowFingerprint: DeviceIdentity.fingerprint(ofId: id)))
         }
@@ -326,10 +357,23 @@ struct ClientAuthFlow {
         if hostKnown, !bound, let address {
             bound = true
             if standing != .host(id: h.hostId) {
-                actions.append(.change(.bind(hostId: h.hostId, address: address)))
+                // The dialled URL, not the bare address: a tunnel's display path
+                // is kept with the address so a later fallback reaches the same display.
+                actions.append(.change(.bind(hostId: h.hostId, address: config.dialledURL)))
             }
         }
         let name = h.hostName
+        // A different saved Mac answered at an address that was another saved
+        // Mac's. It passes its own pin, so it is not a success for the one
+        // picked: the address has moved (the change above), and this attempt
+        // ends so the caller can try the picked Mac's next address.
+        var picked = config.expectedHostId
+        if picked == nil, case let .host(id) = standing { picked = id }
+        if hostKnown, let picked, picked != h.hostId, known.host(id: picked) != nil {
+            let now = known.host(id: h.hostId)?.name ?? name
+            let text = "This address now reaches \(now)"
+            return actions + finish(.nextAddress, "the address reached a different saved Mac", state: .failed(text))
+        }
         switch status {
         case .pending:
             phase = .pending
@@ -340,8 +384,8 @@ struct ClientAuthFlow {
             return actions
         case .accepted:
             if waitingShown || hostKnown {
-                guard let address else { return fail("the address cannot be used") }
-                actions.append(.change(.recordVerified(key: h.hostIdentityKey, name: name, address: address)))
+                guard address != nil else { return fail("the address cannot be used") }
+                actions.append(.change(.recordVerified(key: h.hostIdentityKey, name: name, address: config.dialledURL)))
                 return actions + startSession(h)
             }
             // Rule 12: let in without being asked, by a host not met before.
