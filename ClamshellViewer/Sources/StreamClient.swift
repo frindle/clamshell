@@ -636,6 +636,14 @@ final class StreamClient: ObservableObject {
                 switch result {
                 case .success(let message):
                     if case .data(let data) = message {
+                        // A message proves the socket is open, even when the
+                        // delegate's "open" has not run yet (the flow takes a
+                        // challenge that comes first as the open).
+                        if !a.opened {
+                            a.opened = true
+                            a.openTimer?.cancel()
+                            a.openTimer = nil
+                        }
                         a.parser.feed(data)
                         if a.parser.corrupt {
                             self.perform([.end(.failure, "the stream is corrupt")], on: a)

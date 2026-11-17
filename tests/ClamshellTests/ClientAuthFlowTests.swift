@@ -602,6 +602,31 @@ final class ClientAuthFlowTests: XCTestCase {
         XCTAssertTrue(flow.send(key).isEmpty)
     }
 
+    func testAChallengeThatArrivesBeforeTheOpenEventIsStillAnswered() throws {
+        var flow = ClientAuthFlow(config: config(), known: known())
+        let h = try host()
+        // No opened() first: the socket's open callback has not run yet.
+        let a = flow.received(type: challengeType, payload: h.challenge.payload)
+        let response = try XCTUnwrap(sent(a).first { $0.first == StreamMessageType.authResponse.rawValue })
+        _ = try h.verify(responsePayload: payload(response))
+        XCTAssertNil(end(a))
+        XCTAssertFalse(flow.isEnded)
+        // The late open event changes nothing and sends nothing.
+        XCTAssertTrue(flow.opened().isEmpty)
+        // The result still works.
+        let device = try h.verify(responsePayload: payload(response))
+        let up = flow.received(type: resultType, payload: try h.result(.accepted, response: device.response, sign: hostSigner()))
+        XCTAssertTrue(flow.isSecure)
+        XCTAssertEqual(states(up), [.connected(verified: true, hostName: "Studio")])
+    }
+
+    func testAnythingElseBeforeTheOpenEventIsStillIgnored() throws {
+        var flow = ClientAuthFlow(config: config(), known: known())
+        XCTAssertTrue(flow.received(type: StreamMessageType.ping.rawValue, payload: Data()).isEmpty)
+        XCTAssertTrue(flow.received(type: resultType, payload: Data(count: 70)).isEmpty)
+        XCTAssertFalse(flow.isEnded)
+    }
+
     func testTheClientSendsNothingWhenTheSocketOpens() throws {
         var flow = ClientAuthFlow(config: config(), known: known())
         let a = flow.opened()

@@ -223,7 +223,18 @@ struct ClientAuthFlow {
     /// One message from the host: its type byte and payload.
     mutating func received(type: UInt8, payload: Data) -> [FlowAction] {
         switch phase {
-        case .idle, .ended, .askingHost:
+        case .idle:
+            // The host speaks first, and the socket's "open" and its first
+            // message are two separate callbacks with no promised order. A
+            // challenge that is handed over first counts as the open: it is
+            // answered, never dropped (a dropped challenge from a saved host
+            // would end as "did not identify itself" 2 s later). Anything else
+            // before the open is still ignored.
+            guard type == StreamMessageType.authChallenge.rawValue else { return [] }
+            let open = opened()
+            guard phase == .awaitingChallenge else { return open }
+            return open + handleChallenge(payload)
+        case .ended, .askingHost:
             return []
         case .awaitingChallenge, .askingUnverified:
             guard type == StreamMessageType.authChallenge.rawValue else {
