@@ -35,7 +35,22 @@ internal static class DeviceCommands
         const int AttachParentProcess = -1;
         bool attached = AttachConsole(AttachParentProcess);
         if (attached) SetConsoleOutputCP(65001);
-        var writer = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+        // A Windows-subsystem program started without a console of its own (for instance by a build
+        // script through another program) is given no standard output at all. So that such a caller
+        // can still read the answer, CLAMSHELL_CLI_OUTPUT may name a file to write it to instead.
+        string? outputFile = Environment.GetEnvironmentVariable("CLAMSHELL_CLI_OUTPUT");
+        Stream stream;
+        try
+        {
+            stream = string.IsNullOrEmpty(outputFile)
+                ? Console.OpenStandardOutput()
+                : new FileStream(outputFile, FileMode.Create, FileAccess.Write, FileShare.Read);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            stream = Stream.Null;
+        }
+        var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true };
         Console.SetOut(writer);
         try
         {

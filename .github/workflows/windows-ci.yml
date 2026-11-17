@@ -195,11 +195,14 @@ jobs:
           $null = $viewer.Handle   # keeps the exit code readable after it exits
 
           # Find the waiting device the way a person at the PC would, then approve it.
+          # The program has no console of its own here, so it writes its answer to this file.
+          $env:CLAMSHELL_CLI_OUTPUT = Join-Path $PWD "cli-out.txt"
           $cli = @("run","--no-build","--project","WindowsServer/ClamshellServer.csproj","-c","Release","--")
           $fingerprint = $null
           $listing = ""
           for ($i = 0; $i -lt 40 -and -not $fingerprint; $i++) {
-            $listing = (& dotnet @cli devices 2>&1 | Out-String)
+            & dotnet @cli devices 2>&1 | Out-Null
+            $listing = if (Test-Path cli-out.txt) { Get-Content cli-out.txt -Raw } else { "" }
             if ($listing -match "Waiting for approval:\s+([0-9A-F]{4}(?:-[0-9A-F]{4}){3})") { $fingerprint = $Matches[1] }
             else { Start-Sleep -Seconds 1 }
           }
@@ -207,8 +210,9 @@ jobs:
           $approveOut = $null
           $approveCode = $null
           if ($fingerprint) {
-            $approveOut = (& dotnet @cli approve $fingerprint 2>&1 | Out-String)
+            & dotnet @cli approve $fingerprint 2>&1 | Out-Null
             $approveCode = $LASTEXITCODE
+            $approveOut = if (Test-Path cli-out.txt) { Get-Content cli-out.txt -Raw } else { "" }
             Write-Output "--- approve $fingerprint (exit $approveCode) ---"; Write-Output $approveOut
           }
 
