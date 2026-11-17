@@ -124,9 +124,9 @@ public static class FlowTests
 
     private static void StoreTests(TestRun t)
     {
-        t.Equal(KnownHosts.NormalizeAddress("Mac.Local"), "ws://mac.local:5903", "a bare host gets ws and the default port");
-        t.Equal(KnownHosts.NormalizeAddress("ws://Mac.Local:5903/path?x=1#y"), "ws://mac.local:5903", "path, query and fragment are dropped");
-        t.Equal(KnownHosts.NormalizeAddress("wss://u:p@mac.local:443/"), "wss://mac.local:443", "user info is dropped");
+        t.Equal(KnownHosts.NormalizeAddress("Mac.Local"), "mac.local:5903", "a bare host gets the default port");
+        t.Equal(KnownHosts.NormalizeAddress("ws://Mac.Local:5903/path?x=1#y"), "mac.local:5903", "path, query and fragment are dropped");
+        t.Equal(KnownHosts.NormalizeAddress("wss://u:p@mac.local:443/"), "mac.local:443", "user info is dropped");
         t.Check(KnownHosts.NormalizeAddress("http://mac.local") is null, "another scheme is refused");
         t.Check(KnownHosts.NormalizeAddress("") is null, "an empty address is refused");
         t.Check(KnownHosts.NormalizeAddress("ws://mac.local:99999") is null, "a port out of range is refused");
@@ -161,7 +161,7 @@ public static class FlowTests
         h.AddHints(new[] { "ws://hint1.local:5903", "ws://a.local:5903", "http://nope", new string('x', 300) }, id, 5);
         t.Equal(h.Host(id)!.Addresses.Count, 2, "hints add new valid addresses only");
         t.Check(!h.IsVerified("hint1.local", id), "a hint is not verified");
-        t.Equal(h.DialOrder(id)[0], "ws://a.local:5903", "the verified address is dialled first");
+        t.Equal(h.DialOrder(id)[0], "a.local:5903", "the verified address is dialled first");
         h.RecordVerified(b.Public, "Mac B", "b.local", 6);
         h.AddHints(new[] { "ws://b.local:5903" }, id, 7);
         t.Equal(h.Standing("b.local").HostId, DeviceIdentity.Id(b.Public), "a hint cannot take an address from another host");
