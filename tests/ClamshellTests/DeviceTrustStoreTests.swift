@@ -382,7 +382,8 @@ final class DeviceTrustStoreTests: XCTestCase {
         _ = ask(first, key)
         first.decide(id: id(key), .approve, by: "host", onlyIfWaiting: true)
 
-        for damage in ["not json", "{\"version\":2,\"devices\":[]}", "{\"version\":1,\"devices\":[{\"id\":7}]}"] {
+        // (A higher version is not damage: see the newer-version test.)
+        for damage in ["not json", "{\"version\":0,\"devices\":[]}", "{\"version\":1,\"devices\":[{\"id\":7}]}"] {
             try Data(damage.utf8).write(to: listFile)
             let s = store()
             XCTAssertTrue(s.all().isEmpty, damage)
@@ -532,6 +533,85 @@ final class DeviceTrustStoreTests: XCTestCase {
             waited += 0.05
         }
         XCTAssertEqual(first.state(of: id(key)), .denied)
+    }
+
+    /// Holds the list's lock from another descriptor, as another process would.
+    private func holdLock() throws -> Int32 {
+        let fd = open(dir.appendingPathComponent(DeviceTrustStore.lockName).path,
+                      O_RDWR | O_CREAT | O_CLOEXEC, 0o600)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        XCTAssertEqual(flock(fd, LOCK_EX | LOCK_NB), 0)
+        return fd
+    }
+
+    func testChangesFailAndWriteNothingWhileTheLockIsHeldElsewhere() throws {
+        let s = DeviceTrustStore(directory: dir, watch: false, now: { [unowned self] in self.clock },
+                                 lockTimeout: 0.1)
+        let known = newKey(), trusted = newKey()
+        _ = ask(s, known)
+        _ = ask(s, trusted)
+        s.decide(id: id(trusted), .approve, by: "host", onlyIfWaiting: true)
+        let before = try Data(contentsOf: listFile)
+
+        let fd = try holdLock()
+        // Even a trusted device is turned away for now, and a new one too.
+        XCTAssertEqual(ask(s, trusted), .busy)
+        XCTAssertEqual(ask(s, newKey()), .busy)
+        XCTAssertEqual(s.lastProblem, .lockNotTaken)
+        XCTAssertNil(s.decide(id: id(known), .approve, by: "cli", onlyIfWaiting: false))
+        XCTAssertEqual(s.lastProblem, .lockNotTaken)
+        XCTAssertNil(s.revoke(id: id(trusted), by: "cli"))
+        XCTAssertNil(s.forget(id: id(known)))
+        XCTAssertEqual(try Data(contentsOf: listFile), before)
+        // What it knew in memory is not thrown away.
+        XCTAssertEqual(s.state(of: id(trusted)), .trusted)
+        // The tries left no trace in the new-device count.
+        flock(fd, LOCK_UN)
+        close(fd)
+        for _ in 0 ..< DeviceTrustStore.maxNewPerMinute - 2 { XCTAssertEqual(ask(s, newKey()), .waiting) }
+
+        // And it works again once the lock is free.
+        XCTAssertEqual(ask(s, trusted), .trusted)
+        XCTAssertNil(s.lastProblem)
+        XCTAssertNotNil(s.revoke(id: id(trusted), by: "cli"))
+    }
+
+    func testListWrittenByANewerVersionIsLeftAloneAndNobodyIsLetIn() throws {
+        try makeDirectory(dir)
+        let key = newKey()
+        // A shape this build could not read, with a device in it.
+        let text = """
+            {"version": 2, "devices": [{"id": "\(id(key))", "publicKey": 12, "state": "paused"}],
+             "extra": true}
+            """
+        let bytes = Data(text.utf8)
+        try bytes.write(to: listFile)
+        let s = store()
+        XCTAssertTrue(s.listIsFromNewerVersion)
+        XCTAssertEqual(ask(s, key), .busy)
+        XCTAssertEqual(ask(s, newKey()), .busy)
+        XCTAssertEqual(s.lastProblem, .newerVersion)
+        XCTAssertNil(s.decide(id: id(key), .approve, by: "cli", onlyIfWaiting: false))
+        XCTAssertNil(s.forget(id: id(key)))
+        s.reload()
+        XCTAssertEqual(try Data(contentsOf: listFile), bytes)
+        // Not moved aside either.
+        XCTAssertFalse(try names().contains { $0.hasPrefix(DeviceTrustStore.fileName + ".") })
+        XCTAssertEqual(DeviceTrustStore.fileVersion, 1)
+    }
+
+    func testCommandLineSaysTheListIsFromANewerClamshell() throws {
+        try makeDirectory(dir)
+        let bytes = Data(#"{"version": 3, "devices": []}"#.utf8)
+        try bytes.write(to: listFile)
+        let auth = HostAuth(directory: dir, watch: false)
+        var lines: [String] = []
+        XCTAssertEqual(DeviceCommands.run(["devices"], auth: auth, out: { lines.append($0) }), 1)
+        XCTAssertTrue(lines.joined().contains("newer Clamshell"), "\(lines)")
+        lines = []
+        XCTAssertEqual(DeviceCommands.run(["approve", "AB12-CD34-EF56-7890"], auth: auth, out: { lines.append($0) }), 1)
+        XCTAssertTrue(lines.joined().contains("newer Clamshell"), "\(lines)")
+        XCTAssertEqual(try Data(contentsOf: listFile), bytes)
     }
 
     func testListLastsForOneRunWhenTheDirectoryCannotBeUsed() throws {

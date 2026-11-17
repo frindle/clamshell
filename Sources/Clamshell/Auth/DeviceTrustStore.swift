@@ -38,37 +38,50 @@ struct DeviceRecord: Codable, Equatable {
     var label: String { name.isEmpty ? "Unnamed device" : name }
 }
 
+/// The file's format. `version` goes up whenever a build changes what a field
+/// or a state means, not only when the shape changes: a build that does not
+/// know the number leaves the file alone and lets nobody in (see `readDisk`),
+/// because it could read the list wrongly and write it back that way.
 private struct DeviceFile: Codable {
     var version: Int
     var devices: [DeviceRecord]
+}
+
+/// Only the version, so a file written by a newer build can be told apart from
+/// a damaged one even when the rest of it does not decode.
+private struct DeviceFileVersion: Decodable {
+    var version: Int
 }
 
 /// An advisory lock on a file beside the device list, so two processes do not
 /// both read, change and write it at once.
 private final class FileLock {
     private var fd: Int32
+    /// False when the lock file could not be opened or the lock was not taken
+    /// within the timeout. Whoever holds the lock could write the file at any
+    /// moment, so nothing may be changed without it.
+    private(set) var acquired = false
 
     init(_ url: URL, timeout: TimeInterval = 2) {
         fd = open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return }
         let deadline = Date().addingTimeInterval(timeout)
-        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            guard errno == EWOULDBLOCK || errno == EINTR else { break }
-            if Date() > deadline {
-                // Whoever holds it could write the file anyway; waiting for
-                // ever would only let it stall the host.
-                clog("DEVICES: the device list's lock has been held for \(Int(timeout)) s — carrying on without it")
-                break
+        while true {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                acquired = true
+                return
             }
+            guard errno == EWOULDBLOCK || errno == EINTR, Date() <= deadline else { return }
             usleep(10_000)
         }
     }
 
     func unlock() {
         guard fd >= 0 else { return }
-        flock(fd, LOCK_UN)
+        if acquired { flock(fd, LOCK_UN) }
         close(fd)
         fd = -1
+        acquired = false
     }
 
     deinit { unlock() }
@@ -86,6 +99,8 @@ final class DeviceTrustStore {
     static let recentlySeen: TimeInterval = 5 * 60
     static let waitingLifetime: TimeInterval = 24 * 60 * 60
     static let maxFileBytes = 1 << 20
+    /// The list format this build reads and writes.
+    static let fileVersion = 1
     /// Posted in this process, with the store as object, after the list
     /// changes for any reason, on whatever thread made or noticed the change.
     static let didChange = Notification.Name("com.frindle.clamshell.devices.didChange")
@@ -129,14 +144,37 @@ final class DeviceTrustStore {
     private var fallbackTimer: DispatchSourceTimer?
     private let watchFails: Bool
     private let reloadInterval: TimeInterval
+    private let lockTimeout: TimeInterval
+    /// True while a change is only being tried to get the answer for a
+    /// change that cannot be made; it must leave no trace.
+    private var dryRun = false
+    private var loggedNewerVersion = false
+
+    /// Why the last change was not made, if it was not: for the command line
+    /// and the menu to say. Set under the store's lock by every change.
+    enum Problem: Equatable {
+        /// The file lock could not be taken in time (or its file opened).
+        case lockNotTaken
+        /// The list was written by a newer Clamshell and is left alone.
+        case newerVersion
+        /// The list is there but could not be read.
+        case unreadable
+        /// The list could not be written.
+        case notSaved
+    }
+    private(set) var lastProblem: Problem?
+    /// True while the file on disk was written by a newer Clamshell than this.
+    private(set) var listIsFromNewerVersion = false
 
     private var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
 
     /// `watchFails` makes the directory watcher fail to start, for tests;
     /// `reloadInterval` is how often the list is read again then.
+    /// `lockTimeout` is how long a change waits for the file lock.
     init(directory: URL, watch: Bool = true, now: @escaping () -> Date = Date.init,
-         watchFails: Bool = false, reloadInterval: TimeInterval = 5) {
+         watchFails: Bool = false, reloadInterval: TimeInterval = 5, lockTimeout: TimeInterval = 2) {
         self.directory = directory
+        self.lockTimeout = lockTimeout
         self.now = now
         self.watchFails = watchFails
         self.reloadInterval = reloadInterval
@@ -258,7 +296,7 @@ final class DeviceTrustStore {
                 guard let stale = waiting.first(where: { !hasOpenConnection($0.id) }) else { return (.busy, .busy) }
                 list.removeAll { $0.id == stale.id }
             }
-            self.recentAdds.append((t, group))
+            if !self.dryRun { self.recentAdds.append((t, group)) }
             list.append(DeviceRecord(id: id, publicKey: Hex.encode(publicKey), name: name, state: .waiting,
                                      firstSeen: t, lastSeen: t, address: address,
                                      decidedAt: nil, decidedBy: nil))
@@ -368,12 +406,28 @@ final class DeviceTrustStore {
     /// changed and tells observers. `body` returns its answer, and the answer
     /// to give instead when the change could not be saved; in that case the
     /// list stays as it was on disk.
+    ///
+    /// If the file lock cannot be taken, nothing is changed or written: the
+    /// answer is the one for an unsaved change, worked out on an empty list so
+    /// that nobody is let in on the strength of a list that may be out of date.
     @discardableResult
     private func mutate<T>(_ body: (inout [DeviceRecord], TimeInterval) -> (saved: T, unsaved: T)) -> T {
         lock.lock()
         let before = records
-        let fileLock = canPersist ? FileLock(directory.appendingPathComponent(Self.lockName)) : nil
+        let fileLock = canPersist ? FileLock(directory.appendingPathComponent(Self.lockName), timeout: lockTimeout) : nil
         let t = now().timeIntervalSince1970
+        lastProblem = nil
+        if let fileLock, !fileLock.acquired {
+            clog("DEVICES: the device list's lock could not be taken within \(Int(lockTimeout)) s — nothing was changed")
+            lastProblem = .lockNotTaken
+            var none: [DeviceRecord] = []
+            dryRun = true
+            let answer = body(&none, t)
+            dryRun = false
+            fileLock.unlock()
+            lock.unlock()
+            return answer.unsaved
+        }
         // nil: there is a list on disk and it cannot be read right now.
         let disk: [DeviceRecord]? = canPersist ? readDisk() : records
         let start = disk ?? []
@@ -383,12 +437,18 @@ final class DeviceTrustStore {
         if canPersist, list != start {
             var saved = false
             if disk == nil {
-                clog("DEVICES: the device list cannot be read, so nothing was changed")
+                if listIsFromNewerVersion {
+                    lastProblem = .newerVersion
+                } else {
+                    lastProblem = .unreadable
+                    clog("DEVICES: the device list cannot be read, so nothing was changed")
+                }
             } else {
                 do {
                     try write(list)
                     saved = true
                 } catch {
+                    lastProblem = .notSaved
                     clog("DEVICES: could not save the device list (\(error)) — nothing was changed")
                 }
             }
@@ -419,8 +479,14 @@ final class DeviceTrustStore {
     /// no sense is moved aside for the user to look at and also means no
     /// devices. nil means the file is there but could not be read: callers
     /// then trust nobody and leave the file alone.
+    ///
+    /// A file whose `version` is higher than this build knows is a list
+    /// written by a newer Clamshell: it stays exactly where it is, is not
+    /// moved aside and not rewritten, and the result is nil, so nobody is let
+    /// in and nothing is decided until Clamshell is updated.
     private func readDisk() -> [DeviceRecord]? {
         let url = fileURL
+        listIsFromNewerVersion = false
         let data: Data
         do {
             data = try SecureFile.read(url, maxBytes: Self.maxFileBytes)
@@ -433,7 +499,16 @@ final class DeviceTrustStore {
             clog("DEVICES: cannot read \(Self.fileName) (\(error)) — treating every device as unknown")
             return nil
         }
-        guard let file = try? JSONDecoder().decode(DeviceFile.self, from: data), file.version == 1 else {
+        if let found = try? JSONDecoder().decode(DeviceFileVersion.self, from: data),
+           found.version > Self.fileVersion {
+            listIsFromNewerVersion = true
+            if !loggedNewerVersion {
+                loggedNewerVersion = true
+                clog("DEVICES: \(Self.fileName) was written by a newer Clamshell (list version \(found.version), this one reads version \(Self.fileVersion)) — leaving it alone; no device is let in and nothing is decided until Clamshell is updated")
+            }
+            return nil
+        }
+        guard let file = try? JSONDecoder().decode(DeviceFile.self, from: data), file.version == Self.fileVersion else {
             setAside(url, why: "is not a version 1 device list")
             return []
         }
@@ -448,7 +523,7 @@ final class DeviceTrustStore {
     private func write(_ list: [DeviceRecord]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try SecureFile.replace(fileURL, contents: try encoder.encode(DeviceFile(version: 1, devices: list)))
+        try SecureFile.replace(fileURL, contents: try encoder.encode(DeviceFile(version: Self.fileVersion, devices: list)))
     }
 
     /// Keeps only records that hold a real key and whose id is that key's

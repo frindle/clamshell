@@ -509,6 +509,13 @@ After any status other than 0 or 1 the host closes the connection.
   that is already on the waiting list counts as seeing it, also when the
   answer is `busy`. A waiting device nobody approves is dropped after 24
   hours.
+- The host changes its device list only while it holds the list's file lock.
+  If it cannot take the lock within 2 s, or cannot open the lock file, nothing
+  is changed or written and every device that asks gets `busy`. The same goes
+  for a list written by a newer Clamshell (a higher list `version`, which goes
+  up whenever a build changes what a field or a state means): that file is left
+  exactly as it is, nobody is let in, nothing is decided, and the host's log
+  and `clamshell` commands say the list was written by a newer Clamshell.
 - Someone with as many addresses as a table has room, or who shares the real
   device's address, can still keep a new device off the list for as long as
   they keep trying. Devices that are already trusted are not kept out by
