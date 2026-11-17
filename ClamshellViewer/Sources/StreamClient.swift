@@ -71,10 +71,68 @@ final class StreamClient: ObservableObject {
     /// network queue; AVSampleBufferDisplayLayer enqueue is thread-safe.
     var onSampleBuffer: ((CMSampleBuffer) -> Void)?
 
-    private var task: URLSessionWebSocketTask?
-    private var parser: StreamMessageParser?
+    /// What the connection flow wants the user to see or answer (waiting for
+    /// approval, the identity questions, refusals, "not verified"). nil when
+    /// there is nothing to show. The screens in AuthPromptView read this.
+    @Published var authState: FlowState?
+
+    /// One connection attempt. Everything in it except `task` is touched only
+    /// on `wireQueue`: the flow (which owns the sealer and opener), the parser,
+    /// the timers. `ended` makes late callbacks of a finished attempt harmless.
+    private final class Attempt {
+        let task: URLSessionWebSocketTask
+        var flow: ClientAuthFlow
+        let parser = StreamMessageParser(maxPayload: 16 * 1024)
+        var ended = false
+        var opened = false
+        var timers: [(FlowTimer, DispatchWorkItem)] = []
+        var openTimer: DispatchWorkItem?
+        /// How long this attempt waits for the socket to open.
+        let openTimeout: TimeInterval
+
+        init(task: URLSessionWebSocketTask, flow: ClientAuthFlow, openTimeout: TimeInterval) {
+            self.task = task
+            self.flow = flow
+            self.openTimeout = openTimeout
+        }
+
+        func cancelTimers() {
+            for (_, item) in timers { item.cancel() }
+            timers.removeAll()
+            openTimer?.cancel()
+            openTimer = nil
+        }
+    }
+
+    /// Reports when a socket opens (URLSession queues sends until then, but the
+    /// flow must start its 2 s wait from the moment the host can speak).
+    private final class SocketDelegate: NSObject, URLSessionWebSocketDelegate {
+        var onOpen: ((URLSessionWebSocketTask) -> Void)?
+        func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask,
+                        didOpenWithProtocol protocol: String?) {
+            onOpen?(webSocketTask)
+        }
+    }
+
+    /// One serial queue owns every attempt's flow, so the order messages are
+    /// sealed in is the order they are written to the socket, and the order
+    /// they arrive in is the order they are opened in.
+    private let wireQueue = DispatchQueue(label: "clamshell.viewer.wire")
+    /// Main thread only.
+    private var current: Attempt?
+    /// Mirror of `current` for `wireQueue`.
+    private var wireAttempt: Attempt?
+    private let socketDelegate = SocketDelegate()
+    private lazy var session = URLSession(configuration: .default, delegate: socketDelegate, delegateQueue: nil)
+    /// What carries from one attempt to the next (busy back-off and so on).
+    private var flowCarry = FlowCarry()
+
+    private var task: URLSessionWebSocketTask? { current?.task }
     private var assembler: FrameAssembler?
     private let audio = AudioPlayer()
+
+    /// True once a HELLO went out on this connection. Main thread.
+    private var helloMade = false
 
     // Retained connection parameters for automatic reconnection.
     private var connectHost: String?
@@ -83,35 +141,64 @@ final class StreamClient: ObservableObject {
     /// Last clipboard text seen in either direction — breaks the echo loop.
     private var lastClipboard: String?
 
-    /// Guards the window between a WebSocket opening and the first message
-    /// actually arriving from the host (normally HELLO_ACK within ~1-2s).
-    /// `URLSessionWebSocketTask.receive()` has no built-in idle timeout, so if
-    /// the host accepts the TCP/WS handshake but then never sends anything --
-    /// e.g. StreamServer's `startSession()` hangs inside
-    /// `SCShareableContent.excludingDesktopWindows` (a known ScreenCaptureKit
-    /// flakiness, not something this client controls) -- `receiveLoop`'s
-    /// `.success` and `.failure` cases both simply never fire. Without this,
-    /// that leaves `status` at `.connecting` forever: `reconnectAttempt` never
-    /// increments, no backoff timer is ever scheduled, and the viewer is
-    /// stuck on the reconnecting page with no path back to a retry. This
-    /// timer forces a bounded per-attempt ceiling on that silent window,
-    /// without changing "retry forever until user disconnects" -- it just
-    /// makes sure every individual attempt can eventually give up and try
-    /// again instead of hanging indefinitely.
-    private var handshakeTimeout: DispatchWorkItem?
-    /// Generous relative to a healthy host's real HELLO_ACK latency (normally
-    /// under 1-2s) -- matches this file's own reconnect backoff ceiling and
-    /// CollapseCoordinator's restoreDelay, both 10s, so a slow-but-alive host
-    /// isn't penalized while a truly silent one doesn't hang forever.
-    private let handshakeTimeoutInterval: TimeInterval = 10
+    /// How long a socket may take to open. `URLSessionWebSocketTask` has no
+    /// idle timeout of its own, so without this a host that accepts TCP but
+    /// never completes the WebSocket upgrade would leave `status` at
+    /// `.connecting` forever with no back-off scheduled. Once the socket is
+    /// open the flow's own timers (2 s / 10 s for the challenge, 15 s for the
+    /// result, 60 s while pending) bound every later wait.
+    private let openTimeoutInterval: TimeInterval = 10
+    /// The same wait when the Mac has other saved addresses to try next.
+    private let alternateOpenTimeoutInterval: TimeInterval = 4
+    /// Which of the saved Mac's addresses the next attempt dials (0 is the
+    /// address the user picked). Moves on only when a socket never opened.
+    private var dialIndex = 0
 
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
     func connect(host: String) {
         wantConnection = true
         lastError = nil
+        authState = nil
+        flowCarry = FlowCarry()
+        dialIndex = 0
         connectHost = host
         openSocket()
+    }
+
+    /// The addresses to try for a saved Mac: the one the user picked first,
+    /// then the others its key is known at, last successful first. Each one
+    /// goes through the same flow against the same saved key, so another
+    /// address can never stand in for a different Mac.
+    private func dialURLs(for host: String) -> [String] {
+        let primary = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
+        let known = KnownHostsStore.shared.hosts
+        guard let normalized = KnownHosts.normalizeAddress(primary),
+              case let .host(id) = known.standing(of: normalized) else { return [primary] }
+        var urls = [primary]
+        for address in known.dialOrder(hostId: id) where address != normalized {
+            if let url = Self.url(forAddress: address) { urls.append(url) }
+        }
+        return urls
+    }
+
+    /// A dialable URL for a normalized `host:port` (port 443 means wss, as
+    /// the spec's default for that scheme; the path is not kept).
+    private static func url(forAddress address: String) -> String? {
+        guard let colon = address.lastIndex(of: ":") else { return nil }
+        let host = String(address[..<colon]), port = String(address[address.index(after: colon)...])
+        guard !host.isEmpty, UInt16(port) != nil else { return nil }
+        return port == "443" ? "wss://\(host)" : "ws://\(host):\(port)"
+    }
+
+    /// The user's answer to a question the connection flow asked ("Connect"
+    /// or "Cancel" on the rule 6 and rule 12 screens).
+    func answerAuthQuestion(_ yes: Bool) {
+        guard let a = current else { return }
+        wireQueue.async { [weak self] in
+            guard let self, !a.ended else { return }
+            self.perform(a.flow.answered(yes), on: a)
+        }
     }
 
     /// Maps a URLSession failure to a short reason a user can act on without
@@ -147,45 +234,223 @@ final class StreamClient: ObservableObject {
     private func openSocket() {
         teardownSocket()
         guard let host = connectHost else { return }
-        let urlString = host.contains("://") ? host : "ws://\(host):\(streamDefaultPort)"
+        let urls = dialURLs(for: host)
+        if dialIndex >= urls.count { dialIndex = 0 }
+        let urlString = urls[dialIndex]
         guard let url = URL(string: urlString) else {
             clogViewer("connect FAILED: invalid address '\(urlString)'")
             status = .failed("invalid address")
             return
         }
-        clogViewer("connecting to \(urlString)")
+        // The device key first: if it cannot be read, nothing is sent and no
+        // new key is made (a new key would be a device the Mac never approved).
+        let key: DeviceKey
+        do {
+            key = try DeviceKeyStore.load()
+        } catch {
+            let message = error.localizedDescription
+            clogViewer("connect FAILED: device key unavailable (\(message))")
+            wantConnection = false
+            authState = .failed(message)
+            status = .failed(message)
+            return
+        }
+        clogViewer("connecting to \(urlString) as device \(key.fingerprint)")
         status = .connecting
+        authState = .connecting
 
-        let parser = StreamMessageParser()
-        parser.onMessage = { [weak self] type, payload in self?.handle(type: type, payload: payload) }
-        self.parser = parser
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        var config = ClientAuthConfig(deviceKey: key.publicKey, sign: key.sign,
+                                      deviceName: UIDevice.current.name, appVersion: version,
+                                      dialledURL: urlString,
+                                      makeHello: { [weak self] in
+                                          // Runs on wireQueue; main never waits on wireQueue.
+                                          guard let self else { return Data() }
+                                          return DispatchQueue.main.sync { self.makeHelloMessage() }
+                                      })
+        config.fallbackDeviceName = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
+        let flow = ClientAuthFlow(config: config, known: KnownHostsStore.shared.hosts, carry: flowCarry)
 
-        let task = URLSession.shared.webSocketTask(with: url)
+        socketDelegate.onOpen = { [weak self] task in self?.socketOpened(task) }
+        let task = session.webSocketTask(with: url)
         task.maximumMessageSize = 64 << 20 // keyframes at full display resolution
-        self.task = task
-        task.resume()
-        // URLSession queues sends until the handshake completes.
-        noteSent()
+        let attempt = Attempt(task: task, flow: flow,
+                              openTimeout: urls.count > 1 ? alternateOpenTimeoutInterval : openTimeoutInterval)
+        attempt.parser.onMessage = { [weak self, weak attempt] type, payload in
+            guard let self, let attempt, !attempt.ended else { return }
+            self.perform(attempt.flow.received(type: type.rawValue, payload: payload), on: attempt)
+        }
+        // A type this build does not know is still a message: before the
+        // challenge, or inside an encrypted session, it is a protocol error.
+        attempt.parser.onUnknown = { [weak self, weak attempt] raw in
+            guard let self, let attempt, !attempt.ended else { return }
+            self.perform(attempt.flow.received(type: raw, payload: Data()), on: attempt)
+        }
+        current = attempt
+        wireQueue.async { [weak self] in
+            guard let self else { return }
+            self.wireAttempt = attempt
+            self.armOpenTimer(attempt)
+        }
         startKeepalive()
-        helloReport = currentDisplayReport
-        awaitingHelloAck = true
-        task.send(.data(StreamMessage.hello(requestedCodec: .hevc, displayInfo: displayInfoPayload,
-                                            secondSize: secondSizePayload))) { _ in }
-        receiveLoop(task)
-        armHandshakeTimeout(for: task)
+        task.resume()
+        receiveLoop(attempt)
     }
 
-    /// See `handshakeTimeout`'s doc comment. Cancelled the moment any message
-    /// arrives (`receiveLoop`'s `.success` case) or the socket is torn down.
-    private func armHandshakeTimeout(for task: URLSessionWebSocketTask) {
-        handshakeTimeout?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.task === task else { return }
-            clogViewer("no response from host within \(Int(self.handshakeTimeoutInterval))s of connecting — treating as a dropped connection")
-            self.scheduleReconnect()
+    /// Main thread, called by the flow when it sends HELLO: the display report
+    /// this HELLO carries is what the host has heard.
+    private func makeHelloMessage() -> Data {
+        helloMade = true
+        helloReport = currentDisplayReport
+        awaitingHelloAck = true
+        return StreamMessage.hello(requestedCodec: .hevc, displayInfo: displayInfoPayload,
+                                   secondSize: secondSizePayload)
+    }
+
+    // MARK: Wire queue
+
+    /// On wireQueue: give up on a socket that never opens.
+    private func armOpenTimer(_ a: Attempt) {
+        let item = DispatchWorkItem { [weak self, weak a] in
+            guard let self, let a, !a.ended, !a.opened else { return }
+            clogViewer("the socket did not open within \(Int(a.openTimeout)) s")
+            self.perform([.end(.failure, "the socket did not open in time")], on: a)
         }
-        handshakeTimeout = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + handshakeTimeoutInterval, execute: work)
+        a.openTimer = item
+        wireQueue.asyncAfter(deadline: .now() + a.openTimeout, execute: item)
+    }
+
+    /// Any thread: the delegate saw the WebSocket open.
+    private func socketOpened(_ task: URLSessionWebSocketTask) {
+        wireQueue.async { [weak self] in
+            guard let self, let a = self.wireAttempt, a.task === task, !a.ended, !a.opened else { return }
+            a.opened = true
+            a.openTimer?.cancel()
+            a.openTimer = nil
+            self.perform(a.flow.opened(), on: a)
+        }
+    }
+
+    private func cancelTimer(_ timer: FlowTimer, on a: Attempt) {
+        for (kind, item) in a.timers where kind == timer { item.cancel() }
+        a.timers.removeAll { $0.0 == timer }
+    }
+
+    /// On wireQueue: do what the flow said. Sends happen here, in the order
+    /// the flow produced them, which is the order of the seal counters.
+    private func perform(_ actions: [FlowAction], on a: Attempt) {
+        for action in actions {
+            guard !a.ended else { return }
+            switch action {
+            case let .send(data):
+                noteSent()
+                a.task.send(.data(data)) { _ in }
+            case let .startTimer(timer, seconds):
+                cancelTimer(timer, on: a)
+                let item = DispatchWorkItem { [weak self, weak a] in
+                    guard let self, let a, !a.ended else { return }
+                    a.timers.removeAll { $0.0 == timer }
+                    self.perform(a.flow.timerFired(timer), on: a)
+                }
+                a.timers.append((timer, item))
+                wireQueue.asyncAfter(deadline: .now() + seconds, execute: item)
+            case let .cancelTimer(timer):
+                cancelTimer(timer, on: a)
+            case let .state(state):
+                if case .connected = state { a.parser.maxPayload = StreamMessageParser.defaultMaxPayload }
+                DispatchQueue.main.async { [weak self] in self?.applyFlowState(state, from: a) }
+            case let .deliver(raw, payload):
+                if let type = StreamMessageType(rawValue: raw) { handle(type: type, payload: payload) }
+            case let .change(change):
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.current === a else { return }
+                    KnownHostsStore.shared.apply(change)
+                }
+            case let .hostCapabilities(caps):
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.current === a else { return }
+                    self.hostCapabilities = caps
+                }
+            case let .close(reason):
+                clogViewer("closing the socket: \(reason)")
+                a.cancelTimers()
+                a.task.cancel(with: .normalClosure, reason: nil)
+            case let .end(end, reason):
+                a.ended = true
+                a.cancelTimers()
+                a.task.cancel(with: .normalClosure, reason: nil)
+                let opened = a.opened
+                DispatchQueue.main.async { [weak self] in self?.attemptEnded(a, end, reason, socketOpened: opened) }
+            }
+        }
+    }
+
+    /// Main thread: what the screen shows.
+    private func applyFlowState(_ state: FlowState, from a: Attempt) {
+        guard current === a else { return }
+        authState = state
+        if case let .connected(verified, _) = state {
+            reconnectAttempt = 0
+            clogViewer(verified ? "connected and verified" : "connected, NOT verified")
+        }
+    }
+
+    /// Main thread: an attempt finished. `.stop` waits for the user,
+    /// `.failure` uses this client's own back-off, `.reconnect` does as told.
+    private func attemptEnded(_ a: Attempt, _ end: FlowEnd, _ reason: String, socketOpened opened: Bool) {
+        guard current === a else { return }
+        clogViewer("connection attempt ended: \(reason)")
+        let shown = authState
+        switch end {
+        case .stop:
+            wantConnection = false
+            teardownSocket()
+            switch shown {
+            case .askUnverified?, .confirmHost?, .connecting?, nil:
+                disconnect() // the user said no
+            default:
+                status = .failed(Self.describe(shown) ?? reason)
+            }
+        case .failure:
+            if !opened, wantConnection, let host = connectHost {
+                // The socket never opened: try the Mac's next saved address
+                // at once; only after the last one does the back-off apply.
+                if dialIndex + 1 < dialURLs(for: host).count {
+                    dialIndex += 1
+                    clogViewer("that address did not answer; trying the next saved one")
+                    teardownSocket()
+                    openSocket()
+                    return
+                }
+                dialIndex = 0
+            }
+            if case let .failed(text)? = shown { lastError = "Could not connect securely: \(text)" }
+            scheduleReconnect()
+        case let .reconnect(after, carry):
+            flowCarry = carry
+            teardownSocket()
+            guard wantConnection else { return }
+            status = .connecting
+            if after <= 0 {
+                openSocket()
+            } else {
+                DispatchQueue.main.asyncAfter(deadline: .now() + after) { [weak self] in
+                    guard let self, self.wantConnection, self.current == nil else { return }
+                    self.openSocket()
+                }
+            }
+        }
+    }
+
+    private static func describe(_ state: FlowState?) -> String? {
+        switch state {
+        case .changedIdentity?: return "This Mac's identity has changed"
+        case .didNotIdentify?: return "This Mac did not identify itself"
+        case .denied?: return "This Mac turned this device away"
+        case .invalid?: return "This Mac did not accept this device"
+        case let .failed(text)?: return text
+        default: return nil
+        }
     }
 
     /// The wire form of the reported display situation. Mac virtual displays
@@ -216,7 +481,7 @@ final class StreamClient: ObservableObject {
         if let pixelSize { reportedPixelSize = pixelSize }
         if let secondPixelSize { reportedSecondPixelSize = secondPixelSize }
         reportsSecondDisplay = secondDisplay
-        guard task != nil, !awaitingHelloAck else { return }
+        guard task != nil, helloMade, !awaitingHelloAck else { return }
         // Re-evaluations that change nothing the host cares about (same size
         // after a window closed, say) must not make it rebuild its display.
         guard DisplayReport.differs(sent: helloReport, now: currentDisplayReport) else { return }
@@ -261,6 +526,8 @@ final class StreamClient: ObservableObject {
         lastError = nil
         cursorPos = nil
         hostCapabilities = []
+        authState = nil
+        flowCarry = FlowCarry()
     }
 
     /// The Mac's browser VNC bridge (noVNC on http://<mac>:5901), derived from
@@ -311,13 +578,18 @@ final class StreamClient: ObservableObject {
     private func teardownSocket() {
         keepaliveTimer?.cancel()
         keepaliveTimer = nil
-        handshakeTimeout?.cancel()
-        handshakeTimeout = nil
-        task?.cancel(with: .normalClosure, reason: nil)
-        task = nil
+        if let a = current {
+            current = nil
+            wireQueue.async { a.ended = true; a.cancelTimers() }
+            a.task.cancel(with: .normalClosure, reason: nil)
+        }
+        wireQueue.async { [weak self] in
+            self?.wireAttempt = nil
+            self?.assembler = nil
+        }
         awaitingHelloAck = false
-        parser = nil
-        assembler = nil
+        helloMade = false
+        hostCapabilities = []
         audio?.stop()
     }
 
@@ -336,32 +608,44 @@ final class StreamClient: ObservableObject {
         }
     }
 
-    private func receiveLoop(_ task: URLSessionWebSocketTask) {
-        task.receive { [weak self] result in
-            guard let self, self.task === task else { return }
-            switch result {
-            case .success(let message):
-                self.reconnectAttempt = 0
-                self.handshakeTimeout?.cancel()
-                self.handshakeTimeout = nil
-                if case .data(let data) = message { self.parser?.feed(data) }
-                self.receiveLoop(task)
-            case .failure(let error):
-                // A rejected WS upgrade (Cloudflare Access, wrong path) carries
-                // an HTTP status; a dead host/port doesn't. Log both so they're
-                // distinguishable after the fact.
-                var detail = error.localizedDescription
-                if let http = task.response as? HTTPURLResponse {
-                    detail += " (HTTP \(http.statusCode)"
-                    if http.statusCode == 403 || http.statusCode == 401 || http.statusCode == 302 {
-                        detail += " — WS upgrade rejected, likely Cloudflare Access auth"
+    /// Each result hops onto wireQueue before it is used, and the next receive
+    /// is asked for only from there, so messages are handled in arrival order.
+    private func receiveLoop(_ a: Attempt) {
+        a.task.receive { [weak self] result in
+            guard let self else { return }
+            self.wireQueue.async {
+                guard !a.ended else { return }
+                switch result {
+                case .success(let message):
+                    if case .data(let data) = message {
+                        a.parser.feed(data)
+                        if a.parser.corrupt {
+                            self.perform([.end(.failure, "the stream is corrupt")], on: a)
+                            return
+                        }
                     }
-                    detail += ")"
+                    if !a.ended { self.receiveLoop(a) }
+                case .failure(let error):
+                    // A rejected WS upgrade (Cloudflare Access, wrong path) carries
+                    // an HTTP status; a dead host/port doesn't. Log both so they're
+                    // distinguishable after the fact.
+                    var detail = error.localizedDescription
+                    if let http = a.task.response as? HTTPURLResponse {
+                        detail += " (HTTP \(http.statusCode)"
+                        if http.statusCode == 403 || http.statusCode == 401 || http.statusCode == 302 {
+                            detail += " — WS upgrade rejected, likely Cloudflare Access auth"
+                        }
+                        detail += ")"
+                    }
+                    let actions = a.flow.socketClosed()
+                    // Empty: the flow closed this socket itself and is waiting
+                    // for the user (rule 12), so this is no failure.
+                    guard !actions.isEmpty else { return }
+                    clogViewer("stream dropped: \(detail) — reconnecting")
+                    let friendly = Self.friendlyError(error, response: a.task.response)
+                    DispatchQueue.main.async { if self.current === a { self.lastError = friendly } }
+                    self.perform(actions, on: a)
                 }
-                clogViewer("stream dropped: \(detail) — reconnecting")
-                let friendly = Self.friendlyError(error, response: task.response)
-                DispatchQueue.main.async { self.lastError = friendly }
-                self.scheduleReconnect()
             }
         }
     }
@@ -421,9 +705,15 @@ final class StreamClient: ObservableObject {
 
     // MARK: Input (normalized 0..1 display coordinates)
 
+    /// Everything the app sends goes through the flow. Before the host is
+    /// accepted it is dropped, never queued: keys pressed at a waiting screen
+    /// must not reach the Mac later. After, it is sealed in call order.
     private func send(_ data: Data) {
-        noteSent()
-        task?.send(.data(data)) { _ in }
+        guard let a = current else { return }
+        wireQueue.async { [weak self] in
+            guard let self, !a.ended else { return }
+            self.perform(a.flow.send(data), on: a)
+        }
     }
 
     func sendMouseMove(x: Float, y: Float) { send(StreamMessage.mouseMove(x: x, y: y)) }

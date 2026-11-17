@@ -18,15 +18,26 @@ import {
 } from '/client/hello.js';
 import {
   HeldKeys, reconnectDelay, frameAction, ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue,
-  CAP, hostHas, protocolButton, claimsButton,
+  CAP, hostHas, setHostCapabilities, protocolButton, claimsButton,
   encodeMouseMove, encodeMouseButton, encodeKey, encodeScroll, encodeMouseRelative, encodeButtonAtCursor,
 } from '/client/input.js';
 import { AudioPlayer, audioSupported } from '/client/audio.js';
+import {
+  AuthFlow, KnownHosts, WEB_CAPS, hasWebCrypto, idbStore, memoryStore, loadDeviceKey, loadKnownHosts,
+  saveKnownHosts, webDeviceName, normalizeAddress,
+} from '/client/auth.js';
 
 const params = new URLSearchParams(location.search);
 const display = ['a', 'b', 'c'].includes(params.get('display')) ? params.get('display') : 'a';
 const isPrimary = display === 'a';
-const token = params.get('token'); // optional clipboardToken passthrough
+// The clipboard endpoint needs a token. The server writes it into this page;
+// a `?token=` in the address is used first, for a page opened with one.
+function pageClipboardToken() {
+  const meta = document.querySelector('meta[name="clamshell-clipboard-token"]');
+  if (!meta || !meta.content) return null;
+  try { return decodeURIComponent(meta.content); } catch (e) { return null; }
+}
+const token = params.get('token') || pageClipboardToken();
 
 // Browser-facing WS bridge ports (see WebServer.swift streamBridgePorts):
 // one per display, each proxying to the matching local StreamServer port.
@@ -212,9 +223,45 @@ let fallbackDueToFailure = false;
 
 const CONNECT_TIMEOUT_MS = 10000;
 
+// The device key and the saved Macs live in this browser's IndexedDB (auth.js).
+// Without IndexedDB they last only as long as the page.
+let identityPromise = null;
+function loadIdentity() {
+  if (!identityPromise) {
+    identityPromise = (async () => {
+      const store = typeof indexedDB === 'undefined' ? memoryStore() : idbStore();
+      if (!hasWebCrypto()) {
+        // A plain http page: no key to prove anything with (see auth.js).
+        return { store, deviceKey: null, known: new KnownHosts() };
+      }
+      const deviceKey = await loadDeviceKey(store);
+      const { known, damaged } = await loadKnownHosts(store);
+      if (damaged) showBanner(errBanner, 'The saved Macs could not be read. Each will be checked again as if new.');
+      return { store, deviceKey, known };
+    })().catch((e) => { identityPromise = null; throw e; });
+  }
+  return identityPromise;
+}
+
+function showBanner(el, text) { el.textContent = text; el.classList.add('show'); }
+
+let connectSeq = 0;
+let current = null; // the connection in charge: { sock, flow, timers, end, url }
+let flow = null;
+let nextCarry = null; // what the flow wants the next attempt to know (auth.js newCarry)
+
 function connect() {
   clearTimeout(reconnectTimer); reconnectTimer = null;
   clearInterval(countdownTimer); countdownTimer = null;
+  const attempt = ++connectSeq;
+  loadIdentity().then((id) => { if (attempt === connectSeq && wantConnection) openSocket(id); }, (err) => {
+    if (attempt !== connectSeq) return;
+    console.warn('[Clamshell] could not load the device key:', err && err.code ? err.code : 'error');
+    scheduleReconnect();
+  });
+}
+
+function openSocket(id) {
   const wsUrl = location.protocol === 'https:'
     // Network.framework's server-side WS listener can't see the handshake
     // path, so path-based disambiguation happens at the Cloudflare Tunnel
@@ -229,6 +276,15 @@ function connect() {
   const sock = new WebSocket(wsUrl);
   ws = sock;
   sock.binaryType = 'arraybuffer';
+  const conn = { sock, flow: null, timers: {}, end: null, url: wsUrl, known: id.known, id };
+  conn.flow = new AuthFlow({
+    deviceKey: id.deviceKey, deviceName: webDeviceName(navigator.userAgent), dialledURL: wsUrl,
+    known: id.known, carry: nextCarry || undefined, caps: WEB_CAPS, makeHello: helloMessage,
+    emit: (action) => onFlowAction(conn, action),
+  });
+  nextCarry = null;
+  flow = conn.flow;
+  current = conn;
   // A handshake that never completes (tunnel up, host asleep) can hang for a
   // minute or more before the browser gives up. Cut it short and retry.
   const connectTimeout = setTimeout(() => {
@@ -237,21 +293,10 @@ function connect() {
   sock.onopen = () => {
     clearTimeout(connectTimeout);
     if (sock !== ws) return;
-    reconnectAttempt = 0;
-    showStatus('Connected — waiting for video…');
-    // The native stream is back. If noVNC was showing only because we could
-    // not connect -- as opposed to the host reporting itself locked -- drop
-    // back to the canvas. A genuinely locked host keeps noVNC up even with
-    // the socket open, so lockedByHost wins.
-    if (fallbackDueToFailure && !lockedByHost) {
-      fallbackDueToFailure = false;
-      vncFallback.classList.remove('show');
-      vncFallback.src = 'about:blank';
-      lockBanner.textContent = originalLockBannerText;
-      lockBanner.classList.remove('show');
-    }
+    // Nothing is sent here: the host speaks first (auth.js AuthFlow).
     audio.reset();
-    sendHello();
+    showStatus('Connecting…');
+    conn.flow.opened();
   };
   sock.onmessage = (ev) => {
     if (sock !== ws) return;
@@ -260,35 +305,99 @@ function connect() {
     const type = buf[0];
     const len = beU32(buf, 1);
     const payload = buf.subarray(5, 5 + len);
-    handle(type, payload);
+    conn.flow.received(type, payload);
   };
   sock.onclose = () => {
     clearTimeout(connectTimeout);
     if (sock !== ws) return; // an older socket; a newer one is already in charge
-    scheduleReconnect();
+    // The flow decides whether this ends the attempt (it does not while a
+    // question about a host is open, because the flow closed the socket itself).
+    conn.flow.socketClosed();
   };
   sock.onerror = () => {}; // onclose always follows
 }
 
-function scheduleReconnect() {
-  if (!wantConnection || reconnectTimer) return;
+// The flow only describes what to do; this does it.
+function onFlowAction(conn, a) {
+  if (conn !== current) return;
+  switch (a.do) {
+    case 'send': rawSend(conn.sock, a.data); break;
+    case 'startTimer':
+      clearTimeout(conn.timers[a.timer]);
+      conn.timers[a.timer] = setTimeout(() => { conn.flow.timerFired(a.timer); }, a.seconds * 1000);
+      break;
+    case 'cancelTimer': clearTimeout(conn.timers[a.timer]); delete conn.timers[a.timer]; break;
+    case 'state': renderAuthState(conn, a.state); break;
+    case 'deliver': handle(a.type, a.payload); break;
+    case 'change': applyKnownChange(conn, a.change); break;
+    case 'hostCapabilities': setHostCapabilities(a.bits); break;
+    case 'close': try { conn.sock.close(); } catch (e) { /* ignore */ } break;
+    case 'end': onFlowEnd(conn, a.end, a.reason); break;
+    default: break;
+  }
+}
+
+function onFlowEnd(conn, end, reason) {
+  for (const t of Object.values(conn.timers)) clearTimeout(t);
+  conn.timers = {};
+  conn.end = end;
+  console.warn('[Clamshell] connection ended:', end.kind, '-', reason);
+  try { conn.sock.close(); } catch (e) { /* ignore */ }
+  if (end.kind === 'stop') {
+    // A refusal screen is showing. Do not retry and do not cover it with noVNC.
+    resetSessionState();
+    dropFailureFallback();
+    return;
+  }
+  nextCarry = end.kind === 'reconnect' ? end.carry : null;
+  if (end.kind === 'reconnect' && end.after === 0) { resetSessionState(); connect(); return; }
+  if (end.kind === 'reconnect') { scheduleReconnect({ delay: end.after, quiet: true }); return; }
+  scheduleReconnect();
+}
+
+function dropFailureFallback() {
+  if (!fallbackDueToFailure || lockedByHost) return;
+  fallbackDueToFailure = false;
+  vncFallback.classList.remove('show');
+  vncFallback.src = 'about:blank';
+  lockBanner.textContent = originalLockBannerText;
+  lockBanner.classList.remove('show');
+}
+
+function resetSessionState() {
   decoder = null;
   kbps = 0;
   // The host has forgotten what we were holding; forget it here too.
   held.releaseAll();
   buttonsDown.clear();
-  reconnectAttempt++;
-  let left = reconnectDelay(reconnectAttempt); // 1,2,4,8,10,10s…
+}
+
+let saving = Promise.resolve();
+function applyKnownChange(conn, change) {
+  conn.known.apply(change, Math.floor(Date.now() / 1000));
+  saving = saving.then(() => saveKnownHosts(conn.id.store, conn.known)).catch(() => {
+    showBanner(errBanner, 'This browser could not save the Mac it just checked. It will ask again next time.');
+  });
+}
+
+function scheduleReconnect({ delay = null, quiet = false } = {}) {
+  if (!wantConnection || reconnectTimer) return;
+  resetSessionState();
+  let left;
+  if (delay === null) { reconnectAttempt++; left = reconnectDelay(reconnectAttempt); } // 1,2,4,8,10,10s…
+  else left = delay;
   const offline = navigator.onLine === false;
   const text = () => offline
     ? 'This device is offline — will reconnect when the network is back'
     : `Connection lost — reconnecting in ${left} s (try ${reconnectAttempt})`;
-  showStatus(text());
-  clearInterval(countdownTimer);
-  countdownTimer = setInterval(() => { if (left > 1) { left--; showStatus(text()); } }, 1000);
+  if (!quiet) {
+    showStatus(text());
+    clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => { if (left > 1) { left--; showStatus(text()); } }, 1000);
+  }
 
   // Check if we should fall back to noVNC after repeated failures
-  if (reconnectAttempt >= 3 && !fallbackDueToFailure && !lockedByHost) {
+  if (delay === null && reconnectAttempt >= 3 && !fallbackDueToFailure && !lockedByHost) {
     fallbackDueToFailure = true;
     vncFallback.src = vncFallbackURL;
     vncFallback.classList.add('show');
@@ -315,8 +424,13 @@ window.addEventListener('online', reconnectNow);
 // native client's "retries forever until user disconnects" contract.
 
 let lastSentAt = Date.now();
+// Everything the page sends goes through the flow: it drops messages until the
+// host has been verified and let this browser in, and seals them after that.
 function send(data) {
-  if (ws && ws.readyState === WebSocket.OPEN) { ws.send(data); lastSentAt = Date.now(); }
+  if (flow) flow.send(data);
+}
+function rawSend(sock, data) {
+  if (sock === ws && sock.readyState === WebSocket.OPEN) { sock.send(data); lastSentAt = Date.now(); }
 }
 
 // Keepalive (see input.js keepaliveDue). Old hosts skip the unknown type.
@@ -324,9 +438,186 @@ setInterval(() => {
   if (ws && ws.readyState === WebSocket.OPEN && keepaliveDue(Date.now(), lastSentAt)) send(frameMsg(T.PING));
 }, 5000);
 
-function sendHello() {
-  send(frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio,
-    { prefs: displayPrefs, codec: wantCodec })));
+// The flow sends this when the session may start (sealed after a verified accept).
+function helloMessage() {
+  return frameMsg(T.HELLO, helloPayload(window.innerWidth, window.innerHeight, window.devicePixelRatio,
+    { prefs: displayPrefs, codec: wantCodec }));
+}
+
+// MARK: - Auth screens (plain markup; wording as in the iOS app)
+
+const authPanel = document.getElementById('authPanel');
+const authTitle = document.getElementById('authTitle');
+const authText = document.getElementById('authText');
+const authRows = document.getElementById('authRows');
+const authButtons = document.getElementById('authButtons');
+const authForget = document.getElementById('authForget');
+const unverifiedBanner = document.getElementById('unverifiedBanner');
+
+function hideCard() { authPanel.hidden = true; }
+
+function showCard({ title, text, rows = [], buttons = [], forgetHostId = null }) {
+  authTitle.textContent = title;
+  authText.textContent = text;
+  authRows.replaceChildren(...rows.map((r) => {
+    const d = document.createElement('div');
+    d.className = 'authRow';
+    d.textContent = r;
+    return d;
+  }));
+  const made = buttons.map(([label, secondary, fn]) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (secondary) b.className = 'secondary';
+    b.addEventListener('click', fn);
+    return b;
+  });
+  authButtons.replaceChildren(...made);
+  authForget.replaceChildren();
+  if (forgetHostId) renderForget(forgetHostId);
+  statusEl.style.display = 'none';
+  canvas.classList.add('stale');
+  authPanel.hidden = false;
+  if (made[0]) made[0].focus();
+}
+
+// A separate, small control that never connects, and asks first.
+function renderForget(hostId) {
+  const link = document.createElement('button');
+  link.className = 'link';
+  link.textContent = 'Forget saved identity';
+  link.addEventListener('click', () => {
+    const q = document.createElement('span');
+    q.textContent = 'Forget the saved identity of this Mac? It will be checked again as if new the next time. ';
+    const yes = document.createElement('button');
+    yes.className = 'link';
+    yes.textContent = 'Forget';
+    yes.addEventListener('click', () => {
+      const conn = current;
+      if (conn) applyKnownChange(conn, { kind: 'forget', hostId });
+      authForget.textContent = 'Saved identity forgotten. Reload this page to connect.';
+    });
+    const no = document.createElement('button');
+    no.className = 'link';
+    no.textContent = 'Keep';
+    no.addEventListener('click', () => { authForget.replaceChildren(link); });
+    authForget.replaceChildren(q, yes, no);
+  });
+  authForget.replaceChildren(link);
+}
+
+// Stops trying for good, as the Cancel and Close buttons of the cards do.
+function userDisconnect() {
+  wantConnection = false;
+  connectSeq++;
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  clearInterval(countdownTimer); countdownTimer = null;
+  const conn = current;
+  if (conn) {
+    for (const t of Object.values(conn.timers)) clearTimeout(t);
+    conn.timers = {};
+    try { conn.sock.close(); } catch (e) { /* ignore */ }
+  }
+  setHostCapabilities(0);
+  resetSessionState();
+  hideCard();
+  showStatus('Disconnected. Reload this page to connect again.');
+}
+
+function renderAuthState(conn, s) {
+  unverifiedBanner.classList.toggle('show', s.kind === 'connected' && !s.verified);
+  if (s.kind !== 'connected' && s.kind !== 'connecting') unverifiedBanner.classList.remove('show');
+  const savedHostId = () => {
+    const addr = normalizeAddress(conn.url);
+    const st = addr ? conn.known.standing(addr) : null;
+    return st && st.kind === 'host' ? st.id : null;
+  };
+  switch (s.kind) {
+    case 'connecting':
+      hideCard();
+      showStatus('Connecting…');
+      break;
+    case 'waiting':
+      showCard({
+        title: 'Waiting for approval',
+        text: `On ${s.hostName}, open Clamshell in the menu bar and approve this browser. Check that the Mac shows the same fingerprint for it.`,
+        rows: [`This browser: ${s.deviceName}, ${s.deviceFingerprint}`, `The Mac: ${s.hostName}, ${s.hostFingerprint}`],
+        buttons: [['Cancel', true, userDisconnect]],
+      });
+      break;
+    case 'confirmHost':
+      showCard({
+        title: 'Is this your Mac?',
+        text: `${s.hostName} let this browser in without asking. Before you connect, check that this fingerprint matches the one under Devices in Clamshell's menu on the Mac.`,
+        rows: [s.fingerprint],
+        buttons: [['Connect', false, () => { conn.flow.answered(true); }], ['Cancel', true, () => { conn.flow.answered(false); }]],
+      });
+      break;
+    case 'changedIdentity':
+      showCard({
+        title: "This Mac's identity has changed",
+        text: `The computer at ${s.address} is not the one this browser saved. Clamshell may have been set up again on it, it may be a different computer, or someone may be in the way of the connection. Nothing was sent to it.`,
+        rows: [`Saved: ${s.savedFingerprint}`, `Now showing: ${s.nowFingerprint}`],
+        buttons: [['Close', true, userDisconnect]],
+        forgetHostId: savedHostId(),
+      });
+      break;
+    case 'didNotIdentify':
+      showCard({
+        title: 'This Mac did not identify itself',
+        text: `${s.hostName} has always proved who it is before, and this time it did not. Nothing was sent to it.`,
+        buttons: [['Close', true, userDisconnect]],
+        forgetHostId: savedHostId(),
+      });
+      break;
+    case 'askUnverified':
+      showCard({
+        title: "This Mac can't prove who it is",
+        text: `It may be running a version of Clamshell older than 0.12. Whatever you type goes to the computer that answers at ${s.address}. Connect anyway?`,
+        buttons: [['Connect', false, () => { conn.flow.answered(true); }], ['Cancel', true, () => { conn.flow.answered(false); }]],
+      });
+      break;
+    case 'needsHttps':
+      showCard({ title: 'This page cannot prove which device it is', text: s.text, buttons: [['Close', true, userDisconnect]] });
+      break;
+    case 'denied':
+      showCard({
+        title: 'This Mac turned this browser away',
+        text: `It was denied or revoked on ${s.hostName}. It can be allowed again under Devices in Clamshell's menu on the Mac.`,
+        buttons: [['Close', true, userDisconnect]],
+      });
+      break;
+    case 'invalid':
+      showCard({
+        title: 'This Mac did not accept this browser',
+        text: `${s.hostName} could not accept this browser's request. Nothing more was sent.`,
+        buttons: [['Close', true, userDisconnect]],
+      });
+      break;
+    case 'busy':
+      showCard({
+        title: 'The Mac is busy',
+        text: `The Mac is busy. Trying again in ${s.retryIn} s.`,
+        buttons: [['Cancel', true, userDisconnect]],
+      });
+      break;
+    case 'connected':
+      onConnected();
+      break;
+    default: // 'failed': the reconnect logic shows the status
+      break;
+  }
+}
+
+function onConnected() {
+  hideCard();
+  reconnectAttempt = 0;
+  showStatus('Connected — waiting for video…');
+  // The native stream is back. If noVNC was showing only because we could
+  // not connect -- as opposed to the host reporting itself locked -- drop
+  // back to the canvas. A genuinely locked host keeps noVNC up even with
+  // the socket open, so lockedByHost wins.
+  dropFailureFallback();
 }
 
 // Re-send the size right away (menu choice changed). The host resizes in place.

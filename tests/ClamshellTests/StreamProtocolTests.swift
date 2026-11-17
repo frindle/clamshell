@@ -218,8 +218,14 @@ final class StreamProtocolTests: XCTestCase {
         let expected: [(StreamMessageType, UInt8)] = [
             (.authChallenge, 0x08), (.authResponse, 0x09), (.authResult, 0x0A), (.hostInfo, 0x0B),
             (.clientInfo, 0x0C), (.devicePending, 0x0D), (.deviceDecision, 0x0E), (.secure, 0x0F),
-            (.mouseRelative, 0x24), (.text, 0x25), (.mouseButtonAtCursor, 0x26)]
+            (.mouseRelative, 0x24), (.text, 0x25), (.mouseButtonAtCursor, 0x26),
+            (.peripheralAttach, 0x50), (.peripheralStatus, 0x51), (.peripheralDetach, 0x52),
+            (.peripheralInput, 0x53), (.peripheralOutput, 0x54),
+            (.fileOffer, 0x58), (.fileAnswer, 0x59), (.fileData, 0x5A), (.fileEnd, 0x5B)]
         for (t, v) in expected { XCTAssertEqual(t.rawValue, v) }
+        // The cores carry their own type numbers; they must agree with the enum.
+        XCTAssertEqual(FileTransfer.offerType, StreamMessageType.fileOffer.rawValue)
+        XCTAssertEqual(Peripheral.attachType, StreamMessageType.peripheralAttach.rawValue)
     }
 
     func testMouseButtonAtCursorFrame() {
@@ -255,6 +261,8 @@ final class StreamProtocolTests: XCTestCase {
         XCTAssertEqual(StreamCapabilities.textInput.rawValue, 4)
         XCTAssertEqual(StreamCapabilities.extraButtons.rawValue, 8)
         XCTAssertEqual(StreamCapabilities.deviceApproval.rawValue, 16)
+        XCTAssertEqual(StreamCapabilities.fileTransfer.rawValue, 32)
+        XCTAssertEqual(StreamCapabilities.peripherals.rawValue, 64)
         let c: StreamCapabilities = [.textInput, .extraButtons]
         XCTAssertEqual(c.rawValue, 12)
         XCTAssertTrue(c.contains(.textInput))

@@ -141,6 +141,7 @@ struct SavedMachinesView: View {
                 Text("Saved Machines").font(.footnote).foregroundStyle(.gray)
                 ForEach(store.machines) { machine in
                     let isSelected = machine.host == selectedHost
+                    VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Button { onSelect(machine) } label: {
                             HStack(spacing: 8) {
@@ -158,12 +159,46 @@ struct SavedMachinesView: View {
                             Image(systemName: "trash").foregroundStyle(.red.opacity(0.8))
                         }
                     }
+                    SavedIdentityRow(machine: machine)
+                    }
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(isSelected ? .green.opacity(0.14) : .white.opacity(0.06),
                                 in: RoundedRectangle(cornerRadius: 8))
                 }
             }
             .frame(maxWidth: 420)
+        }
+    }
+}
+
+/// The identity this app saved for a Mac (the fingerprint of its key), and the
+/// way to forget it. Shows nothing for a Mac this app has not verified yet.
+struct SavedIdentityRow: View {
+    let machine: MachineProfile
+    @ObservedObject private var known = KnownHostsStore.shared
+    @State private var confirming = false
+
+    private var savedHost: KnownHost? {
+        let address = String(machine.host.split(separator: "|").first ?? "")
+        guard let normalized = KnownHosts.normalizeAddress(address),
+              case let .host(id) = known.hosts.standing(of: normalized) else { return nil }
+        return known.hosts.host(id: id)
+    }
+
+    var body: some View {
+        if let saved = savedHost {
+            HStack(spacing: 8) {
+                Text("Saved identity: \(saved.fingerprint)")
+                    .font(.caption2.monospaced()).foregroundStyle(.gray)
+                Spacer()
+                Button("Forget saved identity", role: .destructive) { confirming = true }
+                    .font(.caption2)
+            }
+            .confirmationDialog("The next connection will treat \(machine.name) as a computer this app has not met.",
+                                isPresented: $confirming, titleVisibility: .visible) {
+                Button("Forget saved identity", role: .destructive) { known.forget(hostId: saved.id) }
+                Button("Cancel", role: .cancel) {}
+            }
         }
     }
 }

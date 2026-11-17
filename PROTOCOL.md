@@ -72,7 +72,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x24 | INPUT_MOUSE_RELATIVE | client → host | dx(Float32 BE), dy(Float32 BE) — pointer movement in points, for a captured pointer. Only to a host that advertises `relativeMouse` |
 | 0x25 | INPUT_TEXT       | client → host | UTF-8 text to type as-is (dictation, input-method text, emoji), at most 16 KB. Only to a host that advertises `textInput` |
 | 0x26 | INPUT_MOUSE_BUTTON_AT_CURSOR | client → host | button(1: as INPUT_MOUSE_BUTTON), down(1: 0/1) — a press or release where the host cursor is now, for a captured pointer. Only to a host that advertises `relativeMouse` |
-| 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
+| 0x30 | CLIPBOARD        | both          | UTF-8 plain text, at most 1 MB (1,048,576 bytes); a host from 0.12 on ignores more and sends no more |
 | 0x50 | PERIPHERAL_ATTACH | client → host | UTF-8 JSON — one peripheral the client offers; see "Peripherals attached to the client" |
 | 0x51 | PERIPHERAL_STATUS | host → client | id(4 BE), status(1) |
 | 0x52 | PERIPHERAL_DETACH | client → host | id(4 BE) |
@@ -380,7 +380,19 @@ the host or from a device that is already trusted.
   fingerprint come from its identity key the same way.
 - Names are for display and prove nothing. Both sides drop control characters
   and invisible formatting characters (the bidirectional overrides, for
-  example) before showing one.
+  example) before showing one. A host also drops the characters that draw
+  nothing (the default-ignorable code points and U+115F, U+1160, U+3164,
+  U+FFA0 and U+2800) from a name before it stores or shows it. A device waiting
+  for approval keeps the name it was first listed with, whatever it calls
+  itself on later connections, until it is approved. When a device waiting for
+  approval has the same name as a trusted device, the host's approval window
+  says so. "The same" is judged on a skeleton of the name: Unicode NFKD without
+  combining marks or invisible characters, case folded, Cyrillic and Greek
+  letters that look like a Latin letter written as that letter, every
+  apostrophe and quote as `'`, `i`, `1`, `|` and dotless i as `l`, `0` as `o`,
+  and runs of white space as one space. That is a hint and never a check. In
+  the approval window, any change to what is shown about the device in question
+  turns the buttons off again for the full delay.
 
 ### Handshake
 
@@ -465,14 +477,56 @@ After any status other than 0 or 1 the host closes the connection.
 - The host checks the version, that both client keys are valid curve points,
   and the signature, then looks the device id up: trusted → `accepted`,
   denied → `denied`, unknown → added to the waiting list → `pending`.
-- At most 8 connections wait for approval at once; more get `busy`. At most 16
-  devices are on the waiting list. When it is full, a new device takes the
-  place of the oldest waiting device that has no open connection, and gets
-  `busy` only if there is none, so stale entries cannot keep a real device
-  from asking. At most 10 new devices are listed per minute; the rest get
-  `busy`. A waiting device nobody approves is dropped after 24 hours.
+- Room in three small tables is shared out by the address the connection
+  came from, reduced to a group: an IPv4 address as it is, an IPv4-mapped
+  IPv6 address as its IPv4 address, any other IPv6 address as its first 64
+  bits, and "unknown" when there is no usable address. The group is used only
+  for this and is never a reason to trust a device. Connections that come
+  through the web relay or a tunnel all show the relay's address, so they
+  share one group.
+
+  | Table | Size | Share per group | May be replaced | First to go |
+  |---|---|---|---|---|
+  | Connections that have not answered the challenge | 32 | 8 | all | oldest |
+  | Connections waiting for approval | 8 | 3 | all | oldest |
+  | Devices on the waiting list | 16 | 4 | no open connection, and not seen in the last 5 minutes | least recently seen |
+
+  An arrival is let in when there is room and its group is under its share.
+  When its group is at its share, it takes the place of that group's first
+  replaceable entry, or is turned away if it has none. When the table is full,
+  the group holding the most entries (the one listed first on a tie) is picked:
+  if the arrival's group holds fewer, the arrival takes the place of the picked
+  group's first replaceable entry, or is turned away if it has none;
+  otherwise it is turned away. An unanswered connection that loses its place
+  is closed; a waiting connection that loses its place gets `busy` and is
+  closed; a new device that is turned away gets `busy`.
+- A device has one waiting connection per listener: when it connects again
+  on a listener where it already waits, the earlier connection gets `busy`
+  and is closed and the new one takes its place (both proved they hold the
+  key).
+- At most 10 new devices are listed per minute, and at most 3 per minute from
+  one group; the rest get `busy`. Every verified handshake from a device
+  that is already on the waiting list counts as seeing it, also when the
+  answer is `busy`. A waiting device nobody approves is dropped after 24
+  hours.
+- The host changes its device list only while it holds the list's file lock.
+  If it cannot take the lock within 2 s, or cannot open the lock file, nothing
+  is changed or written and every device that asks gets `busy`. The same goes
+  for a list written by a newer Clamshell (a higher list `version`, which goes
+  up whenever a build changes what a field or a state means): that file is left
+  exactly as it is, nobody is let in, nothing is decided, and the host's log
+  and `clamshell` commands say the list was written by a newer Clamshell.
+- Someone with as many addresses as a table has room, or who shares the real
+  device's address, can still keep a new device off the list for as long as
+  they keep trying. Devices that are already trusted are not kept out by
+  that.
 - Approval while the device's connection is still open sends `accepted` on
   that connection, so the session starts without a reconnect.
+- Nothing a waiting connection sends is read. One that sends more than 64 KB
+  while it waits is closed; its device stays on the waiting list.
+- A connection that is let in replaces the session its listener was serving,
+  as a new connection always has. One that is waiting, or has not answered,
+  does not disturb that session.
 
 **Client rules**
 
@@ -497,6 +551,8 @@ After any status other than 0 or 1 the host closes the connection.
 - Every AUTH_RESULT's signature is checked against the `hostIdentity` from the
   challenge. A result that does not verify is treated as a failed connection,
   whatever its status says.
+  The repeats sent while a device waits are the same signed bytes each time;
+  the client verifies every one and does not treat a repeat as a replay.
 - While `pending`, the client shows the host's name and both fingerprints so
   the user can compare them with what the host shows before approving.
 
@@ -529,6 +585,10 @@ could pass 2^48. Reconnecting runs the handshake again and gives fresh keys.
 HELLO and everything after it are unchanged; they simply travel inside SECURE.
 The first inner message from the host is HOST_INFO.
 
+The host reads SECURE payloads of at most 4 MB (4,194,304 bytes) from a
+client; a larger one closes the connection. Nothing a client sends comes near
+that: the largest are CLIPBOARD at 1 MB and FILE_DATA at 64 KB.
+
 **Reference vectors.** `tests/vectors/auth-v1.json` holds one complete
 exchange from fixed test keys: the three handshake payloads, both signature
 inputs, the ids and fingerprints, the transcript hash, the shared secret, both
@@ -544,6 +604,15 @@ whatever its key and gets the encrypted session; a client that sends HELLO in
 the clear instead is served the way hosts before 0.12 served it. Such a host
 is only as safe as its network, as before.
 
+With approval off, a clear HELLO is accepted in place of the AUTH_RESPONSE, and
+a device that is denied is let in like any other; the denial is kept and counts
+again when approval is turned back on. The AUTH_RESPONSE may be at most 4096
+bytes; a connection that is waiting for approval may send up to 64 KB, which is
+ignored, before it is closed. Approval is on unless the stored setting
+`requireDeviceApproval` is the boolean false or the integer 0: any other value
+or type, or none, leaves it on. A change made from outside (`defaults write`) is
+noticed within 5 s; the switch in the host's Devices menu takes effect at once.
+
 A host with approval on never answers a HELLO in the clear: the connection is
 closed when the 10 s response deadline passes. Clients older than this section
 therefore cannot use it.
@@ -556,8 +625,14 @@ usable over SSH), or from a connected trusted device with the two messages
 below. Revoking a trusted device makes it `denied` and closes its live
 connections; forgetting a device removes it, so it may ask again.
 
+A device that is denied can be approved after all in two places only: the
+Devices menu's "Approve…" on the host and `clamshell approve`. A
+DEVICE_DECISION acts on waiting devices only.
+
 Both messages travel inside SECURE and only when both sides set capability bit
-4.
+4. The host sets bit 4 in every challenge, so the bit does not say who may
+decide; the rule that counts is that the host acts on a DEVICE_DECISION only
+from a device that is trusted at that moment (see below).
 
 - **DEVICE_PENDING** (host → trusted client), UTF-8 JSON, sent after
   `accepted` when devices are waiting and again whenever the list changes
@@ -572,6 +647,26 @@ Both messages travel inside SECURE and only when both sides set capability bit
 A trusted device can already type and click on the host, so letting it approve
 another device gives it nothing it could not do through the host's own
 approval window.
+
+The host applies a DEVICE_DECISION only if the device that sent it is trusted in
+the device list as it is read for that same change. A device that was revoked a
+moment earlier, by the host's own menu or by `clamshell revoke` in another
+process, therefore changes nothing: the decision is dropped and the host closes
+that device's session, as it does for any revoked device. The host notices a
+change another process made to the list within moments; if it cannot watch the
+folder it says so once in its log and reads the list again every 5 s.
+
+The host's approval window does not come back as fast as devices can ask. When
+a question it raised by itself ends (approved, denied or closed), it stays away
+for the shorter of 15 minutes and 20 s times 2 to the power n, and n goes up by
+one; n starts over after an hour in which the window raised no question. Closing
+also sets every waiting device aside; approving or denying does not, and the
+others come up when the quiet time is over. Three such questions in a row that
+end in Deny or closing, the third within 10 minutes of the first, keep the
+window away for 12 hours. A device the user picks in the host's menu is shown
+at once, and its answer changes neither n nor the quiet time. While the window
+stays away, waiting devices stay in the Devices menu and the menu-bar icon shows
+that devices are waiting.
 
 ### Browser client
 
@@ -656,6 +751,10 @@ records `v` (the handshake version, `1`), `id` (the first 16 characters of the
 host id), `name` and `kind`. These are hints for building a list of nearby
 hosts. They prove nothing: a discovered host still has to pass the handshake,
 and one whose `id` matches a saved host must present that host's saved key.
+
+A host can be told not to advertise. Advertising is also separate from
+listening: a host that is not advertising, by choice or because the system
+refused it, still answers a client that has its address.
 
 Off the LAN there is nothing to browse, so a client reaches a host through an
 address saved from an earlier HOST_INFO, or one typed in once.

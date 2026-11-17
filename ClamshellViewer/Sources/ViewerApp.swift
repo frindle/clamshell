@@ -425,6 +425,7 @@ struct ContentView: View {
     @StateObject private var store = MachineStore()
     @ObservedObject private var pointerLock = PointerLock.shared
     @StateObject private var nearby = NearbyHostBrowser()
+    @ObservedObject private var knownHosts = KnownHostsStore.shared
     @State private var resolvingNearby: String?
     @State private var showShortcuts = false
     @AppStorage("hostAddress") private var host = ""
@@ -674,6 +675,14 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .overlay {
+            // Questions and refusals from the connection flow, for either
+            // client (the one for Display B connects separately).
+            ZStack {
+                AuthPromptView(client: primaryClient)
+                AuthPromptView(client: externalClient)
+            }
+        }
         .onAppear {
             preselectLastUsed()
             windowCount.refresh()
@@ -721,6 +730,9 @@ struct ContentView: View {
                                 HStack {
                                     Image(systemName: "desktopcomputer")
                                     Text(h.name)
+                                    if h.isSaved(in: knownHosts.hosts) {
+                                        Text("saved").font(.caption2).foregroundStyle(.gray)
+                                    }
                                     Spacer()
                                     if resolvingNearby == h.id { ProgressView().tint(.white) }
                                 }

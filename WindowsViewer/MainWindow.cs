@@ -1,4 +1,5 @@
 using System.Windows;
+using Clamshell.Auth;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -23,11 +24,19 @@ internal sealed class MainWindow : Window
     private WriteableBitmap? _bitmap;
     private ViewerClient? _client;
     private int _srcW, _srcH;
+    private readonly Grid _root = new();
+    private readonly ContentControl _screen = new();
+    private readonly UIElement _badge = AuthScreens.BuildNotVerifiedBadge();
 
     public MainWindow()
     {
         Title = "Clamshell";
-        Content = _image;
+        _badge.Visibility = Visibility.Collapsed;
+        _screen.Visibility = Visibility.Collapsed;
+        _root.Children.Add(_image);
+        _root.Children.Add(_badge);
+        _root.Children.Add(_screen);
+        Content = _root;
         Background = System.Windows.Media.Brushes.Black;
         Width = 800; Height = 600;
 
@@ -42,11 +51,22 @@ internal sealed class MainWindow : Window
 
     public async void Start(string host, int port, StreamCodec requestedCodec)
     {
-        var client = new ViewerClient();
+        ViewerClient client;
+        try { client = ViewerClient.OpenDefault(); }
+        catch (DeviceKeyException e)
+        {
+            // No key, no connection: nothing else is used in its place.
+            Title = "Clamshell -- cannot start";
+            Log.Line(e.Message);
+            return;
+        }
         _client = client;
         client.OnHelloAck = (codec, w, h) => Dispatcher.Invoke(() => OnHelloAck(codec, w, h));
         client.OnFrame = (w, h, bgra) => Dispatcher.Invoke(() => OnFrame(w, h, bgra));
-        client.OnDisconnected = reason => Dispatcher.Invoke(() => Title = $"Clamshell -- disconnected ({reason})");
+        // BeginInvoke, not Invoke: the client calls these while it holds its own
+        // lock, and the UI thread takes that lock to send input.
+        client.OnState = state => Dispatcher.BeginInvoke(() => OnState(state));
+        client.OnDisconnected = reason => Dispatcher.BeginInvoke(() => OnDisconnected(reason));
 
         Title = $"Clamshell -- connecting to {host}:{port}...";
         try { await client.ConnectAsync(host, port, requestedCodec); }
@@ -57,6 +77,29 @@ internal sealed class MainWindow : Window
         // calling thread cannot access this object because a different
         // thread owns it" when setting Title directly here).
         catch (Exception e) { Dispatcher.Invoke(() => Title = $"Clamshell -- connect failed ({e.Message})"); }
+    }
+
+    private void OnState(FlowState state)
+    {
+        Title = $"Clamshell -- {AuthScreens.Title(state)}";
+        // While a session runs without proof of who answers, say so.
+        _badge.Visibility = state.Kind == FlowStateKind.Connected && !state.Verified
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (AuthScreens.IsScreen(state))
+        {
+            _screen.Content = AuthScreens.Build(state, yes => _client?.Answer(yes), () => _client?.Stop());
+            _screen.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _screen.Content = null;
+            _screen.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void OnDisconnected(string reason)
+    {
+        Title = $"Clamshell -- disconnected ({reason})";
     }
 
     private void OnHelloAck(StreamCodec codec, int w, int h)
