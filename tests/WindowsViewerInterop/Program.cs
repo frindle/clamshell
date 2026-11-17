@@ -100,7 +100,7 @@ static class Interop
                     break;
                 case FlowActionKind.State:
                     _states.Add(a.State!);
-                    Console.WriteLine($"  state: {a.State}");
+                    Console.WriteLine($"  state: {a.State} message={a.State!.Message}");
                     break;
                 case FlowActionKind.Deliver:
                     _delivered.Add(a.MessageType);
@@ -109,10 +109,12 @@ static class Interop
                     _file.Apply(a.Change!, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
                     break;
                 case FlowActionKind.Close:
+                    Console.WriteLine($"  close: {a.Reason}");
                     try { _ws.Abort(); } catch { }
                     break;
                 case FlowActionKind.End:
                     End = a.End;
+                    Console.WriteLine($"  end: {a.End} reason={a.Reason}");
                     break;
             }
         }
@@ -137,6 +139,7 @@ static class Interop
                     var payload = new byte[frame.Length - 5];
                     Array.Copy(frame, 5, payload, 0, payload.Length);
                     var type = frame[0];
+                    Console.WriteLine($"  received type 0x{type:x2}, {payload.Length} bytes");
                     Step(f => f.Received(type, payload));
                 }
             }
