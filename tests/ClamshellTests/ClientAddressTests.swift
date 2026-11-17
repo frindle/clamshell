@@ -105,6 +105,20 @@ final class ClientAddressTests: XCTestCase {
         XCTAssertFalse(TrustedProxies(["nonsense", "192.0.2.0/33"]).contains("192.0.2.9"))
     }
 
+    // MARK: - How an origin is worded
+
+    func testDescribeSaysTheProxyClaimIsNotVerified() {
+        XCTAssertEqual(ClientAddress.describe(peer: "192.0.2.7", reported: nil), "192.0.2.7")
+        XCTAssertEqual(ClientAddress.describe(peer: "", reported: nil), "an unknown address")
+        XCTAssertEqual(ClientAddress.describe(peer: "127.0.0.1", reported: nil), "127.0.0.1, through a local proxy")
+        XCTAssertEqual(ClientAddress.describe(peer: "::1", reported: "2001:db8::9"),
+                       "::1, through a local proxy (the proxy reported 2001:db8::9; not verified)")
+        // A claim equal to the peer adds nothing.
+        XCTAssertEqual(ClientAddress.describe(peer: "192.0.2.7", reported: "192.0.2.7"), "192.0.2.7")
+        XCTAssertTrue(ClientAddress.isLoopback("::ffff:127.0.0.1"))
+        XCTAssertFalse(ClientAddress.isLoopback("203.0.113.5"))
+    }
+
     // MARK: - Which connection the upgrade headers belong to
 
     func testOneSetAndOneConnectionBind() {

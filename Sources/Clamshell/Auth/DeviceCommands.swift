@@ -123,7 +123,7 @@ enum DeviceCommands {
             for d in rows { out("  \(d.fingerprint)  \(quoted(d.label))  \(detail(d))") }
         }
         section("Waiting for approval:", .waiting) {
-            "from \($0.address.isEmpty ? "an unknown address" : $0.address), asked \(ago($0.firstSeen, now: now))"
+            "from \($0.fromText), asked \(ago($0.firstSeen, now: now))"
         }
         section("Trusted:", .trusted) {
             "last seen \(ago($0.lastSeen, now: now))\(decided($0, verb: "approved"))"
