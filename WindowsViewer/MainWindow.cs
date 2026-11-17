@@ -24,11 +24,19 @@ internal sealed class MainWindow : Window
     private WriteableBitmap? _bitmap;
     private ViewerClient? _client;
     private int _srcW, _srcH;
+    private readonly Grid _root = new();
+    private readonly ContentControl _screen = new();
+    private readonly UIElement _badge = AuthScreens.BuildNotVerifiedBadge();
 
     public MainWindow()
     {
         Title = "Clamshell";
-        Content = _image;
+        _badge.Visibility = Visibility.Collapsed;
+        _screen.Visibility = Visibility.Collapsed;
+        _root.Children.Add(_image);
+        _root.Children.Add(_badge);
+        _root.Children.Add(_screen);
+        Content = _root;
         Background = System.Windows.Media.Brushes.Black;
         Width = 800; Height = 600;
 
@@ -73,7 +81,20 @@ internal sealed class MainWindow : Window
 
     private void OnState(FlowState state)
     {
-        Title = $"Clamshell -- {state.Kind}";
+        Title = $"Clamshell -- {AuthScreens.Title(state)}";
+        // While a session runs without proof of who answers, say so.
+        _badge.Visibility = state.Kind == FlowStateKind.Connected && !state.Verified
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (AuthScreens.IsScreen(state))
+        {
+            _screen.Content = AuthScreens.Build(state, yes => _client?.Answer(yes), () => _client?.Stop());
+            _screen.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _screen.Content = null;
+            _screen.Visibility = Visibility.Collapsed;
+        }
     }
 
     private void OnDisconnected(string reason)

@@ -63,6 +63,16 @@ jobs:
       - name: Viewer key store self-test (real Windows key store, throwaway key)
         run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest-keystore
 
+      - name: Viewer screens self-test (each device-auth screen built once, no network)
+        run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest-screens
+      - name: Viewer saved-Macs commands (known-hosts, forget-host with nothing saved)
+        shell: pwsh
+        run: |
+          dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- known-hosts
+          if ($LASTEXITCODE -ne 0) { throw "known-hosts failed (exit $LASTEXITCODE)" }
+          dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- forget-host nothing-here
+          if ($LASTEXITCODE -ne 1) { throw "forget-host of an unknown Mac should exit 1, got $LASTEXITCODE" }
+
       - name: Viewer GUI smoke test (real WPF Application/Window on a real virtual display)
         # The `--verify`/`decode-file` steps below never construct MainWindow
         # -- they're deliberately headless (no Dispatcher) so they run

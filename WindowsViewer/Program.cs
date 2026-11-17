@@ -17,6 +17,9 @@ namespace Clamshell;
 //                                                     elementary stream file
 //                                                     directly (no network)
 //   ClamshellWindowViewer selftest                    pure protocol-logic checks
+//   ClamshellWindowViewer known-hosts                 list saved Macs
+//   ClamshellWindowViewer forget-host <addr|fingerprint>
+//   ClamshellWindowViewer selftest-screens            build each screen once
 internal static class Program
 {
     [STAThread]
@@ -25,6 +28,9 @@ internal static class Program
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
         if (args.Length > 0 && args[0] == "selftest-auth") return AuthSelfTestMain(args[1..]);
         if (args.Length > 0 && args[0] == "selftest-keystore") return KeyStoreSelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-screens") return AuthScreens.SelfTest() == 0 ? 0 : 1;
+        if (args.Length > 0 && args[0] == "known-hosts") return KnownHostsMain();
+        if (args.Length > 0 && args[0] == "forget-host") return ForgetHostMain(args[1..]);
         if (args.Length > 0 && args[0] == "--verify") return VerifyMain(args[1..]);
         // --allow-unverified belongs to --verify only. Anywhere else it is ignored.
         args = args.Where(a => a != "--allow-unverified").ToArray();
@@ -45,6 +51,50 @@ internal static class Program
         window.Start(host, port, codec);
         window.Show();
         app.Run(window);
+        return 0;
+    }
+
+    /// <summary>Prints one line per saved Mac: address, name, fingerprint. Changes nothing.</summary>
+    private static int KnownHostsMain()
+    {
+        Clamshell.Auth.KnownHosts hosts;
+        try { hosts = new Clamshell.Auth.KnownHostsFile(ViewerPaths.DataFolder).Load(); }
+        catch (Clamshell.Auth.KnownHostsFileException e) { Console.Error.WriteLine(e.Message); return 1; }
+        foreach (var h in hosts.Hosts)
+        {
+            var addresses = h.Addresses.Count == 0 ? new List<string> { "-" } : h.Addresses.Select(a => a.Address).ToList();
+            foreach (var a in addresses) Console.WriteLine($"{a}\t{h.Name}\t{h.Fingerprint}");
+        }
+        return 0;
+    }
+
+    /// <summary>Forgets one saved Mac, named by an address or a fingerprint. The
+    /// next connection treats it as a computer never met.</summary>
+    private static int ForgetHostMain(string[] args)
+    {
+        if (args.Length != 1)
+        {
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer forget-host <address or fingerprint>");
+            return 1;
+        }
+        var file = new Clamshell.Auth.KnownHostsFile(ViewerPaths.DataFolder);
+        Clamshell.Auth.KnownHosts hosts;
+        try { hosts = file.Load(); }
+        catch (Clamshell.Auth.KnownHostsFileException e) { Console.Error.WriteLine(e.Message); return 1; }
+        string what = args[0].Trim();
+        var matches = hosts.Hosts.Where(h =>
+            h.Fingerprint.Equals(what, StringComparison.OrdinalIgnoreCase)
+            || h.Addresses.Any(a => a.Address.Equals(what, StringComparison.OrdinalIgnoreCase))).ToList();
+        if (matches.Count != 1)
+        {
+            Console.Error.WriteLine(matches.Count == 0
+                ? $"No saved Mac matches {what}. Run known-hosts to list them."
+                : $"{matches.Count} saved Macs match {what}. Use the fingerprint.");
+            return 1;
+        }
+        try { file.Apply(Clamshell.Auth.KnownHostsChange.Forget(matches[0].Id), DateTimeOffset.UtcNow.ToUnixTimeSeconds()); }
+        catch (Clamshell.Auth.KnownHostsFileException e) { Console.Error.WriteLine(e.Message); return 1; }
+        Console.WriteLine($"Forgot {matches[0].Name} ({matches[0].Fingerprint}).");
         return 0;
     }
 
