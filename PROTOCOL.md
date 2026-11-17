@@ -481,9 +481,17 @@ After any status other than 0 or 1 the host closes the connection.
   came from, reduced to a group: an IPv4 address as it is, an IPv4-mapped
   IPv6 address as its IPv4 address, any other IPv6 address as its first 64
   bits, and "unknown" when there is no usable address. The group is used only
-  for this and is never a reason to trust a device. Connections that come
-  through the web relay or a tunnel all show the relay's address, so they
-  share one group.
+  for this, and for the address in the host's log lines, and is never a reason
+  to trust a device. Connections that come through the web relay or a tunnel
+  reach the host from 127.0.0.1, so the host looks at their upgrade request
+  when the TCP peer is a trusted proxy: this Mac itself always, and any
+  address or CIDR range listed in the host's `trustedProxies` setting (empty
+  by default). The client address is then `CF-Connecting-IP`, or else the
+  right-most `X-Forwarded-For` entry that is not itself a trusted proxy; with
+  neither, or nothing that reads as an address, the peer's address stays. The
+  web relay applies the same rule to its browser and passes the result to the
+  host in `X-Forwarded-For`. Groups are not a security boundary: a process on
+  the Mac itself can choose any group.
 
   | Table | Size | Share per group | May be replaced | First to go |
   |---|---|---|---|---|

@@ -19,6 +19,24 @@ final class HostAuth {
     /// turns approval off. Anything but a clear "false" leaves it on.
     static let approvalDefaultsKey = "requireDeviceApproval"
     static let defaultsDomain = "com.frindle.clamshell"
+    /// `defaults write com.frindle.clamshell trustedProxies -array 192.0.2.7 198.51.100.0/24`
+    /// lists proxies besides this Mac itself whose client-address headers are
+    /// believed (see `ClientAddress`). Empty by default.
+    static let trustedProxiesDefaultsKey = "trustedProxies"
+
+    /// The proxies to believe, read from the user's preferences each time.
+    var trustedProxies: TrustedProxies {
+        trustedProxiesOverride ?? Self.storedTrustedProxies()
+    }
+
+    /// The setting as the user left it; the web relay reads it without a HostAuth.
+    static func storedTrustedProxies() -> TrustedProxies {
+        CFPreferencesAppSynchronize(defaultsDomain as CFString)
+        return TrustedProxies.fromStored(
+            CFPreferencesCopyAppValue(trustedProxiesDefaultsKey as CFString, defaultsDomain as CFString))
+    }
+    /// For selftests: replaces the setting.
+    var trustedProxiesOverride: TrustedProxies?
     /// Posted in this process, with the HostAuth as object, when approval is
     /// switched on or off.
     static let approvalDidChange = Notification.Name("com.frindle.clamshell.approvalDidChange")

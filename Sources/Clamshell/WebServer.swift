@@ -773,16 +773,23 @@ final class WebServer {
         var listeners: [NWListener] = []
         for (i, port) in Self.streamBridgePorts.enumerated() {
             let targetPort = Self.streamTargetPorts[i]
+            // The browser's upgrade request says who is behind a tunnel (see
+            // ClientAddress); the bridge reads it when the browser leg is ready.
+            let upgradeHeaders = UpgradeHeaders()
             let ls = try makeListeners(port: port) {
                 let wsParams = LANTLS.parameters()
                 let wsOptions = NWProtocolWebSocket.Options()
                 wsOptions.autoReplyPing = true
+                wsOptions.setClientRequestHandler(queue) { _, headers in
+                    upgradeHeaders.record(headers)
+                    return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+                }
                 wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
                 return wsParams
             }
             for listener in ls {
                 listener.newConnectionHandler = { [weak self] browserWS in
-                    self?.streamBridge(browserWS, toPort: targetPort)
+                    self?.streamBridge(browserWS, toPort: targetPort, upgradeHeaders: upgradeHeaders)
                 }
                 watch(listener)
                 listener.start(queue: queue)
@@ -811,29 +818,24 @@ final class WebServer {
     /// same one the iPad uses" per its own comment. Swapping `inner` to that
     /// avoids the broken combination entirely instead of debugging
     /// Network.framework's dual-role loopback behavior further.
-    private func streamBridge(_ browserWS: NWConnection, toPort targetPort: UInt16) {
-        let inner = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(targetPort)")!)
-        inner.maximumMessageSize = 64 << 20
+    private func streamBridge(_ browserWS: NWConnection, toPort targetPort: UInt16, upgradeHeaders: UpgradeHeaders) {
+        // The inner leg is dialled once the browser leg is ready, so the
+        // address found in the browser's upgrade request can go with it.
+        var innerTask: URLSessionWebSocketTask?
 
         var closed = false
         let close: () -> Void = { [weak self] in
             guard !closed else { return }
             closed = true
             browserWS.cancel()
-            inner.cancel(with: .goingAway, reason: nil)
+            innerTask?.cancel(with: .goingAway, reason: nil)
             self?.sessionEnded()
         }
 
         sessionStarted()
         clog("browser stream session opened -> 127.0.0.1:\(targetPort)")
 
-        browserWS.stateUpdateHandler = { state in
-            clog("stream bridge: browserWS state -> \(state)")
-            if case .failed(let err) = state { clog("stream bridge: browserWS failed: \(err)"); close() }
-            if case .cancelled = state { close() }
-        }
-
-        func pumpBrowserToInner() {
+        func pumpBrowserToInner(_ inner: URLSessionWebSocketTask) {
             browserWS.receiveMessage { data, context, isComplete, error in
                 if let error { clog("stream bridge: browserWS.receiveMessage error: \(error)") }
                 guard error == nil else { close(); return }
@@ -841,36 +843,55 @@ final class WebServer {
                     clog("stream bridge: browser->inner \(data.count) bytes")
                     inner.send(.data(data)) { sendErr in
                         if let sendErr { clog("stream bridge: inner.send error: \(sendErr)") }
-                        if sendErr != nil { close() } else { pumpBrowserToInner() }
+                        if sendErr != nil { close() } else { pumpBrowserToInner(inner) }
                     }
                 } else {
-                    pumpBrowserToInner()
+                    pumpBrowserToInner(inner)
                 }
             }
         }
-        func pumpInnerToBrowser() {
+        func pumpInnerToBrowser(_ inner: URLSessionWebSocketTask) {
             inner.receive { result in
                 switch result {
                 case .failure(let error):
                     clog("stream bridge: inner.receive error: \(error)")
                     close()
                 case .success(let message):
-                    guard case .data(let data) = message, !data.isEmpty else { pumpInnerToBrowser(); return }
+                    guard case .data(let data) = message, !data.isEmpty else { pumpInnerToBrowser(inner); return }
                     clog("stream bridge: inner->browser \(data.count) bytes")
                     let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
                     let ctx = NWConnection.ContentContext(identifier: "toBrowser", metadata: [meta])
                     browserWS.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
                         if let sendErr { clog("stream bridge: browserWS.send error: \(sendErr)") }
-                        if sendErr != nil { close() } else { pumpInnerToBrowser() }
+                        if sendErr != nil { close() } else { pumpInnerToBrowser(inner) }
                     })
                 }
             }
         }
 
+        browserWS.stateUpdateHandler = { state in
+            clog("stream bridge: browserWS state -> \(state)")
+            if case .failed(let err) = state { clog("stream bridge: browserWS failed: \(err)"); close() }
+            if case .cancelled = state { close() }
+            if case .ready = state, innerTask == nil, !closed {
+                // Same rule as the stream server's: headers count only from a
+                // trusted proxy. The result goes on to the stream server in
+                // X-Forwarded-For, where this relay (127.0.0.1) is trusted.
+                let client = ClientAddress.resolve(peer: StreamGate.remoteAddress(of: browserWS),
+                                                   headers: upgradeHeaders.take(),
+                                                   trusted: HostAuth.storedTrustedProxies())
+                var request = URLRequest(url: URL(string: "ws://127.0.0.1:\(targetPort)")!)
+                if !client.isEmpty { request.setValue(client, forHTTPHeaderField: "X-Forwarded-For") }
+                let inner = URLSession.shared.webSocketTask(with: request)
+                inner.maximumMessageSize = 64 << 20
+                innerTask = inner
+                inner.resume()
+                pumpBrowserToInner(inner)
+                pumpInnerToBrowser(inner)
+            }
+        }
+
         browserWS.start(queue: queue)
-        inner.resume()
-        pumpBrowserToInner()
-        pumpInnerToBrowser()
     }
 
     private func sessionStarted() {

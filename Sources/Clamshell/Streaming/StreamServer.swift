@@ -208,6 +208,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         // Nothing a client sends is anywhere near this size; the room above
         // the largest message is for the SECURE wrapping.
         ws.maximumMessageSize = StreamGate.sessionMaxPayload + 4096
+        // The upgrade request's headers say who is behind a proxy (see
+        // ClientAddress); the gate reads them when the connection is ready.
+        let upgradeHeaders = gate.upgradeHeaders
+        ws.setClientRequestHandler(queue) { _, headers in
+            upgradeHeaders.record(headers)
+            return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+        }
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             clog("STREAM: invalid listen port \(port)")

@@ -76,6 +76,8 @@ final class StreamGate {
     private let label: String
     private var links: [StreamLink] = []
     private var observers: [NSObjectProtocol] = []
+    /// Headers of the upgrade requests, waiting for their connections.
+    let upgradeHeaders = UpgradeHeaders()
 
     init(auth: HostAuth, queue: DispatchQueue, label: String) {
         self.auth = auth
@@ -113,12 +115,7 @@ final class StreamGate {
         // The address group shares out room; an inbound connection's endpoint
         // is its peer, known before the connection is ready.
         link.address = Self.remoteAddress(of: conn)
-        link.unanswered = auth.addUnanswered(group: AddressGroup.of(link.address)) { [weak self, weak link] in
-            self?.queue.async {
-                guard let self, let link, link.phase == .awaitingResponse else { return }
-                self.close(link, why: "too many connections had not answered the challenge")
-            }
-        }
+        countUnanswered(link)
         let deadline = DispatchWorkItem { [weak self, weak link] in
             guard let self, let link, link.phase == .awaitingResponse else { return }
             self.finish(link, .timeout, why: "no answer to the challenge")
@@ -137,6 +134,15 @@ final class StreamGate {
         conn.start(queue: queue)
     }
 
+    private func countUnanswered(_ link: StreamLink) {
+        link.unanswered = auth.addUnanswered(group: AddressGroup.of(link.address)) { [weak self, weak link] in
+            self?.queue.async {
+                guard let self, let link, link.phase == .awaitingResponse else { return }
+                self.close(link, why: "too many connections had not answered the challenge")
+            }
+        }
+    }
+
     private func attachParser(to link: StreamLink) {
         link.parser.onMessage = { [weak self, weak link] type, payload in
             guard let self, let link else { return }
@@ -150,7 +156,14 @@ final class StreamGate {
 
     private func begin(_ link: StreamLink) {
         guard link.phase == .awaitingResponse, link.handshake == nil else { return }
-        link.address = Self.remoteAddress(of: link.conn)
+        let peer = Self.remoteAddress(of: link.conn)
+        let counted = AddressGroup.of(link.address)
+        link.address = ClientAddress.resolve(peer: peer, headers: upgradeHeaders.take(), trusted: auth.trustedProxies)
+        if AddressGroup.of(link.address) != counted, let token = link.unanswered {
+            // Behind a proxy: count the connection in its own group instead.
+            auth.removeUnanswered(token)
+            countUnanswered(link)
+        }
         var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval]
         if auth.requireApproval { capabilities.insert(.approvalRequired) }
         do {
