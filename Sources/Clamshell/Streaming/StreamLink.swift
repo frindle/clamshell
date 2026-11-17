@@ -257,7 +257,7 @@ final class StreamGate {
             link.unanswered = nil
         }
         link.device = device
-        let who = "\(device.fingerprint) (\(device.name)) from \(link.address.isEmpty ? "an unknown address" : link.address)"
+        let who = "\(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.address.isEmpty ? "an unknown address" : link.address)"
 
         guard auth.requireApproval else {
             auth.store.noteConnected(id: device.id, name: device.name, address: link.address)
@@ -360,7 +360,7 @@ final class StreamGate {
         auth.sessionOpened(deviceId: device.id)
         link.countedAsSession = true
         let trusted = auth.store.isTrusted(device.id)
-        clog("DEVICES: \(label): let in \(device.fingerprint) (\(device.name)) from \(link.address)\(trusted ? "" : " — not on the trusted list; device approval is off")")
+        clog("DEVICES: \(label): let in \(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.address)\(trusted ? "" : " — not on the trusted list; device approval is off")")
 
         onAdmit(link)
         guard link.phase == .accepted else { return }
@@ -548,7 +548,7 @@ final class StreamGate {
             ? auth.store.decide(id: id, .approve, by: device.id, onlyIfWaiting: true)
             : auth.store.decide(id: id, .deny, by: device.id, onlyIfWaiting: true)
         if let record {
-            clog("DEVICES: \(record.fingerprint) (\(record.name)) was \(word == "approve" ? "approved" : "denied") from device \(device.fingerprint) (\(device.name))")
+            clog("DEVICES: \(record.fingerprint) (\(record.name)) was \(word == "approve" ? "approved" : "denied") from device \(device.fingerprint) (\(DeviceTrustStore.storedName(device.name)))")
         } else {
             clog("DEVICES: a decision from \(device.fingerprint) changed nothing: that device is not waiting")
         }

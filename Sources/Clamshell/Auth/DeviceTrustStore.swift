@@ -199,7 +199,7 @@ final class DeviceTrustStore {
              hasOpenConnection: (String) -> Bool) -> Answer {
         guard DeviceIdentity.isValidPublicKey(publicKey) else { return .denied }
         let id = DeviceIdentity.id(ofPublicKey: publicKey)
-        let name = AuthWire.cleanName(name)
+        let name = Self.storedName(name)
         let address = AuthWire.cleanName(address)
         return mutate { list, t in
             if let i = list.firstIndex(where: { $0.id == id }) {
@@ -215,8 +215,11 @@ final class DeviceTrustStore {
                                  atMostEvery: 60, soonerIfChanged: true)
                     return (.trusted, .trusted)
                 case .waiting:
+                    // It keeps the name it was first listed with until it
+                    // is approved, so a name cannot be swapped under the
+                    // user's eyes while the question is open.
                     Self.refresh(&list[i], name: name, address: address, now: t,
-                                 atMostEvery: 10, soonerIfChanged: false)
+                                 atMostEvery: 10, soonerIfChanged: false, keepName: true)
                     return (.waiting, .waiting)
                 }
             }
@@ -263,7 +266,7 @@ final class DeviceTrustStore {
     /// A device connected to a host that is not asking for approval: keeps a
     /// trusted device's name, address and last-seen time fresh. Adds nothing.
     func noteConnected(id: String, name: String, address: String) {
-        let name = AuthWire.cleanName(name)
+        let name = Self.storedName(name)
         let address = AuthWire.cleanName(address)
         mutate { list, t in
             guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .trusted else { return ((), ()) }
@@ -423,7 +426,7 @@ final class DeviceTrustStore {
             }
             seen.insert(r.id)
             r.publicKey = Hex.encode(key)
-            r.name = AuthWire.cleanName(r.name)
+            r.name = Self.storedName(r.name)
             r.address = AuthWire.cleanName(r.address)
             if let by = r.decidedBy, by != decidedOnHost, by != decidedOnCommandLine,
                !DeviceIdentity.isWellFormedId(by) {
@@ -447,17 +450,24 @@ final class DeviceTrustStore {
         r.state == .waiting && now - r.firstSeen > waitingLifetime
     }
 
+    /// A name as the host stores and shows it: cleaned the way every name is,
+    /// and without the characters that draw nothing.
+    static func storedName(_ raw: String) -> String {
+        NameSkeleton.visible(AuthWire.cleanName(raw))
+    }
+
     /// Notes a visit by a known device: its name, address and the time. A
     /// visit is written down at most every `atMostEvery` seconds, or at once
     /// when the name or address changed and `soonerIfChanged` allows it. A
     /// waiting device is not allowed that, so it cannot make the host write
     /// to disk as fast as it can reconnect.
     private static func refresh(_ r: inout DeviceRecord, name: String, address: String,
-                                now: TimeInterval, atMostEvery: TimeInterval, soonerIfChanged: Bool) {
+                                now: TimeInterval, atMostEvery: TimeInterval, soonerIfChanged: Bool,
+                                keepName: Bool = false) {
         let due = now - r.lastSeen >= atMostEvery || now < r.lastSeen
-        let changed = (!name.isEmpty && name != r.name) || address != r.address
+        let changed = (!keepName && !name.isEmpty && name != r.name) || address != r.address
         guard due || (soonerIfChanged && changed) else { return }
-        if !name.isEmpty { r.name = name }
+        if !name.isEmpty && !keepName { r.name = name }
         r.address = address
         r.lastSeen = now
     }

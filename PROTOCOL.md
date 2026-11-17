@@ -380,7 +380,19 @@ the host or from a device that is already trusted.
   fingerprint come from its identity key the same way.
 - Names are for display and prove nothing. Both sides drop control characters
   and invisible formatting characters (the bidirectional overrides, for
-  example) before showing one.
+  example) before showing one. A host also drops the characters that draw
+  nothing (the default-ignorable code points and U+115F, U+1160, U+3164,
+  U+FFA0 and U+2800) from a name before it stores or shows it. A device waiting
+  for approval keeps the name it was first listed with, whatever it calls
+  itself on later connections, until it is approved. When a device waiting for
+  approval has the same name as a trusted device, the host's approval window
+  says so. "The same" is judged on a skeleton of the name: Unicode NFKD without
+  combining marks or invisible characters, case folded, Cyrillic and Greek
+  letters that look like a Latin letter written as that letter, every
+  apostrophe and quote as `'`, `i`, `1`, `|` and dotless i as `l`, `0` as `o`,
+  and runs of white space as one space. That is a hint and never a check. In
+  the approval window, any change to what is shown about the device in question
+  turns the buttons off again for the full delay.
 
 ### Handshake
 

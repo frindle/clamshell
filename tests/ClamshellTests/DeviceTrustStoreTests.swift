@@ -139,9 +139,37 @@ final class DeviceTrustStoreTests: XCTestCase {
         clock += 10
         XCTAssertEqual(ask(s, key, name: "Second"), .waiting)
         let record = try XCTUnwrap(s.record(id: id(key)))
-        XCTAssertEqual(record.name, "Second")
+        // A waiting device keeps the name it was first listed with.
+        XCTAssertEqual(record.name, "First")
         XCTAssertEqual(record.lastSeen, clock.timeIntervalSince1970)
         XCTAssertEqual(record.firstSeen, clock.timeIntervalSince1970 - 11)
+    }
+
+    func testWaitingDeviceKeepsItsFirstNameUntilApproved() throws {
+        let s = store()
+        let key = newKey()
+        _ = ask(s, key, name: "First")
+        clock += 30
+        XCTAssertEqual(ask(s, key, name: "Other"), .waiting)
+        XCTAssertEqual(s.record(id: id(key))?.name, "First")
+        // Once approved, a visit may change the name as before.
+        s.decide(id: id(key), .approve, by: "host", onlyIfWaiting: true)
+        clock += 61
+        XCTAssertEqual(ask(s, key, name: "Other"), .trusted)
+        XCTAssertEqual(s.record(id: id(key))?.name, "Other")
+    }
+
+    func testStoredNamesLoseTheCharactersThatDrawNothing() throws {
+        let s = store()
+        let key = newKey()
+        _ = ask(s, key, name: "Pad\u{3164}\u{200B}\u{2800}\u{FFA0}")
+        XCTAssertEqual(s.record(id: id(key))?.name, "Pad")
+        let blank = newKey()
+        _ = ask(s, blank, name: "\u{3164}\u{1160}")
+        XCTAssertEqual(s.record(id: id(blank))?.name, "")
+        XCTAssertEqual(s.record(id: id(blank))?.label, "Unnamed device")
+        // AuthWire.cleanName itself is unchanged: it keeps U+3164.
+        XCTAssertEqual(AuthWire.cleanName("Pad\u{3164}"), "Pad\u{3164}")
     }
 
     func testTrustedDeviceKeepsItsNameAndAddressFresh() throws {

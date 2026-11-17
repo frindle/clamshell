@@ -521,6 +521,49 @@ final class ApprovalPromptsTests: XCTestCase {
         XCTAssertEqual(ApprovalPrompts.sentence(for: again, among: [pad]), "\u{201C}Pad 2\u{201D} was approved.")
     }
 
+    func testNamesThatLookTheSameHaveTheSameSkeleton() {
+        let same: [(String, String)] = [
+            ("Studio Pad", "Studio Pad"),
+            ("Studio Pad", "Studio Pad\u{3164}"),            // trailing Hangul filler
+            ("Studio Pad", "Stud\u{200B}io Pad"),            // zero-width space inside
+            ("Studio Pad", "Studio\u{00A0}\u{00A0}Pad"),    // no-break spaces
+            ("Studio Pad", "Stud\u{0456}o P\u{0430}d"),     // Cyrillic i and a
+            ("Studio Pad", "Studi\u{03BF} Pad"),              // Greek omicron
+            ("Alex\u{2019}s iPad", "Alex's iPad"),            // right single quote
+            ("Alex\u{02BC}s iPad", "Alex\u{00B4}s iPad"),    // modifier apostrophe, acute accent
+            ("Illusion", "lllusion"),                          // capital i against small L
+            ("iPad", "lPad"),
+            ("Mac1", "Macl"),
+            ("R00m", "Room"),
+            ("Caf\u{00E9}", "Cafe"),
+            ("\u{FF33}tudio", "studio"),
+        ]
+        for (a, b) in same {
+            XCTAssertEqual(NameSkeleton.of(a), NameSkeleton.of(b), "\(a) / \(b)")
+        }
+        let different: [(String, String)] = [
+            ("Studio Pad", "Studio Pod"),
+            ("Studio Pad", "Studio Pad 2"),
+            ("Phone", "Phones"),
+            ("Mac", "Mac Mini"),
+            ("Alex's iPad", "Alexs iPad"),
+        ]
+        for (a, b) in different {
+            XCTAssertNotEqual(NameSkeleton.of(a), NameSkeleton.of(b), "\(a) / \(b)")
+        }
+        XCTAssertEqual(NameSkeleton.of("\u{3164}\u{2800}"), "")
+    }
+
+    func testSharedNameHintSeesThroughLookAlikes() {
+        let trusted = device(1, .trusted, name: "Studio Pad")
+        let cyrillic = device(2, .waiting, name: "Studio P\u{0430}d")
+        let padded = device(3, .waiting, name: "Studio Pad\u{3164}")
+        let other = device(4, .waiting, name: "Studio Pod")
+        XCTAssertTrue(ApprovalPrompts.sharesNameWithTrusted(cyrillic, among: [trusted, cyrillic]))
+        XCTAssertTrue(ApprovalPrompts.sharesNameWithTrusted(padded, among: [trusted, padded]))
+        XCTAssertFalse(ApprovalPrompts.sharesNameWithTrusted(other, among: [trusted, other]))
+    }
+
     func testNameAlreadyUsedByATrustedDevice() {
         let trusted = device(1, .trusted, name: "Studio Pad")
         let sameName = device(2, .waiting, name: "studio pad")

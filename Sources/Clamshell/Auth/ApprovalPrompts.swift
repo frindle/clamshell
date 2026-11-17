@@ -270,13 +270,13 @@ struct ApprovalPrompts {
         return "\(who) was \(verb)\(source.isEmpty ? "" : " " + source)."
     }
 
-    /// True when another device with the same name is already trusted: either
-    /// the same device with a new key, or something borrowing its name.
+    /// True when another device with a name that looks the same is already
+    /// trusted: either the same device with a new key, or something borrowing
+    /// its name. Only a hint, never a check (see `NameSkeleton`).
     static func sharesNameWithTrusted(_ device: DeviceRecord, among records: [DeviceRecord]) -> Bool {
-        !device.name.isEmpty && records.contains {
-            $0.state == .trusted && $0.id != device.id
-                && $0.name.compare(device.name,
-                                   options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive]) == .orderedSame
+        let skeleton = NameSkeleton.of(device.name)
+        return !skeleton.isEmpty && records.contains {
+            $0.state == .trusted && $0.id != device.id && NameSkeleton.of($0.name) == skeleton
         }
     }
 

@@ -46,6 +46,8 @@ final class DeviceApprovalPanelController: NSWindowController {
     private let leftButton = NSButton(title: "", target: nil, action: nil)
     private let rightButton = NSButton(title: "", target: nil, action: nil)
     private var armTimer: Timer?
+    /// What `ask` last showed about the device, apart from the time.
+    private var shownSignature = ""
     private var noticeTimer: Timer?
     /// Set while the window is closed by this class, so that is not taken
     /// for the user closing it.
@@ -153,10 +155,20 @@ final class DeviceApprovalPanelController: NSWindowController {
 
     /// Asks about `device`. `position` of `total` devices are waiting.
     /// `nameIsTaken` says a trusted device already goes by the same name.
-    /// Showing the same device again only refreshes the small print; it does
-    /// not restart the wait before a button can be pressed.
+    /// Showing the same thing again only refreshes the small print; it does
+    /// not restart the wait before a button can be pressed. Showing something
+    /// different about the device (its name, fingerprint, address, whether it
+    /// is connected, the hint about a name already in use) does.
     func ask(_ device: DeviceRecord, position: Int, of total: Int, connectedNow: Bool, nameIsTaken: Bool) {
         let sameDevice = askingId == device.id
+        // Everything shown about the device except how long ago it asked: if
+        // any of it changes under the user's eyes, the buttons are off again
+        // for the full delay.
+        let signature = [device.id, device.label, device.fingerprint, device.address,
+                         connectedNow ? "connected" : "not connected",
+                         nameIsTaken ? "name taken" : "name free"].joined(separator: "\u{1f}")
+        let unchanged = sameDevice && signature == shownSignature
+        shownSignature = signature
         content = .asking(device)
         noticeTimer?.invalidate()
         noticeTimer = nil
@@ -176,7 +188,7 @@ final class DeviceApprovalPanelController: NSWindowController {
         leftButton.isHidden = false
         rightButton.title = "Approve"
 
-        if !sameDevice { disarmBriefly() }
+        if !unchanged { disarmBriefly() }
         present()
     }
 
