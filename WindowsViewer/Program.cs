@@ -384,6 +384,19 @@ internal static class SelfTest
     // blob, ADTS splitting, the tone check, and the latency rules.
     private static void AudioChecks()
     {
+        // The renegotiation cap: four format changes per unit, then the unit is dropped;
+        // three dropped units in a row end the audio; a good unit resets the count.
+        var cap = new RenegotiationCap();
+        cap.StartFeed();
+        for (int i = 0; i < RenegotiationCap.MaxPerFeed; i++) Assert(cap.Allow(), "cap: change within the limit is allowed");
+        Assert(!cap.Allow(), "cap: the change past the limit is refused");
+        cap.StartFeed();
+        Assert(cap.Allow(), "cap: a new unit starts from zero");
+        Assert(!cap.DroppedUnit() && !cap.DroppedUnit(), "cap: two dropped units do not give up");
+        cap.FeedWorked();
+        Assert(!cap.DroppedUnit() && !cap.DroppedUnit(), "cap: a good unit resets the dropped count");
+        Assert(cap.DroppedUnit(), "cap: three dropped units in a row give up");
+
         Assert(AudioDecoder.UserData.Length == 14 && AudioDecoder.UserData[12] == 0x11 && AudioDecoder.UserData[13] == 0x90,
             "AAC user data: 12 HEAACWAVEINFO bytes, then 11 90");
         Assert(AudioDecoder.UserData[0] == 0 && AudioDecoder.UserData[2] == 0x29, "AAC user data: raw payload, AAC-LC L2");

@@ -33,6 +33,8 @@ internal sealed class VideoDecoder : IDisposable
     private int _outWidth, _outHeight, _outStride;
     private bool _outputTypeSet;
     private readonly object _lock = new();
+    private readonly RenegotiationCap _cap = new();
+    private int _capDrops;
 
     public VideoDecoder(StreamCodec codec)
     {
@@ -141,7 +143,13 @@ internal sealed class VideoDecoder : IDisposable
                 sample.SampleTime = (long)ptsMicros * 10;
 
                 _mft.ProcessInput(0, sample, 0);
-                DrainLocked();
+                _cap.StartFeed();
+                if (!DrainLocked())
+                {
+                    _capDrops++;
+                    if (_capDrops <= 5 || _capDrops % 500 == 0)
+                        Log.Line($"decode: the decoder asked for a new output format more than {RenegotiationCap.MaxPerFeed} times for one frame; frame dropped (#{_capDrops})");
+                }
             }
             catch (Exception e) { Log.Line($"decode error: {e.Message}"); }
         }
@@ -163,13 +171,16 @@ internal sealed class VideoDecoder : IDisposable
             try
             {
                 _mft.ProcessMessage((TMessageType)Mf.CommandDrain, UIntPtr.Zero);
+                _cap.StartFeed();
                 DrainLocked();
             }
             catch (Exception e) { Log.Line($"decode flush error: {e.Message}"); }
         }
     }
 
-    private void DrainLocked()
+    /// <summary>False when the decoder asked for a new output format more often
+    /// than <see cref="RenegotiationCap.MaxPerFeed"/> for this unit: it is dropped.</summary>
+    private bool DrainLocked()
     {
         var info = _mft.GetOutputStreamInfo(0);
         bool mftAllocates = ((int)info.Flags & (Mf.ProvidesSamples | Mf.CanProvideSamples)) != 0;
@@ -188,10 +199,11 @@ internal sealed class VideoDecoder : IDisposable
             var dataBuffer = new OutputDataBuffer { StreamID = 0, Sample = outSample! };
             Result r = _mft.ProcessOutput((ProcessOutputFlags)0, 1, ref dataBuffer, out _);
 
-            if ((uint)r.Code == Mf.NeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); break; }
+            if ((uint)r.Code == Mf.NeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); return true; }
             if ((uint)r.Code == Mf.StreamChange)
             {
                 outSample?.Dispose(); outBuffer?.Dispose();
+                if (!_cap.Allow()) return false;
                 NegotiateOutputTypeLocked();
                 continue;
             }

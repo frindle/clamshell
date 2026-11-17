@@ -30,6 +30,8 @@ internal sealed class AudioDecoder : IDisposable
     private readonly object _lock = new();
     private long _time; // 100 ns units
     private int _errors;
+    private readonly RenegotiationCap _cap = new();
+    private bool _off;
 
     public AudioDecoder()
     {
@@ -120,7 +122,7 @@ internal sealed class AudioDecoder : IDisposable
         if (aac.IsEmpty) return; // an empty AUDIO_FRAME carries nothing to decode
         lock (_lock)
         {
-            if (_mft is null) return;
+            if (_mft is null || _off) return;
             try
             {
                 using var sample = MediaFactory.MFCreateSample();
@@ -134,7 +136,13 @@ internal sealed class AudioDecoder : IDisposable
                 _time += 10_000_000L * FramesPerUnit / SampleRate;
 
                 _mft.ProcessInput(0, sample, 0);
-                DrainLocked();
+                _cap.StartFeed();
+                if (DrainLocked()) _cap.FeedWorked();
+                else if (_cap.DroppedUnit())
+                {
+                    _off = true;
+                    Log.Line("audio: the decoder keeps changing its output format; audio is off for the rest of this session");
+                }
             }
             catch (Exception e)
             {
@@ -154,13 +162,17 @@ internal sealed class AudioDecoder : IDisposable
             try
             {
                 _mft.ProcessMessage((TMessageType)Mf.CommandDrain, UIntPtr.Zero);
+                _cap.StartFeed();
                 DrainLocked();
             }
             catch (Exception e) { Log.Line($"audio: decode flush error: {e.Message}"); }
         }
     }
 
-    private void DrainLocked()
+    /// <summary>Takes out what the decoder has. False when it asked for a new
+    /// output format more often than <see cref="RenegotiationCap.MaxPerFeed"/>
+    /// in one go: the rest of this unit is dropped.</summary>
+    private bool DrainLocked()
     {
         var info = _mft!.GetOutputStreamInfo(0);
         bool mftAllocates = ((int)info.Flags & (Mf.ProvidesSamples | Mf.CanProvideSamples)) != 0;
@@ -179,10 +191,11 @@ internal sealed class AudioDecoder : IDisposable
             var dataBuffer = new OutputDataBuffer { StreamID = 0, Sample = outSample! };
             Result r = _mft.ProcessOutput((ProcessOutputFlags)0, 1, ref dataBuffer, out _);
 
-            if ((uint)r.Code == Mf.NeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); break; }
+            if ((uint)r.Code == Mf.NeedMoreInput) { outSample?.Dispose(); outBuffer?.Dispose(); return true; }
             if ((uint)r.Code == Mf.StreamChange)
             {
                 outSample?.Dispose(); outBuffer?.Dispose();
+                if (!_cap.Allow()) return false;
                 NegotiateOutput();
                 continue;
             }
@@ -219,6 +232,32 @@ internal sealed class AudioDecoder : IDisposable
             _mft = null;
         }
     }
+}
+
+/// <summary>A decoder that asks for a new output format again and again would
+/// keep one Feed in its loop for good. Counts the asks inside one Feed and how
+/// many units in a row were dropped for it. Used by the audio and video decoders;
+/// it holds no Media Foundation state, so the self-test can drive it.</summary>
+internal sealed class RenegotiationCap
+{
+    /// <summary>Format changes accepted while draining one unit.</summary>
+    public const int MaxPerFeed = 4;
+    /// <summary>Units dropped in a row before a decoder gives up.</summary>
+    public const int DroppedUnitsBeforeGivingUp = 3;
+
+    private int _inThisFeed;
+    private int _droppedInARow;
+
+    public void StartFeed() => _inThisFeed = 0;
+
+    /// <summary>True if one more change may be negotiated for this unit.</summary>
+    public bool Allow() => ++_inThisFeed <= MaxPerFeed;
+
+    /// <summary>A unit was dropped. True once that has happened often enough in a row to give up.</summary>
+    public bool DroppedUnit() => ++_droppedInARow >= DroppedUnitsBeforeGivingUp;
+
+    /// <summary>A unit drained without hitting the cap.</summary>
+    public void FeedWorked() => _droppedInARow = 0;
 }
 
 // Media Foundation audio GUIDs, as literals like the video ones in VideoDecoder.cs.
