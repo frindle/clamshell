@@ -133,7 +133,7 @@ jobs:
           }
 
           $viewer = Start-Process -FilePath dotnet `
-            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","--verify","127.0.0.1","5951","h264","25" `
+            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","--verify","127.0.0.1","5951","h264","25","--allow-unverified" `
             -NoNewWindow -PassThru -Wait `
             -RedirectStandardOutput viewer-out.log -RedirectStandardError viewer-err.log
 

@@ -8,7 +8,7 @@ namespace Clamshell;
 //
 // Usage:
 //   ClamshellWindowViewer <host> <port> [codec]      GUI mode (default)
-//   ClamshellWindowViewer --verify <host> <port> [codec] [timeoutSec]
+//   ClamshellWindowViewer --verify <host> <port> [codec] [timeoutSec] [--allow-unverified]
 //                                                     headless CI verification
 //                                                     -- see the report for
 //                                                     what this proves and
@@ -26,6 +26,8 @@ internal static class Program
         if (args.Length > 0 && args[0] == "selftest-auth") return AuthSelfTestMain(args[1..]);
         if (args.Length > 0 && args[0] == "selftest-keystore") return KeyStoreSelfTest.Run();
         if (args.Length > 0 && args[0] == "--verify") return VerifyMain(args[1..]);
+        // --allow-unverified belongs to --verify only. Anywhere else it is ignored.
+        args = args.Where(a => a != "--allow-unverified").ToArray();
         if (args.Length > 0 && args[0] == "decode-file") return DecodeFileMain(args[1..]);
 
         if (args.Length < 2)
@@ -70,9 +72,13 @@ internal static class Program
     /// throw".</summary>
     private static int VerifyMain(string[] args)
     {
+        // The one yes that rule 6 asks of a person, for a headless run with no
+        // person. It answers that question only and is never saved.
+        bool allowUnverified = args.Contains("--allow-unverified");
+        args = args.Where(a => a != "--allow-unverified").ToArray();
         if (args.Length < 2)
         {
-            Console.Error.WriteLine("Usage: ClamshellWindowViewer --verify <host> <port> [h264|hevc] [timeoutSec]");
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer --verify <host> <port> [h264|hevc] [timeoutSec] [--allow-unverified]");
             return 1;
         }
         string host = args[0];
@@ -81,7 +87,16 @@ internal static class Program
             ? StreamCodec.Hevc : StreamCodec.H264;
         int timeoutSec = args.Length > 3 ? int.Parse(args[3]) : 20;
 
-        using var client = new ViewerClient();
+        ViewerClient client;
+        try { client = ViewerClient.OpenDefault(); }
+        catch (DeviceKeyException e)
+        {
+            Log.Line($"verify: FAIL -- {e.Message}");
+            return 1;
+        }
+        using var disposeClient = client;
+        client.AllowUnverified = allowUnverified;
+        client.OnState = state => Log.Line($"verify: state {state.Kind}");
         var done = new TaskCompletionSource<bool>();
         int frameCount = 0;
         string failReason = "timed out waiting for a decoded frame";
