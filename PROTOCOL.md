@@ -676,6 +676,30 @@ at once, and its answer changes neither n nor the quiet time. While the window
 stays away, waiting devices stay in the Devices menu and the menu-bar icon shows
 that devices are waiting.
 
+### The Windows host
+
+A Windows host (`WindowsServer/`) takes part in the handshake above and reports
+`kind` `windows` in HOST_INFO. Devices are approved on the host only: in its
+approval window, in the Devices section of its Settings, or with its command
+line (`ClamshellServer approve <id or fingerprint>`, also `devices`, `deny`,
+`revoke` and `forget`). It does not accept DEVICE_DECISION, so it sets
+capability bit 4 to 0 in every challenge and sends no DEVICE_PENDING.
+
+Its host identity key is a P-256 key in the current user's Windows CNG key
+store (software provider, key name `Clamshell.Host.IdentityKey.v1`, not
+exportable). Its device list is the file `devices.dat` under
+`%LOCALAPPDATA%\Clamshell` (or the folder in `CLAMSHELL_STATE_DIR`), protected
+with the current user's DPAPI, with a lock file `devices.lock` beside it; the
+host and the command line take that lock for every change, and a running host
+notices a change made by the command line. Both are tied to the Windows user
+the host runs as: another process of the same user can use that user's key and
+read that user's list, as on the Mac. If either cannot be opened the host
+serves nothing. Approval is on unless the value `RequireDeviceApproval` under
+`HKEY_CURRENT_USER\Software\Clamshell` is the DWORD 0. A host behind a reverse
+proxy lists the proxies it trusts in the multi-string value `TrustedProxies`
+there; the client address it reads from the proxy's headers is only used to
+group connections and for the log.
+
 ### Browser client
 
 The browser client reaches the stream through the web server's WebSocket
