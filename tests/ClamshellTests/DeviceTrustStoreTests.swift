@@ -135,6 +135,13 @@ final class DeviceTrustStoreTests: XCTestCase {
         XCTAssertEqual(s.record(id: id(key))?.fromText, "192.0.2.7")
     }
 
+    func testADeviceWithNoRecordedAddressSaysSo() throws {
+        let s = store()
+        let key = newKey()
+        _ = s.ask(publicKey: key, name: "Pad", address: "", hasOpenConnection: { _ in false })
+        XCTAssertEqual(s.record(id: id(key))?.fromText, "an unknown address")
+    }
+
     func testRecordsSavedBeforeReportedAddressesExistStillLoad() throws {
         let key = newKey()
         let old: [String: Any] = ["id": id(key), "publicKey": Hex.encode(key), "name": "Old Pad",
