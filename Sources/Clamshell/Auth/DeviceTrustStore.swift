@@ -125,12 +125,21 @@ final class DeviceTrustStore {
     private var watcher: DispatchSourceFileSystemObject?
     private let watchQueue = DispatchQueue(label: "com.frindle.clamshell.devices.watch")
     private var reloadScheduled = false
+    /// Reloads the list now and then when the directory cannot be watched.
+    private var fallbackTimer: DispatchSourceTimer?
+    private let watchFails: Bool
+    private let reloadInterval: TimeInterval
 
     private var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
 
-    init(directory: URL, watch: Bool = true, now: @escaping () -> Date = Date.init) {
+    /// `watchFails` makes the directory watcher fail to start, for tests;
+    /// `reloadInterval` is how often the list is read again then.
+    init(directory: URL, watch: Bool = true, now: @escaping () -> Date = Date.init,
+         watchFails: Bool = false, reloadInterval: TimeInterval = 5) {
         self.directory = directory
         self.now = now
+        self.watchFails = watchFails
+        self.reloadInterval = reloadInterval
         do {
             try HostState.prepare(directory)
             canPersist = true
@@ -144,7 +153,10 @@ final class DeviceTrustStore {
         }
     }
 
-    deinit { watcher?.cancel() }
+    deinit {
+        watcher?.cancel()
+        fallbackTimer?.cancel()
+    }
 
     // MARK: reading
 
@@ -297,6 +309,35 @@ final class DeviceTrustStore {
             list[i].decidedAt = t
             list[i].decidedBy = by
             return (list[i], nil)
+        }
+    }
+
+    /// What came of a decision relayed by a connected device.
+    enum Relayed: Equatable {
+        /// Applied; the record as it now stands.
+        case applied(DeviceRecord)
+        /// The device decided on is not waiting (or the list could not be saved).
+        case unchanged
+        /// The device that relayed it is not trusted in the list as it is now.
+        /// Nothing was changed.
+        case relayerNotTrusted
+    }
+
+    /// A decision relayed by a connected device, applied only if that device
+    /// is trusted in the list read inside the same change, so a device that
+    /// was revoked a moment ago cannot decide for others.
+    func decideRelayed(id: String, _ decision: Decision, by relayer: String) -> Relayed {
+        mutate { list, t in
+            guard list.contains(where: { $0.id == relayer && $0.state == .trusted }) else {
+                return (.relayerNotTrusted, .relayerNotTrusted)
+            }
+            guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .waiting else {
+                return (.unchanged, .unchanged)
+            }
+            list[i].state = decision == .approve ? .trusted : .denied
+            list[i].decidedAt = t
+            list[i].decidedBy = relayer
+            return (.applied(list[i]), .unchanged)
         }
     }
 
@@ -475,8 +516,18 @@ final class DeviceTrustStore {
     // MARK: noticing other processes
 
     private func startWatching() {
-        let fd = open(directory.path, O_EVTONLY | O_CLOEXEC)
-        guard fd >= 0 else { return }
+        let fd = watchFails ? -1 : open(directory.path, O_EVTONLY | O_CLOEXEC)
+        guard fd >= 0 else {
+            // Without the watcher a revoke made by another process would go
+            // unnoticed: read the list again every few seconds instead.
+            clog("DEVICES: cannot watch \(directory.path) for changes — reading the device list again every \(Int(reloadInterval)) s")
+            let timer = DispatchSource.makeTimerSource(queue: watchQueue)
+            timer.schedule(deadline: .now() + reloadInterval, repeating: reloadInterval)
+            timer.setEventHandler { [weak self] in self?.reload() }
+            timer.resume()
+            fallbackTimer = timer
+            return
+        }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd,
                                                                eventMask: [.write, .delete, .rename],
                                                                queue: watchQueue)

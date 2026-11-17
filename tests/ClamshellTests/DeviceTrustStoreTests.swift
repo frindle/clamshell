@@ -473,6 +473,67 @@ final class DeviceTrustStoreTests: XCTestCase {
         XCTAssertEqual(watching.state(of: id(key)), .waiting)
     }
 
+    func testDecisionFromADeviceRevokedOnDiskAMomentEarlierChangesNothing() throws {
+        let s = store()
+        let other = store()
+        let relayer = newKey(), waiting = newKey()
+        _ = ask(s, relayer)
+        s.decide(id: id(relayer), .approve, by: "host", onlyIfWaiting: true)
+        _ = ask(s, waiting)
+        // A relayed decision from a trusted device is applied.
+        let applied = s.decideRelayed(id: id(waiting), .approve, by: id(relayer))
+        guard case .applied(let record) = applied else { return XCTFail("\(applied)") }
+        XCTAssertEqual(record.state, .trusted)
+        XCTAssertEqual(record.decidedBy, id(relayer))
+
+        // Revoked by another process: `s` has not heard of it yet.
+        let third = newKey()
+        _ = ask(s, third)
+        XCTAssertNotNil(other.revoke(id: id(relayer), by: "cli"))
+        let before = try Data(contentsOf: listFile)
+        XCTAssertEqual(s.decideRelayed(id: id(third), .approve, by: id(relayer)), .relayerNotTrusted)
+        XCTAssertEqual(s.decideRelayed(id: id(third), .deny, by: id(relayer)), .relayerNotTrusted)
+        XCTAssertEqual(try Data(contentsOf: listFile), before)
+        XCTAssertEqual(s.state(of: id(third)), .waiting)
+        // A device that is not on the list at all cannot relay either.
+        XCTAssertEqual(s.decideRelayed(id: id(third), .approve, by: id(newKey())), .relayerNotTrusted)
+    }
+
+    func testRelayedDecisionOnlyTouchesWaitingDevices() throws {
+        let s = store()
+        let relayer = newKey(), denied = newKey()
+        _ = ask(s, relayer)
+        s.decide(id: id(relayer), .approve, by: "host", onlyIfWaiting: true)
+        _ = ask(s, denied)
+        s.decide(id: id(denied), .deny, by: "host", onlyIfWaiting: true)
+        XCTAssertEqual(s.decideRelayed(id: id(denied), .approve, by: id(relayer)), .unchanged)
+        XCTAssertEqual(s.state(of: id(denied)), .denied)
+    }
+
+    func testWithoutAWatcherTheListIsReadAgainOnATimer() throws {
+        let first = DeviceTrustStore(directory: dir, watch: true, now: { [unowned self] in self.clock },
+                                     watchFails: true, reloadInterval: 0.1)
+        let second = store()
+        let key = newKey()
+        _ = ask(second, key)
+        second.decide(id: id(key), .approve, by: "host", onlyIfWaiting: true)
+        // Wait for the timer to bring the trusted device in…
+        var waited = 0.0
+        while first.state(of: id(key)) != .trusted, waited < 5 {
+            Thread.sleep(forTimeInterval: 0.05)
+            waited += 0.05
+        }
+        XCTAssertEqual(first.state(of: id(key)), .trusted)
+        // …and then the revoke.
+        XCTAssertNotNil(second.revoke(id: id(key), by: "cli"))
+        waited = 0
+        while first.state(of: id(key)) != .denied, waited < 5 {
+            Thread.sleep(forTimeInterval: 0.05)
+            waited += 0.05
+        }
+        XCTAssertEqual(first.state(of: id(key)), .denied)
+    }
+
     func testListLastsForOneRunWhenTheDirectoryCannotBeUsed() throws {
         // A file where the directory should be.
         try Data().write(to: dir)

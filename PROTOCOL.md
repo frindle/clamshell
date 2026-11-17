@@ -624,6 +624,14 @@ A trusted device can already type and click on the host, so letting it approve
 another device gives it nothing it could not do through the host's own
 approval window.
 
+The host applies a DEVICE_DECISION only if the device that sent it is trusted in
+the device list as it is read for that same change. A device that was revoked a
+moment earlier, by the host's own menu or by `clamshell revoke` in another
+process, therefore changes nothing: the decision is dropped and the host closes
+that device's session, as it does for any revoked device. The host notices a
+change another process made to the list within moments; if it cannot watch the
+folder it says so once in its log and reads the list again every 5 s.
+
 The host's approval window does not come back as fast as devices can ask. When
 a question it raised by itself ends (approved, denied or closed), it stays away
 for the shorter of 15 minutes and 20 s times 2 to the power n, and n goes up by

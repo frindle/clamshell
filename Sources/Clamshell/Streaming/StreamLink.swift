@@ -544,13 +544,17 @@ final class StreamGate {
             clog("DEVICES: ignored a malformed decision from \(device.fingerprint)")
             return
         }
-        let record = word == "approve"
-            ? auth.store.decide(id: id, .approve, by: device.id, onlyIfWaiting: true)
-            : auth.store.decide(id: id, .deny, by: device.id, onlyIfWaiting: true)
-        if let record {
+        switch auth.store.decideRelayed(id: id, word == "approve" ? .approve : .deny, by: device.id) {
+        case .applied(let record):
             clog("DEVICES: \(record.fingerprint) (\(record.name)) was \(word == "approve" ? "approved" : "denied") from device \(device.fingerprint) (\(DeviceTrustStore.storedName(device.name)))")
-        } else {
+        case .unchanged:
             clog("DEVICES: a decision from \(device.fingerprint) changed nothing: that device is not waiting")
+        case .relayerNotTrusted:
+            // Revoked since the check above, by another process: nothing was
+            // changed, and its session ends the way a revoke ends it.
+            clog("DEVICES: ignored a decision from \(device.fingerprint): it is no longer trusted")
+            close(link, why: "it is no longer trusted")
+            return
         }
         sendWaitingList(to: link, evenIfUnchanged: true)
     }
