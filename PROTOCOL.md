@@ -695,10 +695,20 @@ notices a change made by the command line. Both are tied to the Windows user
 the host runs as: another process of the same user can use that user's key and
 read that user's list, as on the Mac. If either cannot be opened the host
 serves nothing. Approval is on unless the value `RequireDeviceApproval` under
-`HKEY_CURRENT_USER\Software\Clamshell` is the DWORD 0. A host behind a reverse
+`HKEY_CURRENT_USER\Software\Clamshell` is the DWORD 0; when it is off the tray
+tooltip and menu say so and the host logs it at start. A host behind a reverse
 proxy lists the proxies it trusts in the multi-string value `TrustedProxies`
-there; the client address it reads from the proxy's headers is only used to
-group connections and for the log.
+there (loopback is always trusted); the address a proxy reports is used to
+group connections and is shown only as "the proxy reported X; not verified"
+next to the TCP peer, never as the address.
+
+Same-user risk. Approval protects against other machines and other users, not
+against code already running as the same Windows user. Any process of that user
+can approve a waiting device itself (the `approve` command, or by writing the
+device list), and can set `RequireDeviceApproval` to 0 in that user's registry
+hive, after which the unapproved HELLO path is open on every interface the host
+listens on. An administrator can do the same. Other non-administrator users
+cannot. The off state is made visible (tooltip, menu, log) but not prevented.
 
 ### Browser client
 
