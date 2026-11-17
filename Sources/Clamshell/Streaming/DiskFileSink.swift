@@ -31,10 +31,20 @@ final class DiskFileSink: FileTransferStore {
 
     // Process-wide, because every connection has its own sink on the same
     // folder: the temporary files that are open now (a sweep must never touch
-    // them) and the folders already swept for leftovers.
+    // them), the folders already swept for leftovers, and, per folder, the
+    // declared bytes of every transfer open in any sink, so the free-space
+    // reserve holds for the whole Mac and not per connection.
     private static let shared = NSLock()
     private static var openTemps = Set<String>()
     private static var sweptFolders = Set<String>()
+    private static var openBytes: [String: UInt64] = [:]
+
+    /// Declared bytes of the transfers currently open in every sink on this
+    /// receive folder (for tests; zero when nothing is open).
+    static func openTotal(inFolder folder: URL) -> UInt64 {
+        shared.lock(); defer { shared.unlock() }
+        return openBytes[folder.standardizedFileURL.path] ?? 0
+    }
 
     private let folder: URL
     private let reserveBytes: UInt64
@@ -57,13 +67,22 @@ final class DiskFileSink: FileTransferStore {
 
     // MARK: FileTransferStore
 
+    /// Whether `size` fits next to the reserve and to the declared sizes of
+    /// every transfer open in any sink on this folder. A quick first check;
+    /// `begin` repeats it and takes the room in one step.
     func hasRoom(forBytes size: UInt64) -> Bool {
+        Self.shared.lock(); defer { Self.shared.unlock() }
+        return roomLocked(forBytes: size)
+    }
+
+    /// The caller holds `shared`.
+    private func roomLocked(forBytes size: UInt64) -> Bool {
         guard let free = freeSpace(nearestExistingAncestor(of: folder)) else { return false }
-        // The reserve is kept back after every open transfer has also taken its
-        // declared size, so two offers that each fit alone are not both accepted
-        // when they do not fit together.
+        // The reserve is kept back after every open transfer (in any sink on
+        // this folder) has also taken its declared size, so offers that each
+        // fit alone are not all accepted when they do not fit together.
         var needed = reserveBytes
-        for declared in [size] + parts.values.map(\.declaredSize) {
+        for declared in [size, Self.openBytes[folder.path] ?? 0] {
             let (sum, overflow) = needed.addingReportingOverflow(declared)
             if overflow { return false }
             needed = sum
@@ -79,9 +98,19 @@ final class DiskFileSink: FileTransferStore {
         guard childURL(storedName) != nil else { return false }
         let tempName = ".clamshell-\(UUID().uuidString).part"
         guard let tempURL = childURL(tempName) else { return false }
+        // The room check, the declared size and the temp name are taken in one
+        // lock hold: two offers at the same moment cannot both pass, and
+        // another server's sweep sees the name before the file exists.
+        Self.shared.lock()
+        guard roomLocked(forBytes: size) else { Self.shared.unlock(); return false }
+        Self.openBytes[folder.path, default: 0] += size
+        Self.openTemps.insert(tempURL.path)
+        Self.shared.unlock()
         let fd = open(tempURL.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { return false }
-        Self.shared.lock(); Self.openTemps.insert(tempURL.path); Self.shared.unlock()
+        guard fd >= 0 else {
+            forget(tempURL: tempURL, declaredSize: size)
+            return false
+        }
         parts[id] = Part(fd: fd, tempURL: tempURL, storedName: storedName, declaredSize: size)
         return true
     }
@@ -128,8 +157,18 @@ final class DiskFileSink: FileTransferStore {
 
     // MARK: leftovers
 
+    /// Called once per transfer, right after it left `parts` (finish, discard,
+    /// deinit), so its size is taken from the folder's total exactly once.
     private func forget(_ part: Part) {
-        Self.shared.lock(); Self.openTemps.remove(part.tempURL.path); Self.shared.unlock()
+        forget(tempURL: part.tempURL, declaredSize: part.declaredSize)
+    }
+
+    private func forget(tempURL: URL, declaredSize: UInt64) {
+        Self.shared.lock()
+        Self.openTemps.remove(tempURL.path)
+        let left = (Self.openBytes[folder.path] ?? 0) &- declaredSize
+        if left == 0 { Self.openBytes[folder.path] = nil } else { Self.openBytes[folder.path] = left }
+        Self.shared.unlock()
     }
 
     /// Before the first transfer into this folder in this process.

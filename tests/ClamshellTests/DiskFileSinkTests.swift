@@ -204,6 +204,67 @@ final class DiskFileSinkTests: XCTestCase {
         t.discard(id: 1)
     }
 
+    /// An offer of `size` to a second sink on the same folder, answered the way the host would.
+    private func answer(of s: DiskFileSink, id: UInt32, size: UInt64) -> [FileTransferMessage] {
+        let r = FileReceiver(store: s)
+        let o = FileTransfer.offer(id: id, name: "n\(id).bin", size: size)
+        return r.receive(type: o.type, payload: o.payload, now: 0)
+    }
+
+    func testReserveCoversEverySinkOnTheSameFolder() {
+        // 5000 free, 1000 reserve: 4000 may be taken in total, over all sinks.
+        let s1 = sink(free: 5000)
+        let s2 = sink(free: 5000)
+        XCTAssertTrue(s1.begin(id: 1, storedName: "a.bin", size: 3000))
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 3000)
+        XCTAssertFalse(s2.hasRoom(forBytes: 3000))
+        XCTAssertEqual(answer(of: s2, id: 1, size: 3000), [FileTransfer.answer(id: 1, status: 2)])
+        XCTAssertFalse(s2.begin(id: 2, storedName: "b.bin", size: 3000))
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 3000)
+        // What fits next to the first transfer is still accepted by the other sink.
+        XCTAssertTrue(s2.begin(id: 3, storedName: "c.bin", size: 1000))
+        s2.discard(id: 3)
+        s1.discard(id: 1)
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+    }
+
+    func testOtherSinkIsAcceptedAfterTheFirstTransferIsCancelled() {
+        let s1 = sink(free: 5000)
+        let s2 = sink(free: 5000)
+        XCTAssertTrue(s1.begin(id: 1, storedName: "a.bin", size: 3000))
+        XCTAssertEqual(answer(of: s2, id: 1, size: 3000), [FileTransfer.answer(id: 1, status: 2)])
+        s1.discard(id: 1)
+        // A second end of the same transfer takes nothing away again.
+        s1.discard(id: 1)
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+        let r2 = FileReceiver(store: s2)
+        let o = FileTransfer.offer(id: 2, name: "b.bin", size: 3000)
+        XCTAssertEqual(r2.receive(type: o.type, payload: o.payload, now: 1), [FileTransfer.answer(id: 2, status: 0)])
+        r2.closeAll()
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+    }
+
+    func testOtherSinkIsAcceptedAfterTheFirstSinkIsReleased() {
+        let s2 = sink(free: 5000)
+        var s1: DiskFileSink? = sink(free: 5000)
+        XCTAssertTrue(s1!.begin(id: 1, storedName: "a.bin", size: 3000))
+        XCTAssertFalse(s2.hasRoom(forBytes: 3000))
+        // No cancel: the sink's deinit ends the transfer.
+        s1 = nil
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+        XCTAssertTrue(s2.begin(id: 2, storedName: "b.bin", size: 3000))
+        s2.discard(id: 2)
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+    }
+
+    func testFinishedTransferReleasesItsSize() {
+        let s1 = sink(free: 5000)
+        XCTAssertTrue(s1.begin(id: 1, storedName: "a.bin", size: 3))
+        XCTAssertTrue(s1.write(id: 1, bytes: Data([1, 2, 3])))
+        XCTAssertTrue(s1.finish(id: 1))
+        XCTAssertEqual(DiskFileSink.openTotal(inFolder: folder), 0)
+    }
+
     func testLeftoverPartFilesAreRemovedBeforeTheFirstTransfer() throws {
         let fm = FileManager.default
         try fm.createDirectory(at: folder, withIntermediateDirectories: true)
