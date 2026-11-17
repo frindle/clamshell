@@ -54,7 +54,9 @@ static class Interop
                 // A PING in place of HELLO: this host has no video, and a HELLO would start capture.
                 MakeHello = () => Wire.Frame(WireType.Ping, Array.Empty<byte>()),
             };
-            _flow = new ClientAuthFlow(config, file.Load());
+            // The first challenge from a freshly started host can take longer than the
+            // product's 2 s wait (it makes its identity on first use); give the test 20 s.
+            _flow = new ClientAuthFlow(config, file.Load(), new FlowCarry { ChallengeWait = 20 });
         }
 
         public async Task Start(string url)
