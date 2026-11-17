@@ -187,7 +187,9 @@ final class HostPeripheralSessionTests: XCTestCase {
     func testTheLeftStickMovesThePointerAndTheRightStickScrolls() {
         let s = makeSession()
         _ = attach(s, id: 1)
-        input(s, vector("stick extremes and the largest id").replacingId(1))
+        // The report arrives at the time of the ticks: a controller that has
+        // sent nothing for 3 s is put at rest.
+        input(s, vector("stick extremes and the largest id").replacingId(1), now: 10)
         _ = s.tick(now: 10)
         _ = s.tick(now: 10.1)
         // Left stick fully left and down: pointer left and down (Y is down).

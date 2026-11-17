@@ -110,9 +110,22 @@ final class GamepadMapper {
             if let k = e.macKeyCode { want.insert(.key(k)) }
         }
         let had = held[id] ?? []
-        for h in want.subtracting(had) { press(h) }
-        for h in had.subtracting(want) { release(h) }
+        // Let go first, then press, each in a fixed order (mouse buttons
+        // before keys, lowest first), so the events do not depend on how a
+        // Set happens to be ordered.
+        for h in Self.ordered(had.subtracting(want)) { release(h) }
+        for h in Self.ordered(want.subtracting(had)) { press(h) }
         held[id] = want
+    }
+
+    private static func ordered(_ s: Set<Held>) -> [Held] {
+        func rank(_ h: Held) -> Int {
+            switch h {
+            case let .mouse(b): return Int(b)
+            case let .key(k): return 1000 + Int(k)
+            }
+        }
+        return s.sorted { rank($0) < rank($1) }
     }
 
     /// Moves the pointer and scrolls for `dt` seconds of stick travel.
@@ -136,7 +149,7 @@ final class GamepadMapper {
 
     /// The controller is gone: everything it held is released.
     func remove(id: UInt32) {
-        for h in held.removeValue(forKey: id) ?? [] { release(h) }
+        for h in Self.ordered(held.removeValue(forKey: id) ?? []) { release(h) }
         states.removeValue(forKey: id)
     }
 
