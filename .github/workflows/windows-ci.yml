@@ -21,6 +21,9 @@ jobs:
       - name: Encoder self-test (the session's encoder path, synthetic frames, real AVCC out)
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-encoder
 
+      - name: Host key self-test (real Windows key store, throwaway key)
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-hostkey
+
       - name: Live smoke test (real display enum, encoder probe, listener bind)
         # `selftest` above never touches DXGI/Media Foundation/HttpListener —
         # those need an actual display/session, which is exactly what nobody
