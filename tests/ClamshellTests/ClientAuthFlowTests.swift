@@ -559,7 +559,10 @@ final class ClientAuthFlowTests: XCTestCase {
         let (_, response) = challenge(&flow, h)
         let device = try h.verify(responsePayload: try XCTUnwrap(response))
         let result = try h.result(.accepted, response: device.response, sign: AuthSignature.signer(otherKey))
-        return (flow, flow.received(type: resultType, payload: result), DeviceIdentity.id(ofPublicKey: otherPub))
+        // The actions first: the flow is a value, and the copy returned with
+        // them has to be the one the result was fed to.
+        let actions = flow.received(type: resultType, payload: result)
+        return (flow, actions, DeviceIdentity.id(ofPublicKey: otherPub))
     }
 
     func testAnAddressThatNowReachesADifferentSavedMacIsNotASuccess() throws {
