@@ -256,7 +256,7 @@ final class DevicesController: NSObject {
             menu.addItem(header("Trusted"))
             for device in trusted {
                 let connected = (open.devices[device.id] ?? 0) > 0
-                let from = device.address.isEmpty ? "" : " from \(device.address)"
+                let from = device.address.isEmpty ? "" : " from \(device.fromText)"
                 let seen = connected ? "Connected now\(from)"
                                      : "Last seen \(DeviceCommands.ago(device.lastSeen, now: now))\(from)"
                 let details = NSMenu()

@@ -34,7 +34,9 @@ enum FlowEnd: Equatable {
     case failure
     /// Close and connect again after this many seconds, carrying this.
     case reconnect(after: Double, carry: FlowCarry)
-    /// Close; this address reached a different saved Mac than the one picked.
+    /// Close; this address reached a different saved Mac than the one picked,
+    /// or (with `fallsThrough`) a host whose key is not the saved one or that
+    /// did not identify itself; the last state says which.
     /// The caller tries the picked Mac's next saved address at once, and uses
     /// its own back-off after the last one.
     case nextAddress
@@ -94,6 +96,13 @@ struct ClientAuthConfig {
     /// The saved Mac the user picked, when the caller knows it. When it is nil
     /// the saved Mac the dialled address belonged to is taken as the pick.
     var expectedHostId: String?
+    /// True when the caller chose this address itself from the saved Mac's
+    /// list (not the one the user picked) and has another one to try after it.
+    /// An unknown key or no challenge there ends the attempt with
+    /// `nextAddress` instead of `stop`: the state still tells what was wrong,
+    /// the caller decides when to show it. The pin is not weakened: nothing is
+    /// answered or sent to that host and nothing is saved.
+    var fallsThrough = false
     /// A whole HELLO message (framed). Called when HELLO is sent.
     var makeHello: () -> Data
     /// For tests: response extensions, a fixed ephemeral key and a fixed nonce.
@@ -292,7 +301,8 @@ struct ClientAuthFlow {
     private mutating func challengeTimedOut() -> [FlowAction] {
         if case let .host(id) = standing {
             let name = known.host(id: id)?.name ?? ""
-            return finish(.stop, "a saved host did not identify itself", state: .didNotIdentify(hostName: name))
+            return finish(config.fallsThrough ? .nextAddress : .stop,
+                          "a saved host did not identify itself", state: .didNotIdentify(hostName: name))
         }
         guard let address else { return fail("the address cannot be used") }
         if standing == .unknownAllowed {
@@ -315,7 +325,7 @@ struct ClientAuthFlow {
         // (the address moves, and the attempt ends so the next address is tried).
         if case let .host(savedId) = standing, savedId != id, known.host(id: id) == nil {
             let saved = DeviceIdentity.fingerprint(ofId: savedId)
-            return finish(.stop, "identity changed", state: .changedIdentity(
+            return finish(config.fallsThrough ? .nextAddress : .stop, "identity changed", state: .changedIdentity(
                 address: address ?? "", savedFingerprint: saved,
                 nowFingerprint: DeviceIdentity.fingerprint(ofId: id)))
         }

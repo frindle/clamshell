@@ -30,9 +30,20 @@ final class StreamLink {
     fileprivate(set) var phase: Phase = .awaitingResponse
     /// The device behind a waiting or accepted link; nil for a clear one.
     fileprivate(set) var device: VerifiedDevice?
-    /// Where the connection came from. A label for the logs and the approval
-    /// prompt, never a reason to trust.
+    /// The TCP peer: where the connection really came from, as far as this
+    /// host can tell. Behind the web relay or a tunnel on this Mac it is
+    /// loopback. A label for the logs and the approval prompt, never a reason
+    /// to trust.
     fileprivate(set) var address = ""
+    /// What a trusted proxy said the client's address is, and only when that
+    /// could be tied to this connection alone (see `UpgradeHeaders`). The
+    /// client wrote it, so it is the proxy's claim and not verified. Used to
+    /// pick the address group, and shown only under that label.
+    fileprivate(set) var reported: String?
+    /// The group this connection is counted in.
+    fileprivate var group: String { AddressGroup.of(reported ?? address) }
+    /// The origin as logs and prompts say it.
+    fileprivate var from: String { ClientAddress.describe(peer: address, reported: reported) }
 
     fileprivate var parser = StreamMessageParser(maxPayload: StreamGate.handshakeMaxPayload)
     fileprivate var handshake: HostHandshake?
@@ -47,6 +58,9 @@ final class StreamLink {
     fileprivate var bytesWhilePending = 0
     fileprivate var lastWaitingList: Data?
     fileprivate var toldClientInfo = false
+    /// Set once the connection is ready and its upgrade headers were bound or
+    /// given up on (see `UpgradeHeaders`).
+    fileprivate var reachedReady = false
 
     fileprivate init(conn: NWConnection) { self.conn = conn }
 }
@@ -109,6 +123,7 @@ final class StreamGate {
     func accept(_ conn: NWConnection) {
         let link = StreamLink(conn: conn)
         links.append(link)
+        upgradeHeaders.connectionAccepted()
         attachParser(to: link)
         // Counted from here, not from the WebSocket upgrade, so a connection
         // that never finishes the upgrade cannot sit open either.
@@ -135,7 +150,7 @@ final class StreamGate {
     }
 
     private func countUnanswered(_ link: StreamLink) {
-        link.unanswered = auth.addUnanswered(group: AddressGroup.of(link.address)) { [weak self, weak link] in
+        link.unanswered = auth.addUnanswered(group: link.group) { [weak self, weak link] in
             self?.queue.async {
                 guard let self, let link, link.phase == .awaitingResponse else { return }
                 self.close(link, why: "too many connections had not answered the challenge")
@@ -157,9 +172,18 @@ final class StreamGate {
     private func begin(_ link: StreamLink) {
         guard link.phase == .awaitingResponse, link.handshake == nil else { return }
         let peer = Self.remoteAddress(of: link.conn)
-        let counted = AddressGroup.of(link.address)
-        link.address = ClientAddress.resolve(peer: peer, headers: upgradeHeaders.take(), trusted: auth.trustedProxies)
-        if AddressGroup.of(link.address) != counted, let token = link.unanswered {
+        let counted = link.group
+        link.reachedReady = true
+        // Headers are used only when they surely belong to this connection;
+        // otherwise it stays with the peer's address (the loopback group
+        // when it came through a local proxy). The peer stays the address
+        // either way; what the proxy reported is kept apart from it.
+        link.address = peer
+        if let headers = upgradeHeaders.bindAtReady() {
+            let resolved = ClientAddress.resolve(peer: peer, headers: headers, trusted: auth.trustedProxies)
+            link.reported = resolved == peer ? nil : resolved
+        }
+        if link.group != counted, let token = link.unanswered {
             // Behind a proxy: count the connection in its own group instead.
             auth.removeUnanswered(token)
             countUnanswered(link)
@@ -270,16 +294,17 @@ final class StreamGate {
             link.unanswered = nil
         }
         link.device = device
-        let who = "\(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.address.isEmpty ? "an unknown address" : link.address)"
+        let who = "\(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.from)"
 
         guard auth.requireApproval else {
-            auth.store.noteConnected(id: device.id, name: device.name, address: link.address)
+            auth.store.noteConnected(id: device.id, name: device.name, address: link.address,
+                                     reported: link.reported)
             admit(link, device)
             return
         }
-        let group = AddressGroup.of(link.address)
+        let group = link.group
         let answer = auth.store.ask(publicKey: device.publicKey, name: device.name, address: link.address,
-                                    group: group,
+                                    reported: link.reported, group: group,
                                     hasOpenConnection: { [auth] id in auth.hasWaitingConnection(deviceId: id) })
         switch answer {
         case .trusted:
@@ -377,7 +402,7 @@ final class StreamGate {
         auth.sessionOpened(deviceId: device.id)
         link.countedAsSession = true
         let trusted = auth.store.isTrusted(device.id)
-        clog("DEVICES: \(label): let in \(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.address)\(trusted ? "" : " — not on the trusted list; device approval is off")")
+        clog("DEVICES: \(label): let in \(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.from)\(trusted ? "" : " — not on the trusted list; device approval is off")")
 
         onAdmit(link)
         guard link.phase == .accepted else { return }
@@ -398,7 +423,7 @@ final class StreamGate {
         link.phase = .open
         auth.sessionOpened(deviceId: nil)
         link.countedAsSession = true
-        clog("STREAM: \(label): clear session from \(link.address) — device approval is off")
+        clog("STREAM: \(label): clear session from \(link.from) — device approval is off")
         onAdmit(link)
     }
 
@@ -448,6 +473,12 @@ final class StreamGate {
         guard link.phase != .closed else { return }
         let was = link.phase
         release(link)
+        if !link.reachedReady {
+            // It may have left upgrade headers behind, and which ones is not
+            // known: no connection may take them.
+            upgradeHeaders.connectionClosedBeforeReady()
+            link.reachedReady = true
+        }
         link.phase = .closed
         link.handshake = nil
         link.sealer = nil
@@ -464,7 +495,7 @@ final class StreamGate {
             conn.cancel()
         }
         let who = link.device.map { " \($0.fingerprint)" } ?? ""
-        clog("STREAM: \(label): closed a connection (\(was))\(who) from \(link.address.isEmpty ? "an unknown address" : link.address) — \(why)")
+        clog("STREAM: \(label): closed a connection (\(was))\(who) from \(link.from) — \(why)")
         onClose(link)
     }
 
@@ -532,8 +563,11 @@ final class StreamGate {
         guard link.phase == .accepted, let device = link.device,
               device.capabilities.contains(.deviceApproval), auth.store.isTrusted(device.id) else { return }
         let devices: [[String: Any]] = auth.store.waiting().map {
-            ["id": $0.id, "name": $0.name, "fingerprint": $0.fingerprint,
-             "firstSeen": Int($0.firstSeen), "address": $0.address]
+            var entry: [String: Any] = ["id": $0.id, "name": $0.name, "fingerprint": $0.fingerprint,
+                                        "firstSeen": Int($0.firstSeen), "address": $0.address]
+            // Only present when a proxy on the host claimed it; not verified.
+            if let reported = $0.reportedAddress { entry["reportedAddress"] = reported }
+            return entry
         }
         guard let json = try? JSONSerialization.data(withJSONObject: ["devices": devices],
                                                      options: [.sortedKeys]) else { return }
