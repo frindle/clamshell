@@ -33,6 +33,10 @@ jobs:
         if: ${{ !cancelled() }}
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-gate
 
+      - name: Device commands self-test (devices, approve, deny, revoke, forget against a throwaway list)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-commands
+
       - name: Host screens self-test (approval window, Devices section, Settings built once, no network)
         if: ${{ !cancelled() }}
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-screens
