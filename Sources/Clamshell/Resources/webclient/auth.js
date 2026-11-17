@@ -596,7 +596,9 @@ export const KNOWN_HOSTS_NAME = 'known-hosts';
  * and fragment are dropped. null when the text is not an address.
  */
 export function normalizeAddress(text) {
-  const t = String(text).replace(/^[ \t]+|[ \t]+$/g, '');
+  // An IPv6 zone id ("[fe80::1%en0]", or "%25en0" as a URL writes it) names a
+  // local interface, not a Mac; the Swift and C# code drop it, so this does.
+  const t = String(text).replace(/^[ \t]+|[ \t]+$/g, '').replace(/(\[[^\]%]*)%[^\]]*\]/, '$1]');
   if (!t) return null;
   const bare = !t.includes('://');
   let u;

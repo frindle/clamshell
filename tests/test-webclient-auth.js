@@ -334,6 +334,17 @@ test('normalizeAddress: bare hosts, ws and wss, ports and paths', () => {
   assert.strictEqual(A.normalizeAddress('ws://example.com:0'), null);
 });
 
+test('normalizeAddress drops an IPv6 zone id, as the Swift and C# code do', () => {
+  assert.strictEqual(A.normalizeAddress('ws://[fe80::1%en0]:5903'), '[fe80::1]:5903');
+  assert.strictEqual(A.normalizeAddress('ws://[fe80::1%25en0]:5903'), '[fe80::1]:5903');
+  assert.strictEqual(A.normalizeAddress('wss://[2001:db8::1%eth0]/ws/a'), '[2001:db8::1]:443');
+  assert.strictEqual(A.normalizeAddress('[fe80::1%en0]'), '[fe80::1]:5903');
+  // The same Mac with and without a zone is one address.
+  assert.strictEqual(A.normalizeAddress('ws://[fe80::1%en0]:5903'), A.normalizeAddress('ws://[fe80::1]:5903'));
+  // Nothing else changes: a percent sign elsewhere is still not an address.
+  assert.strictEqual(A.normalizeAddress('ws://[%en0]:5903'), null);
+});
+
 test('hintAddress keeps the spec’s limits', () => {
   assert.strictEqual(A.hintAddress('wss://mac.example.com/ws/a'), 'mac.example.com:443');
   assert.strictEqual(A.hintAddress('ws://192.0.2.7:5903'), '192.0.2.7:5903');

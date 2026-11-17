@@ -685,6 +685,13 @@ over HTTPS (or from `localhost`), so the browser client needs the tunnel
 hostname or the host's own LAN certificate; it cannot authenticate from a
 plain `http://` page.
 
+The browser client keeps the host's identity key in the browser's own storage,
+the same trust on first use as any other client. That key protects a saved
+Mac against a changed host or a relay that tampers with the handshake after
+the first connection. It does not protect against whoever serves the page and
+its scripts (`auth.js` included): they can skip the check or read what the
+page can read. The first connection to a Mac is not protected either.
+
 ## Capabilities
 
 The `caps` field of AUTH_CHALLENGE says what the host does; the same field in
