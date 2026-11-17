@@ -12,6 +12,9 @@ final class HostAuth {
 
     static let maxUnansweredConnections = 32
     static let maxWaitingConnections = 8
+    /// What one address group may hold of each table (see `RoomSharing`).
+    static let maxUnansweredPerGroup = 8
+    static let maxWaitingConnectionsPerGroup = 3
     /// `defaults write com.frindle.clamshell requireDeviceApproval -bool false`
     /// turns approval off. Anything but a clear "false" leaves it on.
     static let approvalDefaultsKey = "requireDeviceApproval"
@@ -38,27 +41,57 @@ final class HostAuth {
     /// A connection that was sent the challenge and has not answered yet.
     final class Unanswered {
         fileprivate let close: () -> Void
-        fileprivate init(close: @escaping () -> Void) { self.close = close }
+        fileprivate let group: String
+        fileprivate let seq: Int
+        fileprivate init(group: String, seq: Int, close: @escaping () -> Void) {
+            self.group = group
+            self.seq = seq
+            self.close = close
+        }
+    }
+
+    /// A connection that proved its key and is waiting for the user's decision.
+    final class Waiting {
+        let deviceId: String
+        fileprivate let group: String
+        fileprivate let seq: Int
+        /// Nil for an entry nothing may close to make room.
+        fileprivate let close: (() -> Void)?
+        fileprivate init(deviceId: String, group: String, seq: Int, close: (() -> Void)?) {
+            self.deviceId = deviceId
+            self.group = group
+            self.seq = seq
+            self.close = close
+        }
     }
 
     private let lock = NSLock()
     private var approvalOverride: Bool?
     private var unanswered: [Unanswered] = []
-    private var waitingConnections: [String: Int] = [:]
+    private var waitingConnections: [Waiting] = []
+    private var nextSeq = 0
     private var sessions: [String: Int] = [:]
     private var clearSessions = 0
     private var lastSeenApproval: Bool?
     private var settingTimer: DispatchSourceTimer?
+    private let settingPollInterval: TimeInterval
+    /// Where the stored value is read from: the user's preferences, or a test.
+    private let readStored: () -> Any?
 
     /// `requireApproval` nil reads the user's setting; selftests pass a value.
-    init(directory: URL, requireApproval: Bool? = nil, watch: Bool = true) {
+    /// `settingPollInterval` is how often a change made from outside is looked
+    /// for; `readStored` replaces the read of the user's preferences, for tests.
+    init(directory: URL, requireApproval: Bool? = nil, watch: Bool = true,
+         settingPollInterval: TimeInterval = 5, readStored: (() -> Any?)? = nil) {
+        self.settingPollInterval = settingPollInterval
+        self.readStored = readStored ?? Self.storedPreference
         identity = HostIdentity.load(in: directory)
         store = DeviceTrustStore(directory: directory, watch: watch)
         self.directory = HostDirectory(directory: directory)
         approvalOverride = requireApproval
         hostName = Self.computerName()
         // Start from the setting as it is now, so the first change is noticed.
-        lastSeenApproval = requireApproval ?? Self.storedRequireApproval()
+        lastSeenApproval = requireApproval ?? Self.approval(fromStored: self.readStored())
     }
 
     deinit { settingTimer?.cancel() }
@@ -70,7 +103,7 @@ final class HostAuth {
         lock.lock()
         let override = approvalOverride
         lock.unlock()
-        return override ?? Self.storedRequireApproval()
+        return override ?? Self.approval(fromStored: readStored())
     }
 
     /// Saves the user's choice and tells the listeners.
@@ -97,7 +130,7 @@ final class HostAuth {
         defer { lock.unlock() }
         guard settingTimer == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.schedule(deadline: .now() + settingPollInterval, repeating: settingPollInterval)
         timer.setEventHandler { [weak self] in self?.noteApproval() }
         timer.resume()
         settingTimer = timer
@@ -115,25 +148,48 @@ final class HostAuth {
         }
     }
 
-    private static func storedRequireApproval() -> Bool {
+    private static func storedPreference() -> Any? {
         CFPreferencesAppSynchronize(defaultsDomain as CFString)
-        let value = CFPreferencesCopyAppValue(approvalDefaultsKey as CFString, defaultsDomain as CFString)
-        return (value as? Bool) ?? true
+        return CFPreferencesCopyAppValue(approvalDefaultsKey as CFString, defaultsDomain as CFString)
+    }
+
+    /// Only the boolean false and the integer 0 turn approval off. Anything
+    /// else, of any type, and no value at all, leave it on.
+    static func approval(fromStored value: Any?) -> Bool {
+        guard let number = value as? NSNumber else { return true }
+        if CFGetTypeID(number) == CFBooleanGetTypeID() { return number.boolValue }
+        if CFNumberIsFloatType(number) { return true }
+        return number.int64Value != 0
     }
 
     // MARK: connections that have not got in yet
 
-    /// Counts a connection that was just sent the challenge. When too many
-    /// are open the oldest is closed to make room: a real client answers in
-    /// milliseconds, so a pile of silent connections cannot keep it out.
-    /// `close` may be called on any thread.
-    func addUnanswered(close: @escaping () -> Void) -> Unanswered {
-        let token = Unanswered(close: close)
+    /// Counts a connection that was just sent the challenge. Room is shared
+    /// out by address group (`RoomSharing`): a group at its share, or a full
+    /// table, costs the oldest connection of the group holding the most. A
+    /// real client answers in milliseconds, so a pile of silent connections
+    /// cannot keep it out. A connection with no group is counted against the
+    /// whole table only.
+    /// `close` may be called on any thread; it is called for the connection
+    /// that lost its place, which is the new one when it is turned away.
+    func addUnanswered(group: String? = nil, close: @escaping () -> Void) -> Unanswered {
         lock.lock()
-        unanswered.append(token)
-        let evicted = unanswered.count > Self.maxUnansweredConnections ? unanswered.removeFirst() : nil
+        nextSeq += 1
+        let token = Unanswered(group: group ?? "", seq: nextSeq, close: close)
+        let entries = unanswered.map { RoomSharing.Entry(group: $0.group, age: Double(nextSeq - $0.seq)) }
+        let share = group == nil ? Self.maxUnansweredConnections : Self.maxUnansweredPerGroup
+        var closing: Unanswered?
+        switch RoomSharing.decide(entries: entries, size: Self.maxUnansweredConnections, share: share, group: token.group) {
+        case .admit:
+            unanswered.append(token)
+        case .replace(let i):
+            closing = unanswered.remove(at: i)
+            unanswered.append(token)
+        case .turnAway:
+            closing = token
+        }
         lock.unlock()
-        evicted?.close()
+        closing?.close()
         return token
     }
 
@@ -143,27 +199,69 @@ final class HostAuth {
         lock.unlock()
     }
 
-    /// Counts a connection that starts waiting for approval. False when the
-    /// host already has as many waiting as it allows.
+    /// Counts a connection that starts waiting for approval, sharing the
+    /// table out by address group. Nil when the connection is turned away.
+    /// `close` is called, on any thread, for a waiting connection that loses
+    /// its place to this one.
+    func admitWaitingConnection(deviceId: String, group: String, close: @escaping () -> Void) -> Waiting? {
+        lock.lock()
+        nextSeq += 1
+        let token = Waiting(deviceId: deviceId, group: group, seq: nextSeq, close: close)
+        let entries = waitingConnections.map {
+            RoomSharing.Entry(group: $0.group, age: Double(nextSeq - $0.seq), removable: $0.close != nil)
+        }
+        var closing: Waiting?
+        var admitted: Waiting? = token
+        switch RoomSharing.decide(entries: entries, size: Self.maxWaitingConnections,
+                                  share: Self.maxWaitingConnectionsPerGroup, group: group) {
+        case .admit:
+            waitingConnections.append(token)
+        case .replace(let i):
+            closing = waitingConnections.remove(at: i)
+            waitingConnections.append(token)
+        case .turnAway:
+            admitted = nil
+        }
+        lock.unlock()
+        closing?.close?()
+        return admitted
+    }
+
+    func releaseWaiting(_ token: Waiting) {
+        lock.lock()
+        waitingConnections.removeAll { $0 === token }
+        lock.unlock()
+    }
+
+    /// Counts a connection that cannot be closed to make room, against the
+    /// whole table. False when the host already has as many waiting as it
+    /// allows. Release it with `releaseWaiting(deviceId:)`.
     func admitWaiting(deviceId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard waitingConnections.values.reduce(0, +) < Self.maxWaitingConnections else { return false }
-        waitingConnections[deviceId, default: 0] += 1
+        nextSeq += 1
+        let token = Waiting(deviceId: deviceId, group: "", seq: nextSeq, close: nil)
+        let entries = waitingConnections.map {
+            RoomSharing.Entry(group: $0.group, age: Double(nextSeq - $0.seq), removable: $0.close != nil)
+        }
+        guard RoomSharing.decide(entries: entries, size: Self.maxWaitingConnections,
+                                 share: Self.maxWaitingConnections, group: "") == .admit else { return false }
+        waitingConnections.append(token)
         return true
     }
 
     func releaseWaiting(deviceId: String) {
         lock.lock()
         defer { lock.unlock() }
-        guard let n = waitingConnections[deviceId] else { return }
-        waitingConnections[deviceId] = n > 1 ? n - 1 : nil
+        if let i = waitingConnections.firstIndex(where: { $0.deviceId == deviceId }) {
+            waitingConnections.remove(at: i)
+        }
     }
 
     func hasWaitingConnection(deviceId: String) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        return waitingConnections[deviceId] != nil
+        return waitingConnections.contains { $0.deviceId == deviceId }
     }
 
     // MARK: sessions that are open now

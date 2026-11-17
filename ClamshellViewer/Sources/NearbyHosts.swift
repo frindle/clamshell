@@ -10,6 +10,16 @@ final class NearbyHostBrowser: ObservableObject {
         let id: String
         let name: String
         let endpoint: NWEndpoint
+        /// The TXT `id` hint: the first 16 characters of the host id. A hint
+        /// only; it proves nothing and changes none of the handshake checks.
+        let idHint: String?
+
+        /// True when the announced id matches a Mac this app has verified.
+        /// Only a label: the connection still has to present that saved key.
+        func isSaved(in known: KnownHosts) -> Bool {
+            guard let hint = idHint?.lowercased(), hint.count == 16 else { return false }
+            return known.hosts.contains { $0.id.lowercased().hasPrefix(hint) }
+        }
     }
 
     @Published private(set) var hosts: [Host] = []
@@ -22,10 +32,15 @@ final class NearbyHostBrowser: ObservableObject {
             let found: [Host] = results.compactMap { result in
                 guard case let .service(name, _, _, _) = result.endpoint else { return nil }
                 var hint: String?
-                if case let .bonjour(txt) = result.metadata { hint = txt["name"] }
+                var idHint: String?
+                if case let .bonjour(txt) = result.metadata {
+                    hint = txt["name"]
+                    idHint = txt["id"]
+                }
                 return Host(id: "\(result.endpoint)",
                             name: NearbyHost.label(hint: hint, serviceName: name),
-                            endpoint: result.endpoint)
+                            endpoint: result.endpoint,
+                            idHint: idHint)
             }
             self?.hosts = found.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         }

@@ -205,6 +205,11 @@ if args.count > 1 {
         // listeners and clients, a device list in a temporary directory.
         // Captures nothing and types nothing.
         exit(AuthGateSelfTest.run())
+    case "auth-interop-host":
+        // A loopback-only listener with device approval on, for the web
+        // client's interop test (tests/test-webclient-auth-interop.js). Needs
+        // CLAMSHELL_STATE_DIR to name a directory that is not the real one.
+        exit(AuthInteropHost.run(Array(args.dropFirst(2))))
     case "discovery-selftest":
         // The local-network announcement, registered so that only this
         // machine can see it and read back from the system's discovery
@@ -249,7 +254,7 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
+              "auth-gate-selftest | auth-interop-host | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
               "devices | approve | deny | revoke | forget]")
         exit(64)
     }

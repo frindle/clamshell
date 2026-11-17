@@ -315,21 +315,120 @@ final class ApprovalPromptsTests: XCTestCase {
     func testQuietTimeDoublesUpToFifteenMinutes() {
         var p = ApprovalPrompts()
         var quiet: [TimeInterval] = []
+        // Closed again each time the window is back, 20 minutes apart: not
+        // three within ten minutes, and well inside an hour.
+        var now: TimeInterval = 5000
         for _ in 0 ..< 8 {
-            p.setAsideAll(in: [], now: 5000)
-            quiet.append(p.quietUntil - 5000)
+            p.setAsideAll(in: [], now: now)
+            quiet.append(p.quietUntil - now)
+            now += 1200
         }
         XCTAssertEqual(quiet, [20, 40, 80, 160, 320, 640, 900, 900])
         // However often it is closed.
-        for _ in 0 ..< 40 { p.setAsideAll(in: [], now: 5000) }
-        XCTAssertEqual(p.quietUntil, 5900)
+        for _ in 0 ..< 40 {
+            p.setAsideAll(in: [], now: now)
+            now += 1200
+        }
+        XCTAssertEqual(p.quietUntil, now - 1200 + 900)
+    }
 
-        // The user answering starts it over.
-        p.userIsAnswering()
-        XCTAssertEqual(p.quietUntil, 0)
-        XCTAssertFalse(p.isQuiet(now: 5001))
-        p.setAsideAll(in: [], now: 6000)
-        XCTAssertEqual(p.quietUntil, 6020)
+    func testAnsweringDoesNotShortenTheQuietTime() {
+        var p = ApprovalPrompts()
+        let w1 = device(1, .waiting, firstSeen: 10)
+        p.setAsideAll(in: [w1], now: 1000)
+        XCTAssertEqual(p.quietUntil, 1020)
+        // A window-raised question ends in Approve: the quiet time starts,
+        // it is not cleared, and n goes up.
+        p.questionEnded(id(1), .approved, in: [w1], now: 1030)
+        XCTAssertEqual(p.quietUntil, 1070)
+        XCTAssertTrue(p.isQuiet(now: 1069))
+    }
+
+    func testApprovingOrDenyingSetsNothingAsideButClosingSetsAllAside() {
+        let w1 = device(1, .waiting, firstSeen: 10)
+        let w2 = device(2, .waiting, firstSeen: 20)
+        for outcome in [ApprovalPrompts.Outcome.approved, .denied] {
+            var p = ApprovalPrompts()
+            p.questionEnded(id(1), outcome, in: [w1, w2], now: 1000)
+            XCTAssertEqual(p.setAside, [])
+            XCTAssertNil(p.next(in: [w1, w2], now: 1010))
+            XCTAssertEqual(p.next(in: [w1, w2], now: 1020), w1)
+        }
+        var p = ApprovalPrompts()
+        p.questionEnded(id(1), .closed, in: [w1, w2], now: 1000)
+        XCTAssertEqual(p.setAside, [id(1), id(2)])
+    }
+
+    func testDevicePickedInTheMenuChangesNeitherNNorTheQuietTime() {
+        var p = ApprovalPrompts()
+        let w1 = device(1, .waiting, firstSeen: 10)
+        let w2 = device(2, .waiting, firstSeen: 20)
+        p.setAsideAll(in: [w1, w2], now: 1000)
+        XCTAssertEqual(p.quietUntil, 1020)
+        // Picked while the window is quiet: shown at once.
+        XCTAssertEqual(p.step(records: [w1, w2], asking: nil, noticeVisible: false, picked: id(2), now: 1001),
+                       .ask(w2))
+        // The question stays while it is on screen, then ends in Deny.
+        XCTAssertEqual(p.step(records: [w1, w2], asking: id(2), noticeVisible: false, now: 1002), .ask(w2))
+        p.questionEnded(id(2), .denied, in: [w1, w2], now: 1005)
+        XCTAssertEqual(p.quietUntil, 1020)
+        // n is still 1: the next close doubles it to 40, not 80.
+        p.setAsideAll(in: [w1], now: 2000)
+        XCTAssertEqual(p.quietUntil - 2000, 40)
+        // A picked question that is closed leaves the quiet time alone too,
+        // though it sets the waiting devices aside as always.
+        _ = p.step(records: [w1, w2], asking: nil, noticeVisible: false, picked: id(1), now: 3000)
+        p.questionEnded(id(1), .closed, in: [w1], now: 3001)
+        XCTAssertEqual(p.quietUntil, 2040)
+        XCTAssertEqual(p.setAside, [id(1), id(2)])
+    }
+
+    func testNStartsOverAfterAnHourWithNoQuestion() {
+        var p = ApprovalPrompts()
+        p.setAsideAll(in: [], now: 1000)          // 20
+        p.setAsideAll(in: [], now: 2000)          // 40
+        XCTAssertEqual(p.quietUntil - 2000, 40)
+        p.setAsideAll(in: [], now: 2000 + 3599)   // 80: less than an hour since
+        XCTAssertEqual(p.quietUntil - (2000 + 3599), 80)
+        p.setAsideAll(in: [], now: 2000 + 3599 + 3600)
+        XCTAssertEqual(p.quietUntil - (2000 + 3599 + 3600), 20)
+    }
+
+    func testThreeDeniesOrClosesWithinTenMinutesKeepTheWindowAwayForTwelveHours() {
+        var p = ApprovalPrompts()
+        p.questionEnded(id(1), .denied, in: [], now: 1000)
+        p.questionEnded(id(2), .closed, in: [], now: 1300)
+        XCTAssertEqual(p.quietUntil - 1300, 40)
+        p.questionEnded(id(3), .denied, in: [], now: 1600)
+        XCTAssertEqual(p.quietUntil, 1600 + 12 * 3600)
+        XCTAssertTrue(p.isQuiet(now: 1600 + 12 * 3600 - 1))
+        XCTAssertFalse(p.isQuiet(now: 1600 + 12 * 3600))
+        // The streak starts over afterwards.
+        p.questionEnded(id(4), .denied, in: [], now: 1600 + 12 * 3600)
+        XCTAssertLessThan(p.quietUntil - (1600 + 12 * 3600), 3600)
+    }
+
+    func testTheThirdMustBeWithinTenMinutesOfTheFirstAndApprovalBreaksTheRow() {
+        var p = ApprovalPrompts()
+        p.questionEnded(id(1), .denied, in: [], now: 1000)
+        p.questionEnded(id(2), .denied, in: [], now: 1300)
+        p.questionEnded(id(3), .denied, in: [], now: 1601)   // 601 s after the first
+        XCTAssertLessThan(p.quietUntil - 1601, 3600)
+
+        var q = ApprovalPrompts()
+        q.questionEnded(id(1), .denied, in: [], now: 1000)
+        q.questionEnded(id(2), .approved, in: [], now: 1100)
+        q.questionEnded(id(3), .denied, in: [], now: 1200)
+        XCTAssertLessThan(q.quietUntil - 1200, 3600)
+
+        // Questions the user picked do not count.
+        var r = ApprovalPrompts()
+        let w = device(5, .waiting, firstSeen: 1)
+        r.questionEnded(id(1), .denied, in: [], now: 1000)
+        r.questionEnded(id(2), .denied, in: [], now: 1100)
+        _ = r.step(records: [w], asking: nil, noticeVisible: false, picked: id(5), now: 1150)
+        r.questionEnded(id(5), .denied, in: [w], now: 1200)
+        XCTAssertLessThan(r.quietUntil, 1200 + 3600)
     }
 
     func testClockSetBackCannotStretchTheQuietTime() {
@@ -340,6 +439,15 @@ final class ApprovalPromptsTests: XCTestCase {
         XCTAssertTrue(p.isQuiet(now: 6020 - ApprovalPrompts.longestQuiet))
         XCTAssertFalse(p.isQuiet(now: 6020 - ApprovalPrompts.longestQuiet - 1))
         XCTAssertFalse(p.isQuiet(now: 1000))
+    }
+
+    func testClockSetBackCannotStretchTheTwelveHourQuietTimeEither() {
+        var p = ApprovalPrompts()
+        for i in 0 ..< 3 { p.questionEnded(id(i), .closed, in: [], now: 6000 + Double(i)) }
+        let until = p.quietUntil
+        XCTAssertEqual(until, 6002 + 12 * 3600)
+        XCTAssertTrue(p.isQuiet(now: until - 12 * 3600))
+        XCTAssertFalse(p.isQuiet(now: until - 12 * 3600 - 1))
     }
 
     func testDevicePickedInTheMenuIsBroughtBack() {
@@ -353,7 +461,6 @@ final class ApprovalPromptsTests: XCTestCase {
         XCTAssertEqual(idle(&p, [w1, w2], now: 2000), .dismiss)
 
         p.bringBack(id(2))
-        p.userIsAnswering()
         XCTAssertEqual(p.setAside, [id(1)])
         XCTAssertEqual(p.next(in: [w1, w2], now: 2000), w2)
         XCTAssertEqual(p.step(records: [w1, w2], asking: nil, noticeVisible: false, picked: id(2), now: 2000),
@@ -412,6 +519,49 @@ final class ApprovalPromptsTests: XCTestCase {
         // Approved again counts as approved, and nothing recorded says nothing.
         let again = Notice(device: device(3, .trusted, name: "Pad 2"), wasTrusted: true)
         XCTAssertEqual(ApprovalPrompts.sentence(for: again, among: [pad]), "\u{201C}Pad 2\u{201D} was approved.")
+    }
+
+    func testNamesThatLookTheSameHaveTheSameSkeleton() {
+        let same: [(String, String)] = [
+            ("Studio Pad", "Studio Pad"),
+            ("Studio Pad", "Studio Pad\u{3164}"),            // trailing Hangul filler
+            ("Studio Pad", "Stud\u{200B}io Pad"),            // zero-width space inside
+            ("Studio Pad", "Studio\u{00A0}\u{00A0}Pad"),    // no-break spaces
+            ("Studio Pad", "Stud\u{0456}o P\u{0430}d"),     // Cyrillic i and a
+            ("Studio Pad", "Studi\u{03BF} Pad"),              // Greek omicron
+            ("Alex\u{2019}s iPad", "Alex's iPad"),            // right single quote
+            ("Alex\u{02BC}s iPad", "Alex\u{00B4}s iPad"),    // modifier apostrophe, acute accent
+            ("Illusion", "lllusion"),                          // capital i against small L
+            ("iPad", "lPad"),
+            ("Mac1", "Macl"),
+            ("R00m", "Room"),
+            ("Caf\u{00E9}", "Cafe"),
+            ("\u{FF33}tudio", "studio"),
+        ]
+        for (a, b) in same {
+            XCTAssertEqual(NameSkeleton.of(a), NameSkeleton.of(b), "\(a) / \(b)")
+        }
+        let different: [(String, String)] = [
+            ("Studio Pad", "Studio Pod"),
+            ("Studio Pad", "Studio Pad 2"),
+            ("Phone", "Phones"),
+            ("Mac", "Mac Mini"),
+            ("Alex's iPad", "Alexs iPad"),
+        ]
+        for (a, b) in different {
+            XCTAssertNotEqual(NameSkeleton.of(a), NameSkeleton.of(b), "\(a) / \(b)")
+        }
+        XCTAssertEqual(NameSkeleton.of("\u{3164}\u{2800}"), "")
+    }
+
+    func testSharedNameHintSeesThroughLookAlikes() {
+        let trusted = device(1, .trusted, name: "Studio Pad")
+        let cyrillic = device(2, .waiting, name: "Studio P\u{0430}d")
+        let padded = device(3, .waiting, name: "Studio Pad\u{3164}")
+        let other = device(4, .waiting, name: "Studio Pod")
+        XCTAssertTrue(ApprovalPrompts.sharesNameWithTrusted(cyrillic, among: [trusted, cyrillic]))
+        XCTAssertTrue(ApprovalPrompts.sharesNameWithTrusted(padded, among: [trusted, padded]))
+        XCTAssertFalse(ApprovalPrompts.sharesNameWithTrusted(other, among: [trusted, other]))
     }
 
     func testNameAlreadyUsedByATrustedDevice() {

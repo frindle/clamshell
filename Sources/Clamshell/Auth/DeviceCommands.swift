@@ -29,6 +29,10 @@ enum DeviceCommands {
             out("The device list in \(store.directory.path) cannot be used. See ~/Library/Logs/Clamshell.log.")
             return 1
         }
+        if store.listIsFromNewerVersion {
+            out(newerVersionMessage(store))
+            return 1
+        }
         if command == "devices" {
             guard args.count == 1 else { out(usage); return 64 }
             list(auth, out: out)
@@ -57,7 +61,7 @@ enum DeviceCommands {
         case "approve":
             if device.state == .trusted { out("\(who) is already trusted."); return 0 }
             guard store.decide(id: device.id, .approve, by: DeviceTrustStore.decidedOnCommandLine,
-                               onlyIfWaiting: false) != nil else { return notSaved(out) }
+                               onlyIfWaiting: false) != nil else { return notSaved(store, out) }
             out("Approved \(who).")
         case "deny":
             if device.state == .denied { out("\(who) is already denied."); return 0 }
@@ -66,23 +70,35 @@ enum DeviceCommands {
                 return 1
             }
             guard store.decide(id: device.id, .deny, by: DeviceTrustStore.decidedOnCommandLine,
-                               onlyIfWaiting: true) != nil else { return notSaved(out) }
+                               onlyIfWaiting: true) != nil else { return notSaved(store, out) }
             out("Denied \(who).")
         case "revoke":
             if device.state != .trusted { out("\(who) is not trusted, so there is nothing to revoke."); return 0 }
             guard store.revoke(id: device.id, by: DeviceTrustStore.decidedOnCommandLine) != nil else {
-                return notSaved(out)
+                return notSaved(store, out)
             }
             out("Revoked \(who).")
         default: // forget
-            guard store.forget(id: device.id) != nil else { return notSaved(out) }
+            guard store.forget(id: device.id) != nil else { return notSaved(store, out) }
             out("Forgot \(who). It can ask again.")
         }
         return 0
     }
 
-    private static func notSaved(_ out: (String) -> Void) -> Int32 {
-        out("Nothing was changed: the device list changed meanwhile or could not be saved. Run `clamshell devices` and try again.")
+    private static func newerVersionMessage(_ store: DeviceTrustStore) -> String {
+        "The device list in \(store.directory.path) was written by a newer Clamshell. This one leaves it alone "
+            + "and cannot show or change it. Update Clamshell on this Mac."
+    }
+
+    private static func notSaved(_ store: DeviceTrustStore, _ out: (String) -> Void) -> Int32 {
+        switch store.lastProblem {
+        case .lockNotTaken?:
+            out("Nothing was changed: another process is using the device list. Try again in a moment.")
+        case .newerVersion?:
+            out(newerVersionMessage(store))
+        default:
+            out("Nothing was changed: the device list changed meanwhile or could not be saved. Run `clamshell devices` and try again.")
+        }
         return 1
     }
 

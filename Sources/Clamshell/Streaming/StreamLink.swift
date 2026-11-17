@@ -42,7 +42,7 @@ final class StreamLink {
     fileprivate var deadline: DispatchWorkItem?
     fileprivate var pendingTimer: DispatchSourceTimer?
     fileprivate var pendingResult: Data?
-    fileprivate var countedAsWaiting = false
+    fileprivate var waitingToken: HostAuth.Waiting?
     fileprivate var countedAsSession = false
     fileprivate var bytesWhilePending = 0
     fileprivate var lastWaitingList: Data?
@@ -110,7 +110,10 @@ final class StreamGate {
         attachParser(to: link)
         // Counted from here, not from the WebSocket upgrade, so a connection
         // that never finishes the upgrade cannot sit open either.
-        link.unanswered = auth.addUnanswered { [weak self, weak link] in
+        // The address group shares out room; an inbound connection's endpoint
+        // is its peer, known before the connection is ready.
+        link.address = Self.remoteAddress(of: conn)
+        link.unanswered = auth.addUnanswered(group: AddressGroup.of(link.address)) { [weak self, weak link] in
             self?.queue.async {
                 guard let self, let link, link.phase == .awaitingResponse else { return }
                 self.close(link, why: "too many connections had not answered the challenge")
@@ -254,14 +257,16 @@ final class StreamGate {
             link.unanswered = nil
         }
         link.device = device
-        let who = "\(device.fingerprint) (\(device.name)) from \(link.address.isEmpty ? "an unknown address" : link.address)"
+        let who = "\(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.address.isEmpty ? "an unknown address" : link.address)"
 
         guard auth.requireApproval else {
             auth.store.noteConnected(id: device.id, name: device.name, address: link.address)
             admit(link, device)
             return
         }
+        let group = AddressGroup.of(link.address)
         let answer = auth.store.ask(publicKey: device.publicKey, name: device.name, address: link.address,
+                                    group: group,
                                     hasOpenConnection: { [auth] id in auth.hasWaitingConnection(deviceId: id) })
         switch answer {
         case .trusted:
@@ -271,11 +276,22 @@ final class StreamGate {
         case .busy:
             finish(link, .busy, why: "\(who) asked while the waiting list was full")
         case .waiting:
-            guard auth.admitWaiting(deviceId: device.id) else {
+            // One waiting connection per device on a listener: both proved
+            // they hold the key, so the newer takes the place of the older.
+            for earlier in links where earlier !== link && earlier.phase == .pending && earlier.device?.id == device.id {
+                finish(earlier, .busy, why: "\(who) connected again on this listener")
+            }
+            let token = auth.admitWaitingConnection(deviceId: device.id, group: group) { [weak self, weak link] in
+                self?.queue.async {
+                    guard let self, let link, link.phase == .pending else { return }
+                    self.finish(link, .busy, why: "its place went to a connection from an address group with fewer waiting")
+                }
+            }
+            guard let token else {
                 finish(link, .busy, why: "\(who) asked while too many connections were waiting")
                 return
             }
-            link.countedAsWaiting = true
+            link.waitingToken = token
             wait(link, device)
             clog("DEVICES: \(who) is waiting for approval")
         }
@@ -344,7 +360,7 @@ final class StreamGate {
         auth.sessionOpened(deviceId: device.id)
         link.countedAsSession = true
         let trusted = auth.store.isTrusted(device.id)
-        clog("DEVICES: \(label): let in \(device.fingerprint) (\(device.name)) from \(link.address)\(trusted ? "" : " — not on the trusted list; device approval is off")")
+        clog("DEVICES: \(label): let in \(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.address)\(trusted ? "" : " — not on the trusted list; device approval is off")")
 
         onAdmit(link)
         guard link.phase == .accepted else { return }
@@ -449,9 +465,9 @@ final class StreamGate {
             auth.removeUnanswered(token)
             link.unanswered = nil
         }
-        if link.countedAsWaiting, let id = link.device?.id {
-            auth.releaseWaiting(deviceId: id)
-            link.countedAsWaiting = false
+        if let token = link.waitingToken {
+            auth.releaseWaiting(token)
+            link.waitingToken = nil
         }
         if link.countedAsSession {
             auth.sessionClosed(deviceId: link.device?.id)
@@ -528,13 +544,17 @@ final class StreamGate {
             clog("DEVICES: ignored a malformed decision from \(device.fingerprint)")
             return
         }
-        let record = word == "approve"
-            ? auth.store.decide(id: id, .approve, by: device.id, onlyIfWaiting: true)
-            : auth.store.decide(id: id, .deny, by: device.id, onlyIfWaiting: true)
-        if let record {
-            clog("DEVICES: \(record.fingerprint) (\(record.name)) was \(word == "approve" ? "approved" : "denied") from device \(device.fingerprint) (\(device.name))")
-        } else {
+        switch auth.store.decideRelayed(id: id, word == "approve" ? .approve : .deny, by: device.id) {
+        case .applied(let record):
+            clog("DEVICES: \(record.fingerprint) (\(record.name)) was \(word == "approve" ? "approved" : "denied") from device \(device.fingerprint) (\(DeviceTrustStore.storedName(device.name)))")
+        case .unchanged:
             clog("DEVICES: a decision from \(device.fingerprint) changed nothing: that device is not waiting")
+        case .relayerNotTrusted:
+            // Revoked since the check above, by another process: nothing was
+            // changed, and its session ends the way a revoke ends it.
+            clog("DEVICES: ignored a decision from \(device.fingerprint): it is no longer trusted")
+            close(link, why: "it is no longer trusted")
+            return
         }
         sendWaitingList(to: link, evenIfUnchanged: true)
     }

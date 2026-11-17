@@ -277,6 +277,7 @@ struct ControlContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .overlay { AuthPromptView(client: client) }
         .onAppear(perform: preselectLastUsed)
         .sheet(isPresented: $showSettings) {
             InSessionSettingsView(store: store, currentHost: host,

@@ -38,37 +38,50 @@ struct DeviceRecord: Codable, Equatable {
     var label: String { name.isEmpty ? "Unnamed device" : name }
 }
 
+/// The file's format. `version` goes up whenever a build changes what a field
+/// or a state means, not only when the shape changes: a build that does not
+/// know the number leaves the file alone and lets nobody in (see `readDisk`),
+/// because it could read the list wrongly and write it back that way.
 private struct DeviceFile: Codable {
     var version: Int
     var devices: [DeviceRecord]
+}
+
+/// Only the version, so a file written by a newer build can be told apart from
+/// a damaged one even when the rest of it does not decode.
+private struct DeviceFileVersion: Decodable {
+    var version: Int
 }
 
 /// An advisory lock on a file beside the device list, so two processes do not
 /// both read, change and write it at once.
 private final class FileLock {
     private var fd: Int32
+    /// False when the lock file could not be opened or the lock was not taken
+    /// within the timeout. Whoever holds the lock could write the file at any
+    /// moment, so nothing may be changed without it.
+    private(set) var acquired = false
 
     init(_ url: URL, timeout: TimeInterval = 2) {
         fd = open(url.path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return }
         let deadline = Date().addingTimeInterval(timeout)
-        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
-            guard errno == EWOULDBLOCK || errno == EINTR else { break }
-            if Date() > deadline {
-                // Whoever holds it could write the file anyway; waiting for
-                // ever would only let it stall the host.
-                clog("DEVICES: the device list's lock has been held for \(Int(timeout)) s — carrying on without it")
-                break
+        while true {
+            if flock(fd, LOCK_EX | LOCK_NB) == 0 {
+                acquired = true
+                return
             }
+            guard errno == EWOULDBLOCK || errno == EINTR, Date() <= deadline else { return }
             usleep(10_000)
         }
     }
 
     func unlock() {
         guard fd >= 0 else { return }
-        flock(fd, LOCK_UN)
+        if acquired { flock(fd, LOCK_UN) }
         close(fd)
         fd = -1
+        acquired = false
     }
 
     deinit { unlock() }
@@ -79,8 +92,15 @@ final class DeviceTrustStore {
     static let lockName = "devices.lock"
     static let maxWaiting = 16
     static let maxNewPerMinute = 10
+    /// What one address group may hold of the waiting list, and add in a minute.
+    static let maxWaitingPerGroup = 4
+    static let maxNewPerMinutePerGroup = 3
+    /// A waiting device seen this recently is not replaced by a newcomer.
+    static let recentlySeen: TimeInterval = 5 * 60
     static let waitingLifetime: TimeInterval = 24 * 60 * 60
     static let maxFileBytes = 1 << 20
+    /// The list format this build reads and writes.
+    static let fileVersion = 1
     /// Posted in this process, with the store as object, after the list
     /// changes for any reason, on whatever thread made or noticed the change.
     static let didChange = Notification.Name("com.frindle.clamshell.devices.didChange")
@@ -116,16 +136,48 @@ final class DeviceTrustStore {
     private let now: () -> Date
     private let lock = NSLock()
     private var records: [DeviceRecord] = []
-    private var recentAdds: [TimeInterval] = []
+    private var recentAdds: [(time: TimeInterval, group: String?)] = []
     private var watcher: DispatchSourceFileSystemObject?
     private let watchQueue = DispatchQueue(label: "com.frindle.clamshell.devices.watch")
     private var reloadScheduled = false
+    /// Reloads the list now and then when the directory cannot be watched.
+    private var fallbackTimer: DispatchSourceTimer?
+    private let watchFails: Bool
+    private let reloadInterval: TimeInterval
+    private let lockTimeout: TimeInterval
+    /// True while a change is only being tried to get the answer for a
+    /// change that cannot be made; it must leave no trace.
+    private var dryRun = false
+    private var loggedNewerVersion = false
+
+    /// Why the last change was not made, if it was not: for the command line
+    /// and the menu to say. Set under the store's lock by every change.
+    enum Problem: Equatable {
+        /// The file lock could not be taken in time (or its file opened).
+        case lockNotTaken
+        /// The list was written by a newer Clamshell and is left alone.
+        case newerVersion
+        /// The list is there but could not be read.
+        case unreadable
+        /// The list could not be written.
+        case notSaved
+    }
+    private(set) var lastProblem: Problem?
+    /// True while the file on disk was written by a newer Clamshell than this.
+    private(set) var listIsFromNewerVersion = false
 
     private var fileURL: URL { directory.appendingPathComponent(Self.fileName) }
 
-    init(directory: URL, watch: Bool = true, now: @escaping () -> Date = Date.init) {
+    /// `watchFails` makes the directory watcher fail to start, for tests;
+    /// `reloadInterval` is how often the list is read again then.
+    /// `lockTimeout` is how long a change waits for the file lock.
+    init(directory: URL, watch: Bool = true, now: @escaping () -> Date = Date.init,
+         watchFails: Bool = false, reloadInterval: TimeInterval = 5, lockTimeout: TimeInterval = 2) {
         self.directory = directory
+        self.lockTimeout = lockTimeout
         self.now = now
+        self.watchFails = watchFails
+        self.reloadInterval = reloadInterval
         do {
             try HostState.prepare(directory)
             canPersist = true
@@ -139,7 +191,10 @@ final class DeviceTrustStore {
         }
     }
 
-    deinit { watcher?.cancel() }
+    deinit {
+        watcher?.cancel()
+        fallbackTimer?.cancel()
+    }
 
     // MARK: reading
 
@@ -181,13 +236,20 @@ final class DeviceTrustStore {
     /// A device that proved it holds `publicKey` is asking to connect while
     /// approval is on. Unknown devices join the waiting list, within its
     /// limits. `hasOpenConnection` says whether a waiting device still has a
-    /// connection open: when the list is full, only one without is replaced.
-    /// It is called with the store locked, so it must not call the store.
-    func ask(publicKey: Data, name: String, address: String,
+    /// connection open: only one without is ever replaced. It is called with
+    /// the store locked, so it must not call the store.
+    ///
+    /// `group` is the asker's address group (`AddressGroup.of`). With one,
+    /// room on the list is shared out by group (`RoomSharing`): a group holds
+    /// at most `maxWaitingPerGroup` waiting devices and lists at most
+    /// `maxNewPerMinutePerGroup` a minute, and a waiting device seen in the
+    /// last `recentlySeen` seconds is never replaced. Without one only the
+    /// limits for the whole list apply.
+    func ask(publicKey: Data, name: String, address: String, group: String? = nil,
              hasOpenConnection: (String) -> Bool) -> Answer {
         guard DeviceIdentity.isValidPublicKey(publicKey) else { return .denied }
         let id = DeviceIdentity.id(ofPublicKey: publicKey)
-        let name = AuthWire.cleanName(name)
+        let name = Self.storedName(name)
         let address = AuthWire.cleanName(address)
         return mutate { list, t in
             if let i = list.firstIndex(where: { $0.id == id }) {
@@ -203,19 +265,38 @@ final class DeviceTrustStore {
                                  atMostEvery: 60, soonerIfChanged: true)
                     return (.trusted, .trusted)
                 case .waiting:
+                    // It keeps the name it was first listed with until it
+                    // is approved, so a name cannot be swapped under the
+                    // user's eyes while the question is open.
                     Self.refresh(&list[i], name: name, address: address, now: t,
-                                 atMostEvery: 10, soonerIfChanged: false)
+                                 atMostEvery: 10, soonerIfChanged: false, keepName: true)
                     return (.waiting, .waiting)
                 }
             }
-            self.recentAdds.removeAll { t - $0 >= 60 || t < $0 }
+            self.recentAdds.removeAll { t - $0.time >= 60 || t < $0.time }
             guard self.recentAdds.count < Self.maxNewPerMinute else { return (.busy, .busy) }
+            if let group {
+                guard self.recentAdds.filter({ $0.group == group }).count < Self.maxNewPerMinutePerGroup else {
+                    return (.busy, .busy)
+                }
+            }
             let waiting = list.filter { $0.state == .waiting }.sorted { $0.firstSeen < $1.firstSeen }
-            if waiting.count >= Self.maxWaiting {
+            if let group {
+                let entries = waiting.map {
+                    RoomSharing.Entry(group: AddressGroup.of($0.address), age: t - $0.lastSeen,
+                                      removable: !hasOpenConnection($0.id) && t - $0.lastSeen >= Self.recentlySeen)
+                }
+                switch RoomSharing.decide(entries: entries, size: Self.maxWaiting,
+                                          share: Self.maxWaitingPerGroup, group: group) {
+                case .admit: break
+                case .replace(let i): list.removeAll { $0.id == waiting[i].id }
+                case .turnAway: return (.busy, .busy)
+                }
+            } else if waiting.count >= Self.maxWaiting {
                 guard let stale = waiting.first(where: { !hasOpenConnection($0.id) }) else { return (.busy, .busy) }
                 list.removeAll { $0.id == stale.id }
             }
-            self.recentAdds.append(t)
+            if !self.dryRun { self.recentAdds.append((t, group)) }
             list.append(DeviceRecord(id: id, publicKey: Hex.encode(publicKey), name: name, state: .waiting,
                                      firstSeen: t, lastSeen: t, address: address,
                                      decidedAt: nil, decidedBy: nil))
@@ -224,10 +305,18 @@ final class DeviceTrustStore {
         }
     }
 
+    /// For selftests that list more new devices from one address in a minute
+    /// than the host allows: forgets the new devices counted so far.
+    func forgetRecentAdds() {
+        lock.lock()
+        recentAdds = []
+        lock.unlock()
+    }
+
     /// A device connected to a host that is not asking for approval: keeps a
     /// trusted device's name, address and last-seen time fresh. Adds nothing.
     func noteConnected(id: String, name: String, address: String) {
-        let name = AuthWire.cleanName(name)
+        let name = Self.storedName(name)
         let address = AuthWire.cleanName(address)
         mutate { list, t in
             guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .trusted else { return ((), ()) }
@@ -261,6 +350,35 @@ final class DeviceTrustStore {
         }
     }
 
+    /// What came of a decision relayed by a connected device.
+    enum Relayed: Equatable {
+        /// Applied; the record as it now stands.
+        case applied(DeviceRecord)
+        /// The device decided on is not waiting (or the list could not be saved).
+        case unchanged
+        /// The device that relayed it is not trusted in the list as it is now.
+        /// Nothing was changed.
+        case relayerNotTrusted
+    }
+
+    /// A decision relayed by a connected device, applied only if that device
+    /// is trusted in the list read inside the same change, so a device that
+    /// was revoked a moment ago cannot decide for others.
+    func decideRelayed(id: String, _ decision: Decision, by relayer: String) -> Relayed {
+        mutate { list, t in
+            guard list.contains(where: { $0.id == relayer && $0.state == .trusted }) else {
+                return (.relayerNotTrusted, .relayerNotTrusted)
+            }
+            guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .waiting else {
+                return (.unchanged, .unchanged)
+            }
+            list[i].state = decision == .approve ? .trusted : .denied
+            list[i].decidedAt = t
+            list[i].decidedBy = relayer
+            return (.applied(list[i]), .unchanged)
+        }
+    }
+
     /// Takes trust away from a device: it becomes denied.
     @discardableResult
     func revoke(id: String, by: String) -> DeviceRecord? {
@@ -288,12 +406,28 @@ final class DeviceTrustStore {
     /// changed and tells observers. `body` returns its answer, and the answer
     /// to give instead when the change could not be saved; in that case the
     /// list stays as it was on disk.
+    ///
+    /// If the file lock cannot be taken, nothing is changed or written: the
+    /// answer is the one for an unsaved change, worked out on an empty list so
+    /// that nobody is let in on the strength of a list that may be out of date.
     @discardableResult
     private func mutate<T>(_ body: (inout [DeviceRecord], TimeInterval) -> (saved: T, unsaved: T)) -> T {
         lock.lock()
         let before = records
-        let fileLock = canPersist ? FileLock(directory.appendingPathComponent(Self.lockName)) : nil
+        let fileLock = canPersist ? FileLock(directory.appendingPathComponent(Self.lockName), timeout: lockTimeout) : nil
         let t = now().timeIntervalSince1970
+        lastProblem = nil
+        if let fileLock, !fileLock.acquired {
+            clog("DEVICES: the device list's lock could not be taken within \(Int(lockTimeout)) s — nothing was changed")
+            lastProblem = .lockNotTaken
+            var none: [DeviceRecord] = []
+            dryRun = true
+            let answer = body(&none, t)
+            dryRun = false
+            fileLock.unlock()
+            lock.unlock()
+            return answer.unsaved
+        }
         // nil: there is a list on disk and it cannot be read right now.
         let disk: [DeviceRecord]? = canPersist ? readDisk() : records
         let start = disk ?? []
@@ -303,12 +437,18 @@ final class DeviceTrustStore {
         if canPersist, list != start {
             var saved = false
             if disk == nil {
-                clog("DEVICES: the device list cannot be read, so nothing was changed")
+                if listIsFromNewerVersion {
+                    lastProblem = .newerVersion
+                } else {
+                    lastProblem = .unreadable
+                    clog("DEVICES: the device list cannot be read, so nothing was changed")
+                }
             } else {
                 do {
                     try write(list)
                     saved = true
                 } catch {
+                    lastProblem = .notSaved
                     clog("DEVICES: could not save the device list (\(error)) — nothing was changed")
                 }
             }
@@ -339,8 +479,14 @@ final class DeviceTrustStore {
     /// no sense is moved aside for the user to look at and also means no
     /// devices. nil means the file is there but could not be read: callers
     /// then trust nobody and leave the file alone.
+    ///
+    /// A file whose `version` is higher than this build knows is a list
+    /// written by a newer Clamshell: it stays exactly where it is, is not
+    /// moved aside and not rewritten, and the result is nil, so nobody is let
+    /// in and nothing is decided until Clamshell is updated.
     private func readDisk() -> [DeviceRecord]? {
         let url = fileURL
+        listIsFromNewerVersion = false
         let data: Data
         do {
             data = try SecureFile.read(url, maxBytes: Self.maxFileBytes)
@@ -353,7 +499,16 @@ final class DeviceTrustStore {
             clog("DEVICES: cannot read \(Self.fileName) (\(error)) — treating every device as unknown")
             return nil
         }
-        guard let file = try? JSONDecoder().decode(DeviceFile.self, from: data), file.version == 1 else {
+        if let found = try? JSONDecoder().decode(DeviceFileVersion.self, from: data),
+           found.version > Self.fileVersion {
+            listIsFromNewerVersion = true
+            if !loggedNewerVersion {
+                loggedNewerVersion = true
+                clog("DEVICES: \(Self.fileName) was written by a newer Clamshell (list version \(found.version), this one reads version \(Self.fileVersion)) — leaving it alone; no device is let in and nothing is decided until Clamshell is updated")
+            }
+            return nil
+        }
+        guard let file = try? JSONDecoder().decode(DeviceFile.self, from: data), file.version == Self.fileVersion else {
             setAside(url, why: "is not a version 1 device list")
             return []
         }
@@ -368,7 +523,7 @@ final class DeviceTrustStore {
     private func write(_ list: [DeviceRecord]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try SecureFile.replace(fileURL, contents: try encoder.encode(DeviceFile(version: 1, devices: list)))
+        try SecureFile.replace(fileURL, contents: try encoder.encode(DeviceFile(version: Self.fileVersion, devices: list)))
     }
 
     /// Keeps only records that hold a real key and whose id is that key's
@@ -387,7 +542,7 @@ final class DeviceTrustStore {
             }
             seen.insert(r.id)
             r.publicKey = Hex.encode(key)
-            r.name = AuthWire.cleanName(r.name)
+            r.name = Self.storedName(r.name)
             r.address = AuthWire.cleanName(r.address)
             if let by = r.decidedBy, by != decidedOnHost, by != decidedOnCommandLine,
                !DeviceIdentity.isWellFormedId(by) {
@@ -411,17 +566,24 @@ final class DeviceTrustStore {
         r.state == .waiting && now - r.firstSeen > waitingLifetime
     }
 
+    /// A name as the host stores and shows it: cleaned the way every name is,
+    /// and without the characters that draw nothing.
+    static func storedName(_ raw: String) -> String {
+        NameSkeleton.visible(AuthWire.cleanName(raw))
+    }
+
     /// Notes a visit by a known device: its name, address and the time. A
     /// visit is written down at most every `atMostEvery` seconds, or at once
     /// when the name or address changed and `soonerIfChanged` allows it. A
     /// waiting device is not allowed that, so it cannot make the host write
     /// to disk as fast as it can reconnect.
     private static func refresh(_ r: inout DeviceRecord, name: String, address: String,
-                                now: TimeInterval, atMostEvery: TimeInterval, soonerIfChanged: Bool) {
+                                now: TimeInterval, atMostEvery: TimeInterval, soonerIfChanged: Bool,
+                                keepName: Bool = false) {
         let due = now - r.lastSeen >= atMostEvery || now < r.lastSeen
-        let changed = (!name.isEmpty && name != r.name) || address != r.address
+        let changed = (!keepName && !name.isEmpty && name != r.name) || address != r.address
         guard due || (soonerIfChanged && changed) else { return }
-        if !name.isEmpty { r.name = name }
+        if !name.isEmpty && !keepName { r.name = name }
         r.address = address
         r.lastSeen = now
     }
@@ -429,8 +591,18 @@ final class DeviceTrustStore {
     // MARK: noticing other processes
 
     private func startWatching() {
-        let fd = open(directory.path, O_EVTONLY | O_CLOEXEC)
-        guard fd >= 0 else { return }
+        let fd = watchFails ? -1 : open(directory.path, O_EVTONLY | O_CLOEXEC)
+        guard fd >= 0 else {
+            // Without the watcher a revoke made by another process would go
+            // unnoticed: read the list again every few seconds instead.
+            clog("DEVICES: cannot watch \(directory.path) for changes — reading the device list again every \(Int(reloadInterval)) s")
+            let timer = DispatchSource.makeTimerSource(queue: watchQueue)
+            timer.schedule(deadline: .now() + reloadInterval, repeating: reloadInterval)
+            timer.setEventHandler { [weak self] in self?.reload() }
+            timer.resume()
+            fallbackTimer = timer
+            return
+        }
         let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd,
                                                                eventMask: [.write, .delete, .rename],
                                                                queue: watchQueue)
