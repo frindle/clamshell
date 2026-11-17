@@ -28,14 +28,25 @@ struct DeviceRecord: Codable, Equatable {
     /// Seconds since 1970.
     var firstSeen: Double
     var lastSeen: Double
-    /// Where it last connected from. A hint for the user, nothing more.
+    /// The TCP peer it last connected from. A hint for the user, nothing more.
+    /// For a device that came through the web relay or a tunnel on the host
+    /// this is a loopback address.
     var address: String
+    /// What a proxy on the host claimed the device's address was, when that
+    /// could be tied to its connection alone. The device wrote it, so it is
+    /// shown only as the proxy's claim, never as the address. Records saved
+    /// before this existed do not have it.
+    var reportedAddress: String?
     var decidedAt: Double?
     /// "host", "cli", or the id of the trusted device that relayed the decision.
     var decidedBy: String?
 
     var fingerprint: String { DeviceIdentity.fingerprint(ofId: id) }
     var label: String { name.isEmpty ? "Unnamed device" : name }
+    /// Where it came from, as the approval window, the Devices list and the
+    /// command line say it: the peer as the fact, and a proxy's claim only
+    /// under that label.
+    var fromText: String { ClientAddress.describe(peer: address, reported: reportedAddress) }
 }
 
 /// The file's format. `version` goes up whenever a build changes what a field
@@ -245,12 +256,13 @@ final class DeviceTrustStore {
     /// `maxNewPerMinutePerGroup` a minute, and a waiting device seen in the
     /// last `recentlySeen` seconds is never replaced. Without one only the
     /// limits for the whole list apply.
-    func ask(publicKey: Data, name: String, address: String, group: String? = nil,
+    func ask(publicKey: Data, name: String, address: String, reported: String? = nil, group: String? = nil,
              hasOpenConnection: (String) -> Bool) -> Answer {
         guard DeviceIdentity.isValidPublicKey(publicKey) else { return .denied }
         let id = DeviceIdentity.id(ofPublicKey: publicKey)
         let name = Self.storedName(name)
         let address = AuthWire.cleanName(address)
+        let reported = Self.storedReported(reported)
         return mutate { list, t in
             if let i = list.firstIndex(where: { $0.id == id }) {
                 // A known device gets the same answer whether or not the
@@ -261,14 +273,14 @@ final class DeviceTrustStore {
                     // host write to disk by reconnecting.
                     return (.denied, .denied)
                 case .trusted:
-                    Self.refresh(&list[i], name: name, address: address, now: t,
+                    Self.refresh(&list[i], name: name, address: address, reported: reported, now: t,
                                  atMostEvery: 60, soonerIfChanged: true)
                     return (.trusted, .trusted)
                 case .waiting:
                     // It keeps the name it was first listed with until it
                     // is approved, so a name cannot be swapped under the
                     // user's eyes while the question is open.
-                    Self.refresh(&list[i], name: name, address: address, now: t,
+                    Self.refresh(&list[i], name: name, address: address, reported: reported, now: t,
                                  atMostEvery: 10, soonerIfChanged: false, keepName: true)
                     return (.waiting, .waiting)
                 }
@@ -283,7 +295,7 @@ final class DeviceTrustStore {
             let waiting = list.filter { $0.state == .waiting }.sorted { $0.firstSeen < $1.firstSeen }
             if let group {
                 let entries = waiting.map {
-                    RoomSharing.Entry(group: AddressGroup.of($0.address), age: t - $0.lastSeen,
+                    RoomSharing.Entry(group: AddressGroup.of($0.reportedAddress ?? $0.address), age: t - $0.lastSeen,
                                       removable: !hasOpenConnection($0.id) && t - $0.lastSeen >= Self.recentlySeen)
                 }
                 switch RoomSharing.decide(entries: entries, size: Self.maxWaiting,
@@ -298,7 +310,7 @@ final class DeviceTrustStore {
             }
             if !self.dryRun { self.recentAdds.append((t, group)) }
             list.append(DeviceRecord(id: id, publicKey: Hex.encode(publicKey), name: name, state: .waiting,
-                                     firstSeen: t, lastSeen: t, address: address,
+                                     firstSeen: t, lastSeen: t, address: address, reportedAddress: reported,
                                      decidedAt: nil, decidedBy: nil))
             // A device that could not be listed cannot be approved either.
             return (.waiting, .busy)
@@ -315,12 +327,13 @@ final class DeviceTrustStore {
 
     /// A device connected to a host that is not asking for approval: keeps a
     /// trusted device's name, address and last-seen time fresh. Adds nothing.
-    func noteConnected(id: String, name: String, address: String) {
+    func noteConnected(id: String, name: String, address: String, reported: String? = nil) {
         let name = Self.storedName(name)
         let address = AuthWire.cleanName(address)
+        let reported = Self.storedReported(reported)
         mutate { list, t in
             guard let i = list.firstIndex(where: { $0.id == id }), list[i].state == .trusted else { return ((), ()) }
-            Self.refresh(&list[i], name: name, address: address, now: t,
+            Self.refresh(&list[i], name: name, address: address, reported: reported, now: t,
                          atMostEvery: 60, soonerIfChanged: true)
             return ((), ())
         }
@@ -544,6 +557,7 @@ final class DeviceTrustStore {
             r.publicKey = Hex.encode(key)
             r.name = Self.storedName(r.name)
             r.address = AuthWire.cleanName(r.address)
+            r.reportedAddress = storedReported(r.reportedAddress)
             if let by = r.decidedBy, by != decidedOnHost, by != decidedOnCommandLine,
                !DeviceIdentity.isWellFormedId(by) {
                 r.decidedBy = nil
@@ -572,19 +586,29 @@ final class DeviceTrustStore {
         NameSkeleton.visible(AuthWire.cleanName(raw))
     }
 
+    /// A reported address as the host stores it: cleaned like any address,
+    /// and nil when nothing is left.
+    static func storedReported(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let cleaned = AuthWire.cleanName(raw)
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
     /// Notes a visit by a known device: its name, address and the time. A
     /// visit is written down at most every `atMostEvery` seconds, or at once
     /// when the name or address changed and `soonerIfChanged` allows it. A
     /// waiting device is not allowed that, so it cannot make the host write
     /// to disk as fast as it can reconnect.
-    private static func refresh(_ r: inout DeviceRecord, name: String, address: String,
+    private static func refresh(_ r: inout DeviceRecord, name: String, address: String, reported: String?,
                                 now: TimeInterval, atMostEvery: TimeInterval, soonerIfChanged: Bool,
                                 keepName: Bool = false) {
         let due = now - r.lastSeen >= atMostEvery || now < r.lastSeen
         let changed = (!keepName && !name.isEmpty && name != r.name) || address != r.address
+            || reported != r.reportedAddress
         guard due || (soonerIfChanged && changed) else { return }
         if !name.isEmpty && !keepName { r.name = name }
         r.address = address
+        r.reportedAddress = reported
         r.lastSeen = now
     }
 

@@ -127,6 +127,24 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(names(in: root), ["inbox"])
     }
 
+    func testFormatCharactersAreStrippedFromStoredNames() {
+        // Bidirectional overrides and isolates, zero-width and direction marks, BOM.
+        let ranges: [ClosedRange<UInt32>] = [0x202A...0x202E, 0x2066...0x2069, 0x200B...0x200F, 0xFEFF...0xFEFF]
+        for range in ranges {
+            for value in range {
+                let c = String(UnicodeScalar(value)!)
+                XCTAssertEqual(FileTransfer.storedName(for: "re\(c)port.\(c)pdf"), "report.pdf",
+                               "U+\(String(value, radix: 16, uppercase: true))")
+            }
+        }
+        // The classic right-to-left override trick: the name must not end up reading as ".exe" reversed.
+        XCTAssertEqual(FileTransfer.storedName(for: "invoice\u{202E}fdp.exe"), "invoicefdp.exe")
+        // Nothing but format characters leaves the fallback name.
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{202E}\u{200B}\u{FEFF}"), "file")
+        // Ordinary non-ASCII letters stay.
+        XCTAssertEqual(FileTransfer.storedName(for: "résumé 日本.txt"), "résumé 日本.txt")
+    }
+
     func testSinkRefusesNamesThatAreNotPlainChildren() {
         let s = sink()
         XCTAssertFalse(s.begin(id: 1, storedName: "../evil", size: 1))
@@ -159,6 +177,75 @@ final class DiskFileSinkTests: XCTestCase {
         let offer = FileTransfer.offer(id: 1, name: "big", size: 4001)
         XCTAssertEqual(r.receive(type: offer.type, payload: offer.payload, now: 0), [FileTransfer.answer(id: 1, status: 2)])
         XCTAssertEqual(names(in: folder), [])
+    }
+
+    func testOpenTransfersCountAgainstFreeSpace() {
+        // 5000 free, 1000 reserve: 4000 may be taken. Two offers of 3000 each fit alone, not together.
+        let s = sink(free: 5000)
+        let r = FileReceiver(store: s)
+        let first = FileTransfer.offer(id: 1, name: "a.bin", size: 3000)
+        XCTAssertEqual(r.receive(type: first.type, payload: first.payload, now: 0), [FileTransfer.answer(id: 1, status: 0)])
+        let second = FileTransfer.offer(id: 2, name: "b.bin", size: 3000)
+        // The existing full-disk status.
+        XCTAssertEqual(r.receive(type: second.type, payload: second.payload, now: 1), [FileTransfer.answer(id: 2, status: 2)])
+        XCTAssertEqual(r.openCount, 1)
+        // Something that fits next to the first one is still accepted.
+        let small = FileTransfer.offer(id: 3, name: "c.bin", size: 1000)
+        XCTAssertEqual(r.receive(type: small.type, payload: small.payload, now: 2), [FileTransfer.answer(id: 3, status: 0)])
+        // Once they are over, their sizes no longer count.
+        r.closeAll()
+        let again = FileTransfer.offer(id: 4, name: "d.bin", size: 3000)
+        XCTAssertEqual(r.receive(type: again.type, payload: again.payload, now: 3), [FileTransfer.answer(id: 4, status: 0)])
+        r.closeAll()
+        // The sum cannot wrap around.
+        let t = sink(free: UInt64.max)
+        XCTAssertTrue(t.begin(id: 1, storedName: "x", size: UInt64.max - 1000))
+        XCTAssertFalse(t.hasRoom(forBytes: 2000))
+        t.discard(id: 1)
+    }
+
+    func testLeftoverPartFilesAreRemovedBeforeTheFirstTransfer() throws {
+        let fm = FileManager.default
+        try fm.createDirectory(at: folder, withIntermediateDirectories: true)
+        let elsewhere = root.appendingPathComponent("elsewhere.txt")
+        try Data("keep me".utf8).write(to: elsewhere)
+        func put(_ name: String, in dir: URL? = nil) throws {
+            try Data("x".utf8).write(to: (dir ?? folder).appendingPathComponent(name))
+        }
+        try put(".clamshell-OLD1.part")
+        try put(".clamshell-OLD2.part")
+        try put(".clamshell-notapart.txt")          // wrong ending
+        try put("clamshell-visible.part")           // wrong start
+        try put("received.pdf")                     // a real received file
+        try fm.createSymbolicLink(at: folder.appendingPathComponent(".clamshell-LINK.part"), withDestinationURL: elsewhere)
+        try fm.createDirectory(at: folder.appendingPathComponent(".clamshell-DIR.part"), withIntermediateDirectories: false)
+        let sub = folder.appendingPathComponent("sub", isDirectory: true)
+        try fm.createDirectory(at: sub, withIntermediateDirectories: false)
+        try put(".clamshell-NESTED.part", in: sub)
+
+        let s = sink()
+        XCTAssertTrue(s.begin(id: 1, storedName: "live.bin", size: 3)) // sweeps first, then opens its own part
+        let afterBegin = names(in: folder)
+        XCTAssertFalse(afterBegin.contains(".clamshell-OLD1.part"))
+        XCTAssertFalse(afterBegin.contains(".clamshell-OLD2.part"))
+        for kept in [".clamshell-notapart.txt", "clamshell-visible.part", "received.pdf", ".clamshell-LINK.part", ".clamshell-DIR.part", "sub"] {
+            XCTAssertTrue(afterBegin.contains(kept), kept)
+        }
+        XCTAssertTrue(fm.fileExists(atPath: elsewhere.path), "a link is never followed")
+        XCTAssertTrue(fm.fileExists(atPath: sub.appendingPathComponent(".clamshell-NESTED.part").path), "only the folder itself is swept")
+
+        // A second sink on the same folder (another connection) must not delete the first one's open part.
+        let other = sink()
+        XCTAssertEqual(other.removeLeftovers(), 0)
+        let livePart = names(in: folder).filter { $0.hasPrefix(".clamshell-") && $0.hasSuffix(".part") && $0 != ".clamshell-LINK.part" && $0 != ".clamshell-DIR.part" }
+        XCTAssertEqual(livePart.count, 1, "the open transfer's own part is still there")
+        XCTAssertTrue(s.write(id: 1, bytes: Data([1, 2, 3])))
+        XCTAssertTrue(s.finish(id: 1))
+        XCTAssertTrue(names(in: folder).contains("live.bin"))
+
+        // After the transfer is over its temporary name is no longer protected, but nothing is left of it anyway.
+        try put(".clamshell-OLD3.part")
+        XCTAssertEqual(s.removeLeftovers(), 1)
     }
 
     func testRealFreeSpaceCheckWorks() {

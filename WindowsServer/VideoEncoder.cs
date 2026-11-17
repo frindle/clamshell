@@ -85,54 +85,34 @@ internal sealed class VideoEncoder : IDisposable
 
     private void Build()
     {
-        // Encoders: output type MUST be set before input type. The software
-        // encoder on the CI runner answered E_FAIL to the full output type in a
-        // session's build while the same attributes worked in the self-test's
-        // matrix, so a refusal is retried on a fresh MFT, first unchanged and then
-        // with the optional attributes left out one at a time. Each attempt is
-        // logged, so the log says which one the machine accepts.
-        var attempts = new (string Name, bool Profile, bool Spacing, bool Aspect)[]
+        _mft = ActivateEncoder(Codec, _hardware);
+
+        // Ask the encoder not to hold frames back: on a still screen only one frame is
+        // captured, and a buffering encoder would never emit it. A transform that does
+        // not take the attribute is fine as it is.
+        try { _mft.Attributes.Set(MFAttr.LowLatency, 1u); }
+        catch (Exception e) { Log.Line($"encoder: low-latency attribute not accepted ({e.Message.Trim()})"); }
+
+        // Encoders: output type MUST be set before input type.
+        using (var outType = MediaFactory.MFCreateMediaType())
         {
-            ("full", true, true, true),
-            ("full, again", true, true, true),
-            ("without profile", false, true, true),
-            ("without keyframe spacing", true, false, true),
-            ("without pixel aspect", true, true, false),
-            ("required attributes only", false, false, false),
-        };
-        Exception? last = null;
-        foreach (var a in attempts)
-        {
-            _mft = ActivateEncoder(Codec, _hardware);
-            using var outType = MediaFactory.MFCreateMediaType();
             outType.Set(MFAttr.MajorType, MFAttr.Video);
             outType.Set(MFAttr.Subtype, Codec == StreamCodec.Hevc ? MFAttr.Hevc : MFAttr.H264);
-            outType.Set(MFAttr.AvgBitrate, _bitrate);
+            // Must be stored as a 32-bit attribute: with an int variable the overload that
+            // binds is the wider one, and the transform then rejects the type (E_FAIL).
+            outType.Set(MFAttr.AvgBitrate, (uint)_bitrate);
             outType.Set(MFAttr.InterlaceMode, 2 /* Progressive */);
-            if (Codec == StreamCodec.H264 && a.Profile) outType.Set(MFAttr.Mpeg2Profile, 100 /* High */);
-            if (a.Spacing) outType.Set(MFAttr.MaxKeyframeSpacing, 120);
+            if (Codec == StreamCodec.H264) outType.Set(MFAttr.Mpeg2Profile, 100 /* High */);
+            outType.Set(MFAttr.MaxKeyframeSpacing, 120);
             MediaFactory.MFSetAttributeSize(outType, MFAttr.FrameSize, (uint)_width, (uint)_height);
             MediaFactory.MFSetAttributeRatio(outType, MFAttr.FrameRate, Fps, 1);
-            if (a.Aspect) MediaFactory.MFSetAttributeRatio(outType, MFAttr.PixelAspectRatio, 1, 1);
-            try
-            {
-                _mft.SetOutputType(0, outType, 0);
-                if (last != null) Log.Line($"encoder: output type accepted ({a.Name}) after a refusal");
+            MediaFactory.MFSetAttributeRatio(outType, MFAttr.PixelAspectRatio, 1, 1);
+            _mft.SetOutputType(0, outType, 0);
 
-                // Cache the codec-private sequence header (SPS/PPS[/VPS]) as AVCC to
-                // prepend on keyframes. It comes back as an Annex-B blob.
-                _paramSetsAvcc = TryGetSequenceHeaderAvcc(outType);
-                last = null;
-                break;
-            }
-            catch (Exception e)
-            {
-                last = e;
-                Log.Line($"encoder: output type refused ({a.Name}, {_width}x{_height}): 0x{(uint)e.HResult:X8}");
-                try { _mft.Dispose(); } catch (Exception) { /* nothing more to do */ }
-            }
+            // Cache the codec-private sequence header (SPS/PPS[/VPS]) as AVCC to
+            // prepend on keyframes. It comes back as an Annex-B blob.
+            _paramSetsAvcc = TryGetSequenceHeaderAvcc(outType);
         }
-        if (last != null) throw last;
 
         using (var inType = MediaFactory.MFCreateMediaType())
         {
@@ -146,11 +126,7 @@ internal sealed class VideoEncoder : IDisposable
         }
 
         _mft.ProcessMessage((TMessageType)Mf.NotifyBeginStreaming, UIntPtr.Zero);
-        // The software H.264 encoder rejects NOTIFY_START_OF_STREAM with E_FAIL on
-        // the CI runner (CI showed every variant that stops at BeginStreaming
-        // works); the message is optional, so a failure here is not fatal.
-        try { _mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, UIntPtr.Zero); }
-        catch (Exception e) { Log.Line($"encoder: start-of-stream message refused ({e.Message}); continuing"); }
+        _mft.ProcessMessage((TMessageType)Mf.NotifyStartOfStream, UIntPtr.Zero);
         _firstAfterBuild = true;
     }
 
@@ -322,7 +298,8 @@ internal static class MFAttr
     public static readonly Guid MaxKeyframeSpacing = new("c16eb52b-73a1-476f-8d62-839d6a020652");
     public static readonly Guid MpegSequenceHeader = new("3c036de7-3ad0-4c9e-9216-ee6d6ac21cb3");
     public static readonly Guid CleanPoint = new("9cdf01d8-a0f0-43ba-b077-eaa06cbd728a");
-    public static readonly Guid TransformAsync = new("f81a699a-649a-497d-8c73-29f8fed6ad7a");
+    public static readonly Guid LowLatency = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
+    public static readonly Guid TransformAsync =new("f81a699a-649a-497d-8c73-29f8fed6ad7a");
 
     public static readonly Guid Video = new("73646976-0000-0010-8000-00aa00389b71");
     public static readonly Guid H264 = new("34363248-0000-0010-8000-00aa00389b71");

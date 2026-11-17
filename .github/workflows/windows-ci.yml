@@ -138,8 +138,8 @@ jobs:
         # device and waits; this script approves it through the host's own
         # command line (`ClamshellServer approve <fingerprint>`, against a
         # throwaway state folder), and only then does the session start. What
-        # this step proves is that handshake and approval. It proves nothing
-        # about video unless the viewer prints `verify: PASS` (see below).
+        # this step proves is that handshake and approval, and then that the
+        # host's own encoder produced a frame the viewer decoded (`verify: PASS`).
         #
         # Both the proven host (above) and the new viewer run in this same
         # job, so this drives the real wire handshake on real Windows.
@@ -149,22 +149,8 @@ jobs:
         # cleanly unattended) does a real WebSocket connect and a real
         # HELLO/HELLO_ACK round trip.
         #
-        # KNOWN GAP, discovered by writing this test (not present before --
-        # the old "Live smoke test" step above never had a client connect,
-        # so it never exercised this path): WindowsServer's *software*
-        # H.264 encoder fails to initialize on this runner
-        # (VideoEncoder.Create -> Build -> SetInputType/SetOutputType
-        # throws E_FAIL) once a client actually connects and starts a
-        # session, even though the earlier smoke test's encoder *probe*
-        # (EncoderProbe.Run, which never builds a session) passes. That is
-        # a WindowsServer-side issue, out of scope for this change (this PR
-        # only touches WindowsViewer), so no VIDEO_FRAME ever arrives here
-        # and this step can only prove the handshake, not real decode --
-        # see the "Viewer decode-file" step below for that, using an
-        # independent encoder instead of the host's.
-        #
-        # Scope note: even once that's fixed, this would still be a
-        # *display* stream, not a *window* stream -- WindowsServer has no
+        # Scope note: this is a *display* stream, not a *window* stream --
+        # WindowsServer has no
         # window-capture/streaming implementation yet (WindowEnum.cs is
         # enumeration only, PROTOCOL.md "Window Handoff v2, PROPOSED").
         shell: pwsh
@@ -227,15 +213,21 @@ jobs:
           if (-not $fingerprint) { throw "the host never listed a device waiting for approval: the viewer did not reach the gate" }
           if ($approveCode -ne 0) { throw "approving the waiting device from the command line failed (exit $approveCode)" }
           $vlog = Get-Content viewer-err.log -Raw -ErrorAction SilentlyContinue
-          if ($vlog -notmatch "verify: state WaitingForApproval") { throw "the viewer was never told it was waiting for approval" }
-          if ($vlog -notmatch "verify: state Connected") { throw "the viewer was not connected after the device was approved" }
-          if ($vlog -notmatch "verify: HELLO_ACK") { throw "viewer never received HELLO_ACK after approval -- real connectivity failure, not the known encoder gap" }
+          if (-not $vlog) { $vlog = "" }
+          # The steps have to happen in this order: told to wait, then let in, then
+          # HELLO_ACK, then a decoded frame.
+          $waiting = $vlog.IndexOf("verify: state WaitingForApproval", [StringComparison]::Ordinal)
+          $connected = $vlog.IndexOf("verify: state Connected", [StringComparison]::Ordinal)
+          $helloAck = $vlog.IndexOf("verify: HELLO_ACK", [StringComparison]::Ordinal)
+          $pass = $vlog.IndexOf("verify: PASS", [StringComparison]::Ordinal)
+          if ($waiting -lt 0) { throw "the viewer was never told it was waiting for approval" }
+          if ($connected -lt 0) { throw "the viewer was not connected after the device was approved" }
+          if ($helloAck -lt 0) { throw "viewer never received HELLO_ACK after approval -- real connectivity failure" }
+          if (-not ($waiting -lt $connected -and $connected -lt $helloAck)) { throw "the viewer's states were out of order (waiting $waiting, connected $connected, HELLO_ACK $helloAck)" }
           Write-Output "handshake and approval checked: the device waited, was approved on the host from the command line, was let in, and received HELLO_ACK"
-          if ($vlog -match "verify: PASS") {
-            Write-Output "video checked: a real decoded VIDEO_FRAME arrived over the encrypted session"
-          } else {
-            Write-Warning "VIDEO WAS NOT CHECKED. No VIDEO_FRAME arrived: the host's software H.264 encoder fails to start on this runner (see the encoder self-test step and the comment above), so nothing here says anything about video. The 'Viewer decode-file' step checks the viewer's decoder only, with an independent encoder."
-          }
+          if ($pass -lt 0) { throw "no decoded video: the viewer did not print 'verify: PASS', so no VIDEO_FRAME from the real host was decoded" }
+          if ($pass -lt $helloAck) { throw "'verify: PASS' appeared before HELLO_ACK (PASS $pass, HELLO_ACK $helloAck)" }
+          Write-Output "video checked: a real VIDEO_FRAME from the host's own encoder was decoded by the viewer over the encrypted session"
 
       - name: Generate a real single-frame H.264 test clip (ffmpeg, independent of WindowsServer)
         if: ${{ !cancelled() }}

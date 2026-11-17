@@ -101,7 +101,8 @@ internal sealed partial class StreamServer : IDisposable
     private sealed class Link
     {
         public readonly WebSocket Ws;
-        public readonly string Address;
+        public readonly string Address; // the TCP peer
+        public readonly string? Reported; // what a trusted proxy said, a claim
         public readonly string Group;
         public readonly CancellationTokenSource Cts;
         public readonly SemaphoreSlim SendLock = new(1, 1);
@@ -119,10 +120,11 @@ internal sealed partial class StreamServer : IDisposable
         public bool Finishing; // a last word is being sent
         public long PendingBytes;
 
-        public Link(WebSocket ws, string address, string group, CancellationToken life)
+        public Link(WebSocket ws, string address, string? reported, string group, CancellationToken life)
         {
             Ws = ws;
             Address = address;
+            Reported = reported;
             Group = group;
             Cts = CancellationTokenSource.CreateLinkedTokenSource(life);
         }
@@ -145,23 +147,24 @@ internal sealed partial class StreamServer : IDisposable
                 ctx.Response.Close();
                 continue;
             }
-            // Where it came from, for the address groups and the log. Only a trusted proxy's
-            // headers are believed, and the result is never a reason to trust anyone.
-            string address = AddressOf(ctx);
+            // Where it came from. The TCP peer is the fact. What a trusted proxy (loopback
+            // always) says the client's address is only a claim, used for the address groups
+            // and shown labelled as such; it is never a reason to trust anyone.
+            var (address, reported) = AddressOf(ctx);
             try
             {
                 var wsCtx = await ctx.AcceptWebSocketAsync(subProtocol: null);
-                _ = RunLinkAsync(wsCtx.WebSocket, address);
+                _ = RunLinkAsync(wsCtx.WebSocket, address, reported);
             }
             catch (Exception e) { Log.Line($"port {_port}: ws upgrade failed {e.Message}"); }
         }
     }
 
-    private string AddressOf(HttpListenerContext ctx)
+    private (string Peer, string? Reported) AddressOf(HttpListenerContext ctx)
     {
         var ep = ctx.Request.RemoteEndPoint;
         var peer = ep?.Address;
-        if (peer == null) return AddressGroup.Unknown;
+        if (peer == null) return (AddressGroup.Unknown, null);
         if (peer.IsIPv4MappedToIPv6) peer = peer.MapToIPv4();
         var headers = new List<(string, string)>();
         var h = ctx.Request.Headers;
@@ -172,15 +175,17 @@ internal sealed partial class StreamServer : IDisposable
             if (values == null) continue;
             foreach (var v in values) headers.Add((name, v));
         }
-        return ClientAddress.Resolve(peer.ToString(), headers, _auth.TrustedProxies);
+        string peerText = peer.ToString();
+        string resolved = ClientAddress.Resolve(peerText, headers, _auth.TrustedProxies);
+        return (peerText, resolved == peerText ? null : resolved);
     }
 
     private uint HostCapabilities() =>
         Caps.RelativeMouse | Caps.TextInput | Caps.ExtraButtons | (_auth.RequireApproval ? Caps.ApprovalRequired : 0u);
 
-    private async Task RunLinkAsync(WebSocket ws, string address)
+    private async Task RunLinkAsync(WebSocket ws, string address, string? reported)
     {
-        var link = new Link(ws, address, AddressGroup.Of(address), _life.Token);
+        var link = new Link(ws, address, reported, AddressGroup.Of(reported ?? address), _life.Token);
         lock (_linksLock) _links.Add(link);
         try
         {
@@ -332,11 +337,11 @@ internal sealed partial class StreamServer : IDisposable
 
         if (!_auth.RequireApproval)
         {
-            _auth.Store.NoteConnected(device.Id, device.Name, link.Address);
+            _auth.Store.NoteConnected(device.Id, device.Name, link.Address, link.Reported);
             return await AdmitAsync(link);
         }
         var answer = _auth.Store.Ask(device.PublicKey, device.Name, link.Address, link.Group,
-            id => _auth.HasWaitingConnection(id));
+            id => _auth.HasWaitingConnection(id), link.Reported);
         switch (answer)
         {
             case DeviceTrustStore.Answer.Trusted:

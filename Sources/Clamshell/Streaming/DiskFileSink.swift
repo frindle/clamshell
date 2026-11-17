@@ -24,7 +24,17 @@ final class DiskFileSink: FileTransferStore {
         var fd: Int32
         let tempURL: URL
         let storedName: String
+        /// The size the sender declared; counted against free space until the
+        /// transfer ends, because the bytes have not all arrived yet.
+        let declaredSize: UInt64
     }
+
+    // Process-wide, because every connection has its own sink on the same
+    // folder: the temporary files that are open now (a sweep must never touch
+    // them) and the folders already swept for leftovers.
+    private static let shared = NSLock()
+    private static var openTemps = Set<String>()
+    private static var sweptFolders = Set<String>()
 
     private let folder: URL
     private let reserveBytes: UInt64
@@ -49,12 +59,21 @@ final class DiskFileSink: FileTransferStore {
 
     func hasRoom(forBytes size: UInt64) -> Bool {
         guard let free = freeSpace(nearestExistingAncestor(of: folder)) else { return false }
-        let (needed, overflow) = size.addingReportingOverflow(reserveBytes)
-        return !overflow && free >= needed
+        // The reserve is kept back after every open transfer has also taken its
+        // declared size, so two offers that each fit alone are not both accepted
+        // when they do not fit together.
+        var needed = reserveBytes
+        for declared in [size] + parts.values.map(\.declaredSize) {
+            let (sum, overflow) = needed.addingReportingOverflow(declared)
+            if overflow { return false }
+            needed = sum
+        }
+        return free >= needed
     }
 
     func begin(id: UInt32, storedName: String, size: UInt64) -> Bool {
         guard parts[id] == nil, ensureFolder() else { return false }
+        sweepOnce()
         // Names come from storedName(for:), but check again: this is the last
         // line between a remote sender and the file system.
         guard childURL(storedName) != nil else { return false }
@@ -62,7 +81,8 @@ final class DiskFileSink: FileTransferStore {
         guard let tempURL = childURL(tempName) else { return false }
         let fd = open(tempURL.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { return false }
-        parts[id] = Part(fd: fd, tempURL: tempURL, storedName: storedName)
+        Self.shared.lock(); Self.openTemps.insert(tempURL.path); Self.shared.unlock()
+        parts[id] = Part(fd: fd, tempURL: tempURL, storedName: storedName, declaredSize: size)
         return true
     }
 
@@ -85,6 +105,7 @@ final class DiskFileSink: FileTransferStore {
     func finish(id: UInt32) -> Bool {
         guard let part = parts.removeValue(forKey: id) else { return false }
         let closed = close(part.fd) == 0
+        defer { forget(part) }
         guard closed, let finalURL = claim(part) else {
             _ = unlink(part.tempURL.path)
             return false
@@ -102,6 +123,43 @@ final class DiskFileSink: FileTransferStore {
         guard let part = parts.removeValue(forKey: id) else { return }
         _ = close(part.fd)
         _ = unlink(part.tempURL.path)
+        forget(part)
+    }
+
+    // MARK: leftovers
+
+    private func forget(_ part: Part) {
+        Self.shared.lock(); Self.openTemps.remove(part.tempURL.path); Self.shared.unlock()
+    }
+
+    /// Before the first transfer into this folder in this process.
+    private func sweepOnce() {
+        Self.shared.lock()
+        let first = Self.sweptFolders.insert(folder.path).inserted
+        Self.shared.unlock()
+        if first { _ = removeLeftovers() }
+    }
+
+    /// Remove the `.clamshell-*.part` files an earlier run left behind (a crash
+    /// or power loss in the middle of a transfer). Only regular files, directly
+    /// in the folder, that match that name and are not open in this process:
+    /// links, directories and everything else are left alone. Returns how many
+    /// were removed.
+    @discardableResult
+    func removeLeftovers() -> Int {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else { return 0 }
+        var removed = 0
+        for name in names where name.hasPrefix(".clamshell-") && name.hasSuffix(".part") {
+            guard let url = childURL(name) else { continue }
+            Self.shared.lock()
+            let isOpen = Self.openTemps.contains(url.path)
+            Self.shared.unlock()
+            if isOpen { continue }
+            var info = stat()
+            guard lstat(url.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            if unlink(url.path) == 0 { removed += 1 }
+        }
+        return removed
     }
 
     // MARK: pieces
