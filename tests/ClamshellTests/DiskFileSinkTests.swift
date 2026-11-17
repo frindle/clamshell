@@ -127,6 +127,24 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(names(in: root), ["inbox"])
     }
 
+    func testFormatCharactersAreStrippedFromStoredNames() {
+        // Bidirectional overrides and isolates, zero-width and direction marks, BOM.
+        let ranges: [ClosedRange<UInt32>] = [0x202A...0x202E, 0x2066...0x2069, 0x200B...0x200F, 0xFEFF...0xFEFF]
+        for range in ranges {
+            for value in range {
+                let c = String(UnicodeScalar(value)!)
+                XCTAssertEqual(FileTransfer.storedName(for: "re\(c)port.\(c)pdf"), "report.pdf",
+                               "U+\(String(value, radix: 16, uppercase: true))")
+            }
+        }
+        // The classic right-to-left override trick: the name must not end up reading as ".exe" reversed.
+        XCTAssertEqual(FileTransfer.storedName(for: "invoice\u{202E}fdp.exe"), "invoicefdp.exe")
+        // Nothing but format characters leaves the fallback name.
+        XCTAssertEqual(FileTransfer.storedName(for: "\u{202E}\u{200B}\u{FEFF}"), "file")
+        // Ordinary non-ASCII letters stay.
+        XCTAssertEqual(FileTransfer.storedName(for: "résumé 日本.txt"), "résumé 日本.txt")
+    }
+
     func testSinkRefusesNamesThatAreNotPlainChildren() {
         let s = sink()
         XCTAssertFalse(s.begin(id: 1, storedName: "../evil", size: 1))

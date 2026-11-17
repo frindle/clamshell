@@ -163,8 +163,11 @@ enum FileTransfer {
     // MARK: names
 
     /// The name a receiver stores for an offered name: what follows the last
-    /// `/` or `\`, without control characters or `:`, without dots and spaces
-    /// at the start or spaces at the end; `file` when nothing is left.
+    /// `/` or `\`, without control characters, `:` or Unicode format characters
+    /// (category Cf: the bidirectional overrides and isolates U+202A..202E and
+    /// U+2066..2069, the zero-width and direction marks U+200B..200F, U+FEFF and
+    /// the like, which can make a name read as another one), without dots and
+    /// spaces at the start or spaces at the end; `file` when nothing is left.
     static func storedName(for offered: String) -> String {
         var scalars = Array(offered.unicodeScalars)
         if let cut = scalars.lastIndex(where: { $0 == "/" || $0 == "\\" }) {
@@ -173,7 +176,7 @@ enum FileTransfer {
         scalars.removeAll { u in
             switch u.value {
             case 0x00...0x1F, 0x7F...0x9F, 0x3A: return true
-            default: return false
+            default: return u.properties.generalCategory == .format
             }
         }
         while let first = scalars.first, first == "." || first == " " { scalars.removeFirst() }
