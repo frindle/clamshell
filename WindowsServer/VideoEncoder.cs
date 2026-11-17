@@ -87,12 +87,20 @@ internal sealed class VideoEncoder : IDisposable
     {
         _mft = ActivateEncoder(Codec, _hardware);
 
+        // Ask the encoder not to hold frames back: on a still screen only one frame is
+        // captured, and a buffering encoder would never emit it. A transform that does
+        // not take the attribute is fine as it is.
+        try { _mft.Attributes.Set(MFAttr.LowLatency, 1u); }
+        catch (Exception e) { Log.Line($"encoder: low-latency attribute not accepted ({e.Message.Trim()})"); }
+
         // Encoders: output type MUST be set before input type.
         using (var outType = MediaFactory.MFCreateMediaType())
         {
             outType.Set(MFAttr.MajorType, MFAttr.Video);
             outType.Set(MFAttr.Subtype, Codec == StreamCodec.Hevc ? MFAttr.Hevc : MFAttr.H264);
-            outType.Set(MFAttr.AvgBitrate, _bitrate);
+            // Must be stored as a 32-bit attribute: with an int variable the overload that
+            // binds is the wider one, and the transform then rejects the type (E_FAIL).
+            outType.Set(MFAttr.AvgBitrate, (uint)_bitrate);
             outType.Set(MFAttr.InterlaceMode, 2 /* Progressive */);
             if (Codec == StreamCodec.H264) outType.Set(MFAttr.Mpeg2Profile, 100 /* High */);
             outType.Set(MFAttr.MaxKeyframeSpacing, 120);
@@ -290,7 +298,8 @@ internal static class MFAttr
     public static readonly Guid MaxKeyframeSpacing = new("c16eb52b-73a1-476f-8d62-839d6a020652");
     public static readonly Guid MpegSequenceHeader = new("3c036de7-3ad0-4c9e-9216-ee6d6ac21cb3");
     public static readonly Guid CleanPoint = new("9cdf01d8-a0f0-43ba-b077-eaa06cbd728a");
-    public static readonly Guid TransformAsync = new("f81a699a-649a-497d-8c73-29f8fed6ad7a");
+    public static readonly Guid LowLatency = new("9c27891a-ed7a-40e1-88e8-b22727a024ee");
+    public static readonly Guid TransformAsync =new("f81a699a-649a-497d-8c73-29f8fed6ad7a");
 
     public static readonly Guid Video = new("73646976-0000-0010-8000-00aa00389b71");
     public static readonly Guid H264 = new("34363248-0000-0010-8000-00aa00389b71");

@@ -62,10 +62,18 @@ internal sealed partial class StreamServer
         // Only the primary connection carries system audio (mirrors the Mac).
         if (IsPrimary)
         {
-            var audio = new AudioEncoder();
-            audio.OnPacket = aac => { _ = SendAsync(Proto.AudioFrame(aac)); };
-            audio.Start();
-            _audio = audio;
+            try
+            {
+                var audio = new AudioEncoder();
+                audio.OnPacket = aac => { _ = SendAsync(Proto.AudioFrame(aac)); };
+                audio.Start();
+                _audio = audio;
+            }
+            catch (Exception e)
+            {
+                // No playback device (or no loopback): the session still carries video and input.
+                Log.Line($"port {_port}: audio unavailable ({e.GetType().Name}: {e.Message}) — no audio this session");
+            }
         }
 
         StartCursorReporting();
