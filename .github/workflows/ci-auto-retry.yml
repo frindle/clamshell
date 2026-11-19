@@ -1,11 +1,12 @@
 name: CI auto-retry
-# When the macOS CI run fails for infrastructure reasons (no runner, runner lost or shut
-# down, cancelled by GitHub, a job that failed without a failed step), run its failed jobs
-# again, up to attempt 3. A real failure (a failed step) is never re-run.
+# When the macOS or Windows CI run fails for infrastructure reasons (no runner, runner
+# lost or shut down, cancelled by GitHub, a job that failed without a failed step, or only
+# a setup/download step failed), run its failed jobs again, up to attempt 3. A failed
+# build or test step is never re-run.
 # The decision is scripts/ci-infra-retry.py, tested by tests/test-ci-infra-retry.py.
 on:
   workflow_run:
-    workflows: ["CI"]
+    workflows: ["CI", "Windows CI"]
     types: [completed]
 
 permissions:

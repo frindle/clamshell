@@ -42,6 +42,15 @@ class Decide(unittest.TestCase):
         out = run("real-test-failure")
         self.assertTrue(out.startswith("no:") and "Unit tests" in out, out)
 
+    def test_failed_download_in_a_setup_step_is_rerun(self):
+        # e.g. chocolatey's feed timed out while installing ffmpeg
+        out = run("infra-setup-download")
+        self.assertTrue(out.startswith("rerun:") and "Install ffmpeg" in out, out)
+
+    def test_setup_failure_beside_a_failed_check_is_not_rerun(self):
+        out = run("setup-and-real-failure")
+        self.assertTrue(out.startswith("no:") and "Windows checks" in out, out)
+
     def test_real_failure_beside_an_infra_one_is_not_rerun(self):
         self.assertTrue(run("mixed-infra-and-real").startswith("no:"))
 

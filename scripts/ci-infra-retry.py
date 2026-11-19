@@ -11,7 +11,9 @@ A job counts as an infrastructure failure when it did not fail on its own accoun
     or GitHub failed the job before it started);
   * it ended "failure" but none of its steps failed (the runner was lost or shut down
     while a step was running);
-  * it was cancelled.
+  * it was cancelled;
+  * its only failed steps are setup steps (runner setup, checkout, toolchain or package
+    installs; see SETUP_STEPS): a download that timed out, not our code.
 A run for a commit its branch has moved past is never re-run, whatever the cause: the
 newer commit has its own run, and a re-run would join the same concurrency group and
 cancel that newer run (which would then be re-run in turn).
@@ -25,6 +27,14 @@ import sys
 
 BAD = ("failure", "timed_out", "cancelled", "startup_failure")
 GOOD = ("success", "skipped", "neutral")
+# Step names (prefixes) that only fetch or set up tools. When one of these is the only
+# failed step, the job failed on a download or the runner, not on our code. Matches the
+# names GitHub gives these steps and the install steps in ci.yml and windows-ci.yml.
+SETUP_STEPS = ("Set up job", "Run actions/checkout", "Run actions/setup-", "Install ")
+
+
+def is_setup_step(step):
+    return (step.get("name") or "").startswith(SETUP_STEPS)
 
 
 def classify(job):
@@ -41,8 +51,12 @@ def classify(job):
         return "ok", ""
     if not steps or all(s.get("status") == "queued" for s in steps):
         return "infra", f"{name}: no step ever ran (no runner, or it was lost before starting)"
-    if any(s.get("conclusion") == "failure" for s in steps):
-        return "real", f"{name}: step '{next(s.get('name', '?') for s in steps if s.get('conclusion') == 'failure')}' failed"
+    failed = [s for s in steps if s.get("conclusion") == "failure"]
+    if failed and all(is_setup_step(s) for s in failed):
+        return "infra", f"{name}: setup step '{failed[0].get('name', '?')}' failed (download or runner)"
+    if failed:
+        real = next((s for s in failed if not is_setup_step(s)), failed[0])
+        return "real", f"{name}: step '{real.get('name', '?')}' failed"
     if conclusion == "cancelled":
         return "cancelled", f"{name}: cancelled"
     if conclusion == "timed_out":
