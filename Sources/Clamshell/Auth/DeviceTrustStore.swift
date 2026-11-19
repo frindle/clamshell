@@ -56,6 +56,18 @@ struct DeviceRecord: Codable, Equatable {
 private struct DeviceFile: Codable {
     var version: Int
     var devices: [DeviceRecord]
+    /// HMAC-SHA256 (hex) over the file without this field; see `TrustIntegrity`.
+    /// Absent in files written before it existed.
+    var mac: String?
+
+    /// The bytes the MAC covers: the same on every encode of the same list.
+    var canonical: Data {
+        var copy = self
+        copy.mac = nil
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return (try? encoder.encode(copy)) ?? Data()
+    }
 }
 
 /// Only the version, so a file written by a newer build can be told apart from
@@ -160,6 +172,13 @@ final class DeviceTrustStore {
     /// change that cannot be made; it must leave no trace.
     private var dryRun = false
     private var loggedNewerVersion = false
+    /// Keeps the list's MAC key. Nil (tests, selftests) means no MAC is
+    /// kept or checked.
+    private let integrity: TrustIntegrity?
+    /// True while the file on disk failed its integrity check; the next save
+    /// moves it aside instead of overwriting it.
+    private var listIsUntrusted = false
+    private var loggedUntrusted = false
 
     /// Why the last change was not made, if it was not: for the command line
     /// and the menu to say. Set under the store's lock by every change.
@@ -183,8 +202,10 @@ final class DeviceTrustStore {
     /// `reloadInterval` is how often the list is read again then.
     /// `lockTimeout` is how long a change waits for the file lock.
     init(directory: URL, watch: Bool = true, now: @escaping () -> Date = Date.init,
-         watchFails: Bool = false, reloadInterval: TimeInterval = 5, lockTimeout: TimeInterval = 2) {
+         watchFails: Bool = false, reloadInterval: TimeInterval = 5, lockTimeout: TimeInterval = 2,
+         integrity: TrustIntegrity? = nil) {
         self.directory = directory
+        self.integrity = integrity
         self.lockTimeout = lockTimeout
         self.now = now
         self.watchFails = watchFails
@@ -442,7 +463,7 @@ final class DeviceTrustStore {
             return answer.unsaved
         }
         // nil: there is a list on disk and it cannot be read right now.
-        let disk: [DeviceRecord]? = canPersist ? readDisk() : records
+        let disk: [DeviceRecord]? = canPersist ? readDisk(holdingLock: true) : records
         let start = disk ?? []
         var list = start.filter { !Self.isExpired($0, now: t) }
         let answer = body(&list, t)
@@ -497,9 +518,15 @@ final class DeviceTrustStore {
     /// written by a newer Clamshell: it stays exactly where it is, is not
     /// moved aside and not rewritten, and the result is nil, so nobody is let
     /// in and nothing is decided until Clamshell is updated.
-    private func readDisk() -> [DeviceRecord]? {
+    ///
+    /// With integrity on, a list whose MAC is missing or wrong is not
+    /// trusted: it reads as no devices (and is moved aside by the next save).
+    /// The one exception is the move from a build without MACs, see
+    /// `checkIntegrity`. `holdingLock` says the caller has the file lock.
+    private func readDisk(holdingLock: Bool = false) -> [DeviceRecord]? {
         let url = fileURL
         listIsFromNewerVersion = false
+        listIsUntrusted = false
         let data: Data
         do {
             data = try SecureFile.read(url, maxBytes: Self.maxFileBytes)
@@ -525,7 +552,57 @@ final class DeviceTrustStore {
             setAside(url, why: "is not a version 1 device list")
             return []
         }
+        switch checkIntegrity(file, holdingLock: holdingLock) {
+        case .trusted:
+            loggedUntrusted = false
+        case .untrusted:
+            listIsUntrusted = true
+            return []
+        case .undecided:
+            return nil
+        }
         return Self.sanitized(file.devices)
+    }
+
+    private enum IntegrityResult { case trusted, untrusted, undecided }
+
+    private func checkIntegrity(_ file: DeviceFile, holdingLock: Bool) -> IntegrityResult {
+        guard let integrity else { return .trusted }
+        func untrusted(_ why: String) -> IntegrityResult {
+            if !loggedUntrusted {
+                loggedUntrusted = true
+                clog("DEVICES: \(Self.fileName) \(why) — not trusted; every device has to be approved again")
+            }
+            return .untrusted
+        }
+        if let mac = file.mac {
+            switch integrity.lookup() {
+            case .key(let key):
+                return TrustIntegrity.verify(key, domain: TrustIntegrity.devicesDomain, file.canonical, mac: mac)
+                    ? .trusted : untrusted("does not match its integrity check (it was changed outside Clamshell)")
+            case .missing:
+                // Not made again here: a list that had a MAC and lost its key
+                // is not a first run.
+                return untrusted("has an integrity check but its key is missing from the keychain")
+            case .unavailable:
+                return untrusted("cannot be checked because the keychain key cannot be read")
+            }
+        }
+        // No MAC: only a list from a build before MACs, on a host that has no
+        // key yet (or whose key this run just made), is adopted.
+        guard integrity.beginMigration() != nil else {
+            return untrusted("has no integrity check although the host has a key")
+        }
+        let fileLock = holdingLock ? nil : FileLock(directory.appendingPathComponent(Self.lockName), timeout: lockTimeout)
+        if let fileLock, !fileLock.acquired { return .undecided }
+        defer { fileLock?.unlock() }
+        do {
+            try write(file.devices)
+            clog("DEVICES: first run with integrity checks — signed the existing device list (\(file.devices.count) entr\(file.devices.count == 1 ? "y" : "ies"))")
+        } catch {
+            clog("DEVICES: could not sign the existing device list (\(error)) — using it unsigned for now")
+        }
+        return .trusted
     }
 
     private func setAside(_ url: URL, why: String) {
@@ -536,7 +613,18 @@ final class DeviceTrustStore {
     private func write(_ list: [DeviceRecord]) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try SecureFile.replace(fileURL, contents: try encoder.encode(DeviceFile(version: Self.fileVersion, devices: list)))
+        var file = DeviceFile(version: Self.fileVersion, devices: list, mac: nil)
+        if let integrity {
+            guard let key = integrity.keyForWrite() else { throw SecureFileError.io(EACCES) }
+            file.mac = TrustIntegrity.mac(key, domain: TrustIntegrity.devicesDomain, file.canonical)
+            if listIsUntrusted {
+                // Keep what failed its check for the user to look at.
+                let aside = (try? SecureFile.moveAside(fileURL)) ?? "(could not be moved)"
+                clog("DEVICES: the list that failed its integrity check was kept as \(aside)")
+                listIsUntrusted = false
+            }
+        }
+        try SecureFile.replace(fileURL, contents: try encoder.encode(file))
     }
 
     /// Keeps only records that hold a real key and whose id is that key's

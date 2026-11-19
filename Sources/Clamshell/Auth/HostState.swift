@@ -6,8 +6,10 @@ import CryptoKit
 // Everything is a small file, mode 0600, in one directory that is 0700.
 //
 // What this does not defend against: another program running as the same
-// user can read and write these files. Keeping the key and an integrity check
-// for the device list in the keychain is the planned follow-up.
+// user can read and write these files. The device list and the approval
+// setting carry a MAC whose key is in the keychain (see TrustIntegrity), so
+// such a program cannot add a device or switch approval off unnoticed. The
+// identity key file itself is not covered by that.
 
 enum SecureFileError: Error, Equatable {
     case notFound

@@ -8,16 +8,20 @@ import SystemConfiguration
 
 final class HostAuth {
     /// The host's real state, in the user's state directory.
-    static let shared = HostAuth(directory: HostState.directory)
+    static let shared = HostAuth(directory: HostState.directory, integrity: .keychain())
 
     static let maxUnansweredConnections = 32
     static let maxWaitingConnections = 8
     /// What one address group may hold of each table (see `RoomSharing`).
     static let maxUnansweredPerGroup = 8
     static let maxWaitingConnectionsPerGroup = 3
-    /// `defaults write com.frindle.clamshell requireDeviceApproval -bool false`
-    /// turns approval off. Anything but a clear "false" leaves it on.
+    /// With integrity on (the real host), `defaults write ... -bool false` no
+    /// longer turns approval off by itself: the value also needs the MAC that
+    /// the host's own switch writes next to it (`approvalMACDefaultsKey`).
+    /// Without a valid MAC a stored "false" reads as on. Anything but a clear
+    /// "false" leaves it on in any case.
     static let approvalDefaultsKey = "requireDeviceApproval"
+    static let approvalMACDefaultsKey = "requireDeviceApprovalMAC"
     static let defaultsDomain = "com.frindle.clamshell"
     /// `defaults write com.frindle.clamshell trustedProxies -array 192.0.2.7 198.51.100.0/24`
     /// lists proxies besides this Mac itself whose client-address headers are
@@ -95,21 +99,51 @@ final class HostAuth {
     private let settingPollInterval: TimeInterval
     /// Where the stored value is read from: the user's preferences, or a test.
     private let readStored: () -> Any?
+    private let readStoredMAC: () -> Any?
+    private let saveStored: (Bool, String?) -> Void
+    private let integrity: TrustIntegrity?
+    private var loggedBadApprovalMAC = false
 
     /// `requireApproval` nil reads the user's setting; selftests pass a value.
     /// `settingPollInterval` is how often a change made from outside is looked
-    /// for; `readStored` replaces the read of the user's preferences, for tests.
+    /// for; `readStored`, `readStoredMAC` and `saveStored` replace the user's
+    /// preferences, for tests. `integrity` nil keeps no MACs (tests and
+    /// selftests); the real host passes the keychain-backed one.
     init(directory: URL, requireApproval: Bool? = nil, watch: Bool = true,
-         settingPollInterval: TimeInterval = 5, readStored: (() -> Any?)? = nil) {
+         settingPollInterval: TimeInterval = 5, readStored: (() -> Any?)? = nil,
+         integrity: TrustIntegrity? = nil, readStoredMAC: (() -> Any?)? = nil,
+         saveStored: ((Bool, String?) -> Void)? = nil) {
         self.settingPollInterval = settingPollInterval
         self.readStored = readStored ?? Self.storedPreference
+        self.readStoredMAC = readStoredMAC ?? Self.storedMACPreference
+        self.saveStored = saveStored ?? Self.savePreference
+        self.integrity = integrity
         identity = HostIdentity.load(in: directory)
-        store = DeviceTrustStore(directory: directory, watch: watch)
+        // The setting is looked at first, so that a first run after an upgrade
+        // signs it before the device list asks for the key.
+        Self.adoptApprovalSetting(integrity: integrity, stored: self.readStored(), mac: self.readStoredMAC(),
+                                  save: self.saveStored)
+        store = DeviceTrustStore(directory: directory, watch: watch, integrity: integrity)
         self.directory = HostDirectory(directory: directory)
         approvalOverride = requireApproval
         hostName = Self.computerName()
         // Start from the setting as it is now, so the first change is noticed.
-        lastSeenApproval = requireApproval ?? Self.approval(fromStored: self.readStored())
+        lastSeenApproval = requireApproval ?? Self.approval(fromStored: self.readStored(), mac: self.readStoredMAC(),
+                                                            integrity: integrity)
+    }
+
+    /// First run with integrity checks: makes the key and signs the setting
+    /// as the user left it, once. Later a setting without a valid MAC is not
+    /// adopted.
+    private static func adoptApprovalSetting(integrity: TrustIntegrity?, stored: Any?, mac: Any?,
+                                             save: (Bool, String?) -> Void) {
+        guard let integrity, mac == nil else { return }
+        guard let key = integrity.beginMigration() else { return }
+        let on = approval(fromStored: stored)
+        if !on {
+            save(false, TrustIntegrity.mac(key, domain: TrustIntegrity.approvalDomain, TrustIntegrity.approvalBytes(false)))
+            clog("DEVICES: first run with integrity checks — signed the setting that device approval is off")
+        }
     }
 
     deinit { settingTimer?.cancel() }
@@ -121,16 +155,39 @@ final class HostAuth {
         lock.lock()
         let override = approvalOverride
         lock.unlock()
-        return override ?? Self.approval(fromStored: readStored())
+        if let override { return override }
+        let stored = readStored()
+        let mac = readStoredMAC()
+        let result = Self.approval(fromStored: stored, mac: mac, integrity: integrity)
+        if result, !Self.approval(fromStored: stored) {
+            lock.lock()
+            let first = !loggedBadApprovalMAC
+            loggedBadApprovalMAC = true
+            lock.unlock()
+            if first { clog("DEVICES: the setting turning device approval off has no valid integrity check — approval stays ON. Turn it off from the Clamshell menu instead.") }
+        }
+        return result
     }
 
-    /// Saves the user's choice and tells the listeners.
-    func setRequireApproval(_ on: Bool) {
-        CFPreferencesSetAppValue(Self.approvalDefaultsKey as CFString,
-                                 on ? kCFBooleanTrue : kCFBooleanFalse,
-                                 Self.defaultsDomain as CFString)
-        CFPreferencesAppSynchronize(Self.defaultsDomain as CFString)
+    /// Saves the user's choice, with the MAC that makes it count, and tells
+    /// the listeners. Turning approval off needs the integrity key; without
+    /// it approval stays on and this returns false.
+    @discardableResult
+    func setRequireApproval(_ on: Bool) -> Bool {
+        var mac: String?
+        if let integrity {
+            guard let key = integrity.keyForWrite() else {
+                clog("DEVICES: cannot change the approval setting: the integrity key cannot be used")
+                if !on { return false }
+                saveStored(true, nil)
+                noteApproval()
+                return true
+            }
+            mac = TrustIntegrity.mac(key, domain: TrustIntegrity.approvalDomain, TrustIntegrity.approvalBytes(on))
+        }
+        saveStored(on, mac)
         noteApproval()
+        return true
     }
 
     /// For selftests: nil goes back to the user's setting.
@@ -169,6 +226,32 @@ final class HostAuth {
     private static func storedPreference() -> Any? {
         CFPreferencesAppSynchronize(defaultsDomain as CFString)
         return CFPreferencesCopyAppValue(approvalDefaultsKey as CFString, defaultsDomain as CFString)
+    }
+
+    private static func storedMACPreference() -> Any? {
+        CFPreferencesAppSynchronize(defaultsDomain as CFString)
+        return CFPreferencesCopyAppValue(approvalMACDefaultsKey as CFString, defaultsDomain as CFString)
+    }
+
+    private static func savePreference(_ on: Bool, _ mac: String?) {
+        CFPreferencesSetAppValue(approvalDefaultsKey as CFString,
+                                 on ? kCFBooleanTrue : kCFBooleanFalse,
+                                 defaultsDomain as CFString)
+        CFPreferencesSetAppValue(approvalMACDefaultsKey as CFString, mac.map { $0 as CFString }, defaultsDomain as CFString)
+        CFPreferencesAppSynchronize(defaultsDomain as CFString)
+    }
+
+    /// The setting with integrity: a value that turns approval off counts
+    /// only with a valid MAC for "off"; otherwise approval is on. Turning
+    /// approval on needs no MAC, so a flipped value can only ever make the
+    /// host stricter. Without `integrity` this is `approval(fromStored:)`.
+    static func approval(fromStored value: Any?, mac: Any?, integrity: TrustIntegrity?) -> Bool {
+        let parsed = approval(fromStored: value)
+        guard let integrity, !parsed else { return parsed }
+        guard let text = mac as? String, case .key(let key) = integrity.lookup(),
+              TrustIntegrity.verify(key, domain: TrustIntegrity.approvalDomain,
+                                    TrustIntegrity.approvalBytes(false), mac: text) else { return true }
+        return false
     }
 
     /// Only the boolean false and the integer 0 turn approval off. Anything
