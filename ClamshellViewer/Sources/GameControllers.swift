@@ -57,10 +57,18 @@ final class GameControllerBridge: ObservableObject {
             .store(in: &cancellables)
 
         for c in GCController.controllers() { connected(c) }
+    }
 
-        let t = Timer(timeInterval: 0.016, repeats: true) { [weak self] _ in self?.tick() }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
+    /// The 16 ms timer runs only while a controller is connected.
+    private func updateTimer() {
+        if ids.isEmpty {
+            timer?.invalidate()
+            timer = nil
+        } else if timer == nil {
+            let t = Timer(timeInterval: 0.016, repeats: true) { [weak self] _ in self?.tick() }
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+        }
     }
 
     // MARK: connection
@@ -100,6 +108,7 @@ final class GameControllerBridge: ObservableObject {
         let name = controller.vendorName ?? controller.productCategory
         let (id, attach) = core.connect(name: name)
         ids[ObjectIdentifier(controller)] = id
+        updateTimer()
         send(attach)
         pad.valueChangedHandler = { [weak self] pad, _ in self?.changed(id, pad) }
         rows = core.rows
@@ -109,6 +118,7 @@ final class GameControllerBridge: ObservableObject {
     private func gone(_ controller: GCController) {
         guard let id = ids.removeValue(forKey: ObjectIdentifier(controller)) else { return }
         controller.extendedGamepad?.valueChangedHandler = nil
+        updateTimer()
         if let m = core.disconnect(id: id) { send(m) }
         rows = core.rows
     }
