@@ -37,22 +37,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - name: Web client hello test
-        run: node tests/test-webclient-hello.js
-      - name: Web client input and audio tests
-        run: node tests/test-webclient-input.js
-      - name: Web client auth tests
-        run: |
-          node tests/test-webclient-auth.js
-          node tests/test-webclient-auth-flow.js
-      - name: Web client syntax check
-        run: |
-          # No build step for the web client, so a typo would only show up in
-          # the browser. Parse every module here (.mjs = parse as a module).
-          for f in Sources/Clamshell/Resources/webclient/*.js; do
-            cp "$f" "$RUNNER_TEMP/check.mjs"
-            node --check "$RUNNER_TEMP/check.mjs" || { echo "syntax error in $f"; exit 1; }
-          done
+      # Web client tests and syntax check, login-window script and plist
+      # lint: all in scripts/ci-local.sh, which the local CI also runs.
+      - name: Node, Python and bash checks
+        run: bash scripts/ci-local.sh
       # The interop check needs a global WebSocket, which Node 20 does not have
       # without a flag. It runs the web client's auth.js against the real host
       # (`Clamshell auth-interop-host`, loopback only, temporary state directory).
@@ -70,10 +58,6 @@ jobs:
       - name: Windows viewer client flow against the real host
         timeout-minutes: 5
         run: dotnet run --project tests/WindowsViewerInterop/WindowsViewerInterop.csproj -c Release -- "$PWD/.build/debug/Clamshell" 5995
-      - name: Lint probe plists
-        run: plutil -lint scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist
-      - name: Lint login-window agent scripts
-        run: bash -n scripts/loginwindow-agent/install.sh && bash -n scripts/loginwindow-agent/uninstall.sh
       - name: Login-window agent stays off when a user is logged in
         run: |
           # In a logged-in session (the CI runner is one) the agent must exit
