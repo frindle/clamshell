@@ -39,7 +39,15 @@ internal sealed class AudioEncoder : IDisposable
         if (sp.WaveFormat.SampleRate != 48000) sp = new WdlResamplingSampleProvider(sp, 48000);
         _pcm48kStereo16 = new SampleToWaveProvider16(sp);
 
-        BuildAacMft();
+        try { BuildAacMft(); }
+        catch
+        {
+            // The caller never gets the object, so nobody else can dispose these.
+            try { _cap.Dispose(); } catch { }
+            try { _aac?.Dispose(); } catch { }
+            _aac = null!;
+            throw;
+        }
         _cap.DataAvailable += OnData;
     }
 

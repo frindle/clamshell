@@ -167,7 +167,7 @@ final class StreamClient: ObservableObject {
     private var pickedURL: String?
     /// An alarm (changed key, no identification) an address the client chose
     /// itself ended with. Shown only when no other address connects.
-    private var heldAlarm: (state: FlowState, address: String)?
+    private var heldAlarm: DialAlarm?
 
     /// Accepts a bare host ("192.168.1.5" -> ws://192.168.1.5:5903) or a full
     /// ws:// / wss:// URL (Cloudflare Tunnel: wss://mac.example.com/stream).
@@ -426,9 +426,9 @@ final class StreamClient: ObservableObject {
     private func applyFlowState(_ state: FlowState, from a: Attempt) {
         guard current === a else { return }
         authState = state
+        heldAlarm = DialPlanFlow.held(after: state, heldAlarm)
         if case let .connected(verified, _) = state {
             reconnectAttempt = 0
-            heldAlarm = nil
             clogViewer(verified ? "connected and verified" : "connected, NOT verified")
         }
     }
@@ -453,41 +453,30 @@ final class StreamClient: ObservableObject {
             // The socket never opened, or the address reached a different saved
             // Mac than the one picked: try the Mac's next saved address at
             // once; only after the last one does the back-off apply.
-            var wrongMac = false
-            if case .nextAddress = end { wrongMac = true }
-            // An address this client chose that opened but never got as far as
-            // a session (not connected, not waiting for approval) also moves on.
-            var failedEarly = false
-            if opened, dialPlan.indices.contains(dialIndex), dialPlan[dialIndex] != pickedURL {
-                switch shown {
-                case .connected?, .waitingForApproval?, .busy?: break
-                default: failedEarly = true
+            // What comes next is decided by `DialPlanFlow` (shared code, with
+            // tests): move on, show a held alarm, or fall to the back-off.
+            if wantConnection, connectHost != nil, dialPlan.indices.contains(dialIndex) {
+                let wrongMac = end == .nextAddress
+                let address = dialPlan[dialIndex]
+                let outcome = DialPlanFlow.decide(end: end, shown: shown, opened: opened, address: address,
+                                                  isPicked: address == pickedURL,
+                                                  isLast: dialIndex + 1 >= dialPlan.count, held: heldAlarm)
+                if heldAlarm == nil, outcome.held != nil {
+                    clogViewer("alarm held for \(address); trying the next saved address")
                 }
-            }
-            // A key that is not the saved one, or no identification, at an
-            // address the user did not pick: remember it, and say so only if
-            // no other address connects.
-            switch shown {
-            case .changedIdentity?, .didNotIdentify?:
-                if wrongMac, let s = shown, dialIndex < dialPlan.count {
-                    if heldAlarm == nil { heldAlarm = (s, dialPlan[dialIndex]) }
-                    clogViewer("alarm held for \(dialPlan[dialIndex]); trying the next saved address")
-                }
-            default: break
-            }
-            if (!opened || wrongMac || failedEarly), wantConnection, connectHost != nil {
-                if dialIndex + 1 < dialPlan.count {
+                heldAlarm = outcome.held
+                switch outcome {
+                case .tryNext:
                     dialIndex += 1
                     clogViewer(wrongMac ? "that address reaches a different saved Mac, or not the saved key; trying the next saved one"
                                         : "that address did not answer; trying the next saved one")
                     teardownSocket()
                     openSocket()
                     return
-                }
-                dialIndex = 0
-                if let held = heldAlarm {
+                case let .showAlarm(held):
                     // Every address was tried: now the alarm is shown, naming
                     // the address that raised it.
+                    dialIndex = 0
                     heldAlarm = nil
                     wantConnection = false
                     teardownSocket()
@@ -496,6 +485,8 @@ final class StreamClient: ObservableObject {
                     status = .failed(text)
                     lastError = text
                     return
+                case let .showError(restartPlan, _):
+                    if restartPlan { dialIndex = 0 }
                 }
             }
             if case let .failed(text)? = shown { lastError = "Could not connect securely: \(text)" }

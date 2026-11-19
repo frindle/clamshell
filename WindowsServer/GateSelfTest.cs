@@ -34,8 +34,9 @@ internal static class GateSelfTest
 
         public Client(MemoryDeviceKey key) { Key = key; Id = DeviceIdentity.Id(key.PublicKey); }
 
-        public async Task ConnectAsync(ushort port)
+        public async Task ConnectAsync(ushort port, string? headerName = null, string? headerValue = null)
         {
+            if (headerName != null) Ws.Options.SetRequestHeader(headerName, headerValue);
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             await Ws.ConnectAsync(new Uri($"ws://127.0.0.1:{port}/"), cts.Token);
         }
@@ -174,6 +175,7 @@ internal static class GateSelfTest
             using var phoneKey = new MemoryDeviceKey();
             using var tabletKey = new MemoryDeviceKey();
             using var strangerKey = new MemoryDeviceKey();
+            using var proxiedKey = new MemoryDeviceKey();
             byte[] firstResponse = Array.Empty<byte>();
 
             // An unknown device waits; nothing starts; approving it lets it in.
@@ -224,6 +226,28 @@ internal static class GateSelfTest
                     Check(ack is { Type: WireType.HelloAck }, "a sealed HELLO is answered with a sealed HELLO_ACK");
                     Check(server.SessionsStarted == 1, "the session started once, after acceptance");
                 }
+            }
+            await Task.Delay(300);
+
+            // A loopback client behind a local proxy: the proxy header is a claim, kept apart
+            // from the TCP peer, and the address group follows the claim (group = reported ?? peer).
+            using (var proxied = new Client(proxiedKey))
+            {
+                await proxied.ConnectAsync(port, "CF-Connecting-IP", "198.51.100.7");
+                await proxied.AnswerChallengeAsync();
+                var st = await proxied.ReadResultAsync();
+                Check(st == AuthStatus.Pending, "a device that came with a proxy header is told it is pending");
+                var rec = auth.Store.Record(proxied.Id);
+                Check(rec != null && rec.Address.StartsWith("127.0.0.1", StringComparison.Ordinal),
+                    "behind a proxy header, the device's address is still the TCP peer");
+                Check(rec != null && rec.ReportedAddress == "198.51.100.7",
+                    "and the address the local proxy reported is kept apart");
+                Check(rec != null && DeviceText.From(rec)
+                      == "127.0.0.1, through a local proxy (the proxy reported 198.51.100.7; not verified)",
+                    "the label says a local proxy reported it, and that it is not verified");
+                Check(rec != null && AddressGroup.Of(rec.ReportedAddress ?? rec.Address) == "198.51.100.7",
+                    "its address group is the reported address");
+                auth.Store.Forget(proxied.Id);
             }
             await Task.Delay(300);
 

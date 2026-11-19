@@ -495,3 +495,83 @@ struct ClientAuthFlow {
         return actions
     }
 }
+
+/// An alarm (changed key, no identification) that an address the client chose
+/// itself ended with; held back until it is known that no other address
+/// connects.
+struct DialAlarm: Equatable {
+    var state: FlowState
+    var address: String
+}
+
+/// What the client does when one attempt at one of a saved Mac's addresses
+/// ends. No socket and no clock in it: the app feeds it what happened and does
+/// what it says, and the tests run it on the Mac.
+///
+/// The rule: "identity changed" or "did not identify" is shown when the user
+/// picked that address, or when no other address succeeds, and it names the
+/// address that misbehaved. Nothing is accepted without the pinned key (the
+/// flow itself keeps that; this type only decides what comes next).
+enum DialPlanFlow {
+    enum Outcome: Equatable {
+        /// Dial the plan's next address; carry this held alarm (if any).
+        case tryNext(held: DialAlarm?)
+        /// Every address failed and one raised an alarm: show it.
+        case showAlarm(DialAlarm)
+        /// Show the plain error and let the caller's back-off run.
+        /// `restartPlan`: the next attempt starts again at the first address.
+        case showError(restartPlan: Bool, held: DialAlarm?)
+
+        var held: DialAlarm? {
+            switch self {
+            case let .tryNext(held): return held
+            case let .showAlarm(alarm): return alarm
+            case let .showError(_, held): return held
+            }
+        }
+    }
+
+    /// What a state that a session reached means for the alarm held so far: a
+    /// connection with the pinned key makes it moot.
+    static func held(after state: FlowState, _ held: DialAlarm?) -> DialAlarm? {
+        if case .connected = state { return nil }
+        return held
+    }
+
+    /// An attempt ended with `.failure` or `.nextAddress`.
+    /// - `shown`: the last state the attempt showed.
+    /// - `opened`: whether the socket opened.
+    /// - `address`: the address this attempt dialled.
+    /// - `isPicked`: the user picked it (the plan's other addresses were added
+    ///   by the client from the saved Mac's list).
+    /// - `isLast`: no address follows it in the plan.
+    static func decide(end: FlowEnd, shown: FlowState?, opened: Bool, address: String,
+                       isPicked: Bool, isLast: Bool, held: DialAlarm?) -> Outcome {
+        let wrongMac = end == .nextAddress
+        var held = held
+        switch shown {
+        case .changedIdentity?, .didNotIdentify?:
+            if wrongMac, held == nil, let shown { held = DialAlarm(state: shown, address: address) }
+        default: break
+        }
+        var reachedSession = false
+        switch shown {
+        case .connected?, .waitingForApproval?, .busy?: reachedSession = true
+        default: break
+        }
+        // An address this client chose that opened but never got as far as a
+        // session (not connected, not waiting for approval) also moves on.
+        let failedEarly = opened && !isPicked && !reachedSession
+        // The address the user picked opened and dropped before any session, on
+        // the last address of the plan: a held alarm from an earlier address
+        // must not be lost behind a plain error, and with none held the whole
+        // plan is tried again.
+        let pickedDropped = opened && isPicked && isLast && !reachedSession
+        guard !opened || wrongMac || failedEarly || pickedDropped else {
+            return .showError(restartPlan: false, held: held)
+        }
+        if !isLast { return .tryNext(held: held) }
+        if let held { return .showAlarm(held) }
+        return .showError(restartPlan: true, held: nil)
+    }
+}
