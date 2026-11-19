@@ -84,6 +84,10 @@ final class StreamGate {
     var onClose: (StreamLink) -> Void = { _ in }
     /// Which display this listener serves, for HOST_INFO. Nil for a window.
     var displayIndex: Int?
+    /// Whether this listener tells clients it takes files and game controllers.
+    /// Only the primary display's listener has sessions for them, so the others
+    /// must not advertise the bits (a client would offer a file nobody answers).
+    var advertisesDeviceFeatures = true
 
     private let auth: HostAuth
     private let queue: DispatchQueue
@@ -188,7 +192,8 @@ final class StreamGate {
             auth.removeUnanswered(token)
             countUnanswered(link)
         }
-        var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval, .fileTransfer, .peripherals]
+        var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval]
+        if advertisesDeviceFeatures { capabilities.formUnion([.fileTransfer, .peripherals]) }
         if auth.requireApproval { capabilities.insert(.approvalRequired) }
         do {
             let handshake = try HostHandshake(identityKey: auth.identity.publicKey,
