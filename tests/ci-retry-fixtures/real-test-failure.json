@@ -1,0 +1,44 @@
+{
+  "total_count": 1,
+  "jobs": [
+    {
+      "id": 1,
+      "name": "build",
+      "status": "completed",
+      "conclusion": "failure",
+      "runner_id": 1,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "Build",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 4,
+          "name": "Unit tests",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "number": 5,
+          "name": "Smoke",
+          "status": "completed",
+          "conclusion": "skipped"
+        }
+      ]
+    }
+  ]
+}

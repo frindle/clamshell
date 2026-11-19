@@ -1,0 +1,41 @@
+name: CI auto-retry
+# When the macOS CI run fails for infrastructure reasons (no runner, runner lost or shut
+# down, cancelled by GitHub, a job that failed without a failed step), run its failed jobs
+# again, up to attempt 3. A real failure (a failed step) is never re-run.
+# The decision is scripts/ci-infra-retry.py, tested by tests/test-ci-infra-retry.py.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: write
+
+jobs:
+  retry:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' || github.event.workflow_run.conclusion == 'cancelled' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # workflow_run checks out the default branch, never the PR's code.
+      - uses: actions/checkout@v4
+      - name: Decide and re-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          gh api "repos/$REPO/actions/runs/$RUN_ID/attempts/$ATTEMPT/jobs?per_page=100" > "$RUNNER_TEMP/jobs.json"
+          superseded=""
+          # Is the branch still at the commit this run was for? A newer push cancels
+          # the old run on purpose (concurrency); that cancel must not be undone.
+          current=$(gh api "repos/$REPO/branches/$HEAD_BRANCH" --jq .commit.sha 2>/dev/null || true)
+          if [ -n "$current" ] && [ "$current" != "$HEAD_SHA" ]; then superseded="--superseded"; fi
+          verdict=$(python3 -I scripts/ci-infra-retry.py --jobs "$RUNNER_TEMP/jobs.json" --attempt "$ATTEMPT" --max-attempts 3 $superseded)
+          echo "$verdict"
+          case "$verdict" in
+            rerun:*) gh run rerun "$RUN_ID" --failed --repo "$REPO" ;;
+          esac
