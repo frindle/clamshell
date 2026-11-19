@@ -137,3 +137,28 @@ extension DialPlanFlowTests {
                        .showError(restartPlan: false, held: nil))
     }
 }
+
+// MARK: picked address in the middle of the plan
+
+extension DialPlanFlowTests {
+
+    func testHeldAlarmIsNotLostWhenThePickedAddressIsNotLast() throws {
+        // Plan [home, tunnel, other]: home answers with a stranger's key, the
+        // picked tunnel opens and drops, and other still has to be tried.
+        let first = try stranger(at: home, falls: true)
+        let a = decide(first, at: home, picked: tunnel, isLast: false)
+        let dropped = Attempt(end: .failure, shown: .connecting, opened: true)
+        let b = decide(dropped, at: tunnel, picked: tunnel, isLast: false, held: a.held)
+        XCTAssertEqual(b, .tryNext(held: try alarm(first, at: home)))
+        // other cannot be reached: the held alarm is what the user sees.
+        let miss = Attempt(end: .failure, shown: .failed("example"), opened: false)
+        let c = decide(miss, at: other, picked: tunnel, isLast: true, held: b.held)
+        XCTAssertEqual(c, .showAlarm(try alarm(first, at: home)))
+    }
+
+    func testPickedAddressInTheMiddleThatDropsWithNoAlarmKeepsItsPlace() {
+        let dropped = Attempt(end: .failure, shown: .connecting, opened: true)
+        XCTAssertEqual(decide(dropped, at: tunnel, picked: tunnel, isLast: false),
+                       .showError(restartPlan: false, held: nil))
+    }
+}
