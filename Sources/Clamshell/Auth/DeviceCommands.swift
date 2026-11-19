@@ -23,7 +23,7 @@ enum DeviceCommands {
             out(usage)
             return 64
         }
-        let auth = auth ?? HostAuth(directory: HostState.directory, watch: false)
+        let auth = auth ?? HostAuth(directory: HostState.directory, watch: false, integrity: .keychain(for: HostState.directory))
         let store = auth.store
         guard store.canPersist else {
             out("The device list in \(store.directory.path) cannot be used. See ~/Library/Logs/Clamshell.log.")

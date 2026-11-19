@@ -47,7 +47,8 @@ enum AuthInteropHost {
 
         // Watching is on: `clamshell approve` and `revoke` run as other
         // processes and this one has to notice what they save.
-        let auth = HostAuth(directory: stateDir, requireApproval: true, watch: true)
+        let auth = HostAuth(directory: stateDir, requireApproval: true, watch: true,
+                        integrity: .keychain(for: stateDir))
         let server = StreamServer(source: .display(CGMainDisplayID()), port: raw, isPrimary: false,
                                   auth: auth, displayIndex: 0, loopbackOnly: true, startsMedia: false)
         do {
