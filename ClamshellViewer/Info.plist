@@ -17,6 +17,9 @@
 	     exception to local-network/literal-IP hosts only; wss:// tunnel
 	     connections to real internet hostnames are unaffected and still get
 	     full ATS/TLS enforcement. -->
+	<!-- A game controller drives the Mac, not this app's own screens. -->
+	<key>GCSupportsControllerUserInteraction</key>
+	<false/>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_clamshell._tcp</string>

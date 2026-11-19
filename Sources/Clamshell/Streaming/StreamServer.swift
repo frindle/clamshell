@@ -109,6 +109,13 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var audioEncoder: AudioEncoder?
     private var clipboard: ClipboardBridge?
     private var injector: InputInjector?
+    /// What the connected device may bring along. Each exists only for a
+    /// device that was let in and set the matching capability bit (see
+    /// `admitted`), and ends with the connection.
+    private var fileSession: HostFileSession?
+    private var peripheralSession: HostPeripheralSession?
+    /// Drives the time-based parts of the two above; runs only while one exists.
+    private var deviceTimer: DispatchSourceTimer?
     private let audioQueue = DispatchQueue(label: "clamshell.stream.audio")
 
     /// Serial queue owning all connection/session state.
@@ -335,6 +342,64 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         liveLink = link
         connection = link.conn
         sessionRequested = false
+        startDeviceSessions(for: link)
+    }
+
+    /// Creates what the device's capability bits ask for. A connection with no
+    /// handshake (a host with approval off, a client that never answered the
+    /// challenge) has no device and so no bits: it never transfers files.
+    private func startDeviceSessions(for link: StreamLink) {
+        guard let device = link.device else { return }
+        if HostFileSession.allowed(phase: link.phase, capabilities: device.capabilities) {
+            let name = device.name
+            fileSession = HostFileSession(onStored: { url in
+                HostNotice.post(title: "File received",
+                                body: "\(url.lastPathComponent) from \(name) is in Downloads/Clamshell.")
+            })
+        }
+        if HostPeripheralSession.allowed(phase: link.phase, capabilities: device.capabilities) {
+            // Controller events take the same path INPUT_* messages do: the
+            // injector, looked up when used because a session may not have
+            // started yet.
+            let session = HostPeripheralSession(device: device.name, output: LiveInjector(server: self))
+            PeripheralHub.shared.register(session: session.sessionId) { [weak self, weak session] id in
+                self?.queue.async {
+                    guard let self, let session, self.peripheralSession === session else { return }
+                    for frame in session.removeByHost(id: id) { self.send(frame) }
+                }
+            }
+            peripheralSession = session
+        }
+        if fileSession != nil || peripheralSession != nil { startDeviceTimer() }
+    }
+
+    /// Forwards to whatever injector the server has now (on `queue`).
+    private final class LiveInjector: GamepadOutput {
+        private unowned let server: StreamServer
+        init(server: StreamServer) { self.server = server }
+        func mouseRelative(dx: Float32, dy: Float32) { server.injector?.mouseRelative(dx: dx, dy: dy) }
+        func mouseButtonAtCursor(button: UInt8, down: Bool) {
+            server.injector?.mouseButtonAtCursor(button: button, down: down)
+        }
+        func scroll(dx: Float32, dy: Float32) { server.injector?.scroll(dx: dx, dy: dy) }
+        func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
+            server.injector?.key(macKeyCode: macKeyCode, down: down, flags: flags)
+        }
+    }
+
+    private func startDeviceTimer() {
+        guard deviceTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 0.016, repeating: 0.016, leeway: .milliseconds(4))
+        timer.setEventHandler { [weak self] in self?.deviceTick() }
+        timer.resume()
+        deviceTimer = timer
+    }
+
+    private func deviceTick() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for frame in fileSession?.tick(now: now) ?? [] { send(frame) }
+        for frame in peripheralSession?.tick(now: now) ?? [] { send(frame) }
     }
 
     private func teardownSession() {
@@ -366,8 +431,16 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         audioEncoder = nil
         clipboard?.stop()
         clipboard = nil
+        deviceTimer?.cancel()
+        deviceTimer = nil
+        // Controllers first: they release their keys and buttons through the
+        // injector, which is then released as a whole.
+        peripheralSession?.closeAll()
+        peripheralSession = nil
         injector?.releaseAll()
         injector = nil
+        fileSession?.closeAll()
+        fileSession = nil
     }
 
     // MARK: - Messages (on `queue`)
@@ -415,9 +488,20 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             break // the gate deals with these; here they mean nothing
         case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
-        case .peripheralAttach, .peripheralStatus, .peripheralDetach, .peripheralInput, .peripheralOutput,
-             .fileOffer, .fileAnswer, .fileData, .fileEnd:
-            break // not wired into the host yet
+        case .fileOffer, .fileData, .fileEnd:
+            // Only a session made for a device that set the bit has one.
+            guard let files = fileSession else { return }
+            for frame in files.receive(type: type.rawValue, payload: payload,
+                                       now: ProcessInfo.processInfo.systemUptime) { send(frame) }
+        case .fileAnswer:
+            break // the host never offers a file, so there is nothing to answer
+        case .peripheralAttach, .peripheralDetach, .peripheralInput:
+            // Only a session made for a device that set the bit has one.
+            guard let peripherals = peripheralSession else { return }
+            for frame in peripherals.receive(type: type.rawValue, payload: payload,
+                                             now: ProcessInfo.processInfo.systemUptime) { send(frame) }
+        case .peripheralStatus, .peripheralOutput:
+            break // host to client only (rumble is not sent in this version)
         }
     }
 

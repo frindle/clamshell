@@ -509,6 +509,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(devicesItem)
         menu.setSubmenu(devices.makeMenu(), for: devicesItem)
 
+        // Files a connected device sends land in Downloads/Clamshell.
+        let receiveFiles = NSMenuItem(title: "Receive Files from Devices", action: #selector(toggleReceiveFiles), keyEquivalent: "")
+        receiveFiles.state = HostDeviceSettings.filesEnabled ? .on : .off
+        receiveFiles.target = self
+        menu.addItem(receiveFiles)
+
+        // Game controllers attached to a connected device act as keys and the
+        // pointer here; each can be removed, and all can be turned off.
+        let peripheralsMenu = NSMenu()
+        let acceptPeripherals = NSMenuItem(title: "Accept Game Controllers", action: #selector(togglePeripherals), keyEquivalent: "")
+        acceptPeripherals.state = HostDeviceSettings.peripheralsEnabled ? .on : .off
+        acceptPeripherals.target = self
+        peripheralsMenu.addItem(acceptPeripherals)
+        let attachedPeripherals = PeripheralHub.shared.attached
+        peripheralsMenu.addItem(.separator())
+        if attachedPeripherals.isEmpty {
+            let none = NSMenuItem(title: "None attached", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            peripheralsMenu.addItem(none)
+        }
+        for p in attachedPeripherals {
+            let item = NSMenuItem(title: "Remove \(p.name) (from \(p.device))", action: #selector(removePeripheral(_:)), keyEquivalent: "")
+            item.representedObject = p.key
+            item.target = self
+            peripheralsMenu.addItem(item)
+        }
+        let peripheralsItem = NSMenuItem(title: attachedPeripherals.isEmpty ? "Game Controllers" : "Game Controllers (\(attachedPeripherals.count))",
+                                         action: nil, keyEquivalent: "")
+        menu.addItem(peripheralsItem)
+        menu.setSubmenu(peripheralsMenu, for: peripheralsItem)
+
         let systemMenu = NSMenu()
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
         mute.state = coordinator.comfort.muteWhileCollapsed ? .on : .off
@@ -840,6 +871,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         invertScroll.toggle()
         UserDefaults.standard.set(invertScroll, forKey: "invertScroll")
         rebuildMenu()
+    }
+
+    @objc private func toggleReceiveFiles() {
+        HostDeviceSettings.filesEnabled.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func togglePeripherals() {
+        HostDeviceSettings.peripheralsEnabled.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func removePeripheral(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        PeripheralHub.shared.requestRemove(key: key)
     }
 
     @objc private func toggleLogin() {

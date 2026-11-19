@@ -821,7 +821,11 @@ address saved from an earlier HOST_INFO, or one typed in once.
 
 ## File transfer (FILE_OFFER / FILE_ANSWER / FILE_DATA / FILE_END)
 
-*Status: specified here, not implemented yet.*
+*Status: built in one direction. The Mac host receives files (it sets bit 5,
+and stores what it is sent in `~/Downloads/Clamshell`, with a switch in its
+menu to turn receiving off) and the iOS app sends them (it sets bit 5 and
+answers any offer from the host with "declined"). Not built yet: the web and
+Windows clients and the Windows host, and files from the Mac to the iPad.*
 
 Either side can send the other a file. This is how something on a drive
 plugged into the client reaches the host: the client's file picker can open
@@ -865,8 +869,10 @@ receiver → sender     FILE_END      id, 0          stored
 device.
 
 - The name is never used as a path. The receiver keeps what follows the last
-  `/` or `\`, removes control characters and `:`, then removes dots and
-  spaces from the start and spaces from the end, and uses `file` if nothing
+  `/` or `\`, removes control characters, `:` and invisible format
+  characters (including U+2028, U+2029 and U+3164), replaces look-alike dots
+  and slashes (such as U+FF0E and U+2215) with `_`, then removes dots and
+  blanks from the start and blanks from the end, and uses `file` if nothing
   is left. A receiver also changes whatever its own file system refuses (on
   Windows the characters `< > " | ? *`, trailing dots, and device names such
   as `CON`).
@@ -895,7 +901,13 @@ step (complete, too many bytes, ended early, cancelled).
 
 ## Peripherals attached to the client (PERIPHERAL_*)
 
-*Status: specified here, not implemented yet.*
+*Status: built for game controllers from the iOS app to the Mac host. The Mac
+host sets bit 6, lists `gamepad` in HOST_INFO's `peripherals`, and maps a
+controller to keys and the pointer, answering status 1 (it has no virtual
+controller to offer, so it never answers status 0). The iOS app sets bit 6 and
+sends its controllers. Not built yet: MIDI instruments, a virtual controller on
+the host, rumble from the host to the controller, the web and Windows clients
+and the Windows host, and sending a peripheral from the Mac to the iPad.*
 
 A game controller or MIDI instrument plugged into the client, or paired with
 it, can be used on the host as though it were attached there. This is not USB

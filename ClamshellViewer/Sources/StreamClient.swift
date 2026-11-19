@@ -296,6 +296,9 @@ final class StreamClient: ObservableObject {
                                           guard let self else { return Data() }
                                           return DispatchQueue.main.sync { self.makeHelloMessage() }
                                       })
+        // This app sends files and game controllers to the Mac (bits 5 and 6).
+        // It receives no files: a host offer is answered "declined".
+        config.capabilities = ClientAuthFlow.defaultCapabilities.union([.fileTransfer, .peripherals])
         config.fallbackDeviceName = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         config.expectedHostId = pickedHostId
         // An address from the saved list that the user did not type may fall
@@ -772,6 +775,11 @@ final class StreamClient: ObservableObject {
                 lastClipboard = text
                 DispatchQueue.main.async { self.onClipboard?(text) }
             }
+        case .fileOffer, .fileAnswer, .fileEnd, .fileData:
+            // On wireQueue; the handler hops to the main thread itself.
+            onFileMessage?(type.rawValue, payload)
+        case .peripheralStatus:
+            onPeripheralStatus?(payload)
         case .ping:
             break // echo of our keepalive: nothing to do
         case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
@@ -794,6 +802,39 @@ final class StreamClient: ObservableObject {
             self.perform(a.flow.send(data), on: a)
         }
     }
+
+    /// Like `send`, and `written` says whether the message was handed to the
+    /// socket and written (false: dropped before the host was accepted, or the
+    /// socket failed). Called on an arbitrary queue. File pieces wait for it, so
+    /// a big file is never held in memory.
+    func sendAndWait(_ data: Data, written: @escaping (Bool) -> Void) {
+        guard let a = current else { written(false); return }
+        wireQueue.async { [weak self] in
+            guard let self, !a.ended else { written(false); return }
+            let actions = a.flow.send(data)
+            guard let last = actions.lastIndex(where: { if case .send = $0 { return true }; return false }),
+                  case let .send(sealed) = actions[last] else {
+                written(false)
+                return
+            }
+            self.perform(Array(actions[..<last]), on: a)
+            guard !a.ended else { written(false); return }
+            self.noteSent()
+            a.task.send(.data(sealed)) { error in written(error == nil) }
+            self.perform(Array(actions[(last + 1)...]), on: a)
+        }
+    }
+
+    /// Files this connection sends to the Mac.
+    lazy var files = FileSendController(client: self)
+
+    /// Set by the file sender and the controller bridge; both are called on
+    /// the wire queue.
+    var onFileMessage: ((UInt8, Data) -> Void)?
+    var onPeripheralStatus: ((Data) -> Void)?
+
+    /// A file message or a peripheral message: sealed like any other.
+    func sendFrame(_ data: Data) { send(data) }
 
     func sendMouseMove(x: Float, y: Float) { send(StreamMessage.mouseMove(x: x, y: y)) }
     func sendMouseButton(button: UInt8, down: Bool, x: Float, y: Float) {
