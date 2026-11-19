@@ -165,6 +165,9 @@ internal sealed class ViewerClient : IDisposable
         private readonly Dictionary<FlowTimer, CancellationTokenSource> _timers = new();
         private readonly object _lock = new();
         private VideoDecoder? _decoder;
+        // Guards _audio/_audioTried/_gone together: the receive thread creates
+        // the player while Dispose may run, and exactly one side disposes it.
+        private readonly object _audioLock = new();
         private AudioPlayer? _audio;
         private bool _audioTried;
         private volatile bool _gone;
@@ -456,13 +459,17 @@ internal sealed class ViewerClient : IDisposable
                 case MessageType.AudioFrame:
                     // The first one builds the player. A failure is logged once and
                     // the session carries on without sound.
-                    if (!_audioTried)
+                    AudioPlayer? audioNow;
+                    lock (_audioLock)
                     {
-                        _audioTried = true;
-                        _audio = AudioPlayer.TryCreate();
-                        if (_gone) { _audio?.Dispose(); _audio = null; }
+                        if (!_audioTried)
+                        {
+                            _audioTried = true;
+                            if (!_gone) _audio = AudioPlayer.TryCreate();
+                        }
+                        audioNow = _audio;
                     }
-                    _audio?.Play(p);
+                    audioNow?.Play(p);
                     break;
                 // StreamStatus, HostLockState, CursorPos, Clipboard: not
                 // needed for v1 of this viewer -- see report/README for what's skipped.
@@ -479,9 +486,13 @@ internal sealed class ViewerClient : IDisposable
             try { _ws.Abort(); } catch { }
             _ws.Dispose();
             _decoder?.Dispose();
-            _gone = true;
-            var audio = _audio;
-            _audio = null;
+            AudioPlayer? audio;
+            lock (_audioLock)
+            {
+                _gone = true;
+                audio = _audio;
+                _audio = null;
+            }
             audio?.Dispose();
         }
     }

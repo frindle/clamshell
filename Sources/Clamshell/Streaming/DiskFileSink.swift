@@ -228,7 +228,7 @@ final class DiskFileSink: FileTransferStore {
     /// Rename the temporary file to the first free name, never replacing.
     private func claim(_ part: Part) -> URL? {
         for n in 1...Self.maxNameAttempts {
-            guard let target = childURL(FileTransfer.numberedName(part.storedName, n)) else { return nil }
+            guard let target = childURL(FileTransfer.numberedNameFitting(part.storedName, n)) else { return nil }
             if renamex_np(part.tempURL.path, target.path, UInt32(RENAME_EXCL)) == 0 { return target }
             if errno != EEXIST { return nil }
         }

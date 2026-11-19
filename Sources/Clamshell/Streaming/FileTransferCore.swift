@@ -217,6 +217,31 @@ enum FileTransfer {
         return "\(name) \(n)"
     }
 
+    /// Like `numberedName`, but the result never exceeds `maxNameBytes` of
+    /// UTF-8: the base name (before the extension) is shortened a character at
+    /// a time until the numbered name fits.
+    static func numberedNameFitting(_ name: String, _ n: Int) -> String {
+        var result = numberedName(name, n)
+        guard n > 1, result.utf8.count > maxNameBytes else { return result }
+        var units = Array(name.unicodeScalars)
+        var ext = String.UnicodeScalarView()
+        if let dot = units.lastIndex(of: "."), dot != 0, dot != units.count - 1 {
+            ext.append(contentsOf: units[dot...])
+            units = Array(units[..<dot])
+        }
+        let suffix = " \(n)" + String(ext)
+        var base = String.UnicodeScalarView()
+        var used = suffix.utf8.count
+        for u in units {
+            let w = String(u).utf8.count
+            if used + w > maxNameBytes { break }
+            base.append(u)
+            used += w
+        }
+        result = String(base) + suffix
+        return result
+    }
+
     /// The first of `name`, `name 2`, `name 3`, ... that `isTaken` does not
     /// report. Used for the decision only; a store must still claim the final
     /// name in one step that cannot replace a file.

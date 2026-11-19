@@ -759,7 +759,7 @@ enum AuthGateSelfTest {
         let z = Device(name: "Selftest Z")
         let firstId: UInt32 = 71, secondId: UInt32 = 72
         let size = FileTransfer.maxSize
-        var z1 = try bench.knock(port1, z, "Z, waiting", capabilities: .fileTransfer)
+        var z1 = try bench.knock(port0, z, "Z, waiting", capabilities: .fileTransfer)
         let first = FileTransfer.offer(id: firstId, name: "selftest-first.bin", size: size)
         z1.send(StreamMessage.frame(type: .fileOffer, payload: first.payload))
         let closedWhileWaiting = try z1.waitQuietly(for: 3.0)
@@ -767,10 +767,10 @@ enum AuthGateSelfTest {
         try expect(store.decide(id: z.id, .approve, by: onHost, onlyIfWaiting: false) != nil,
                    "the host can approve the device that offered a file")
         if closedWhileWaiting {
-            z1 = try bench.enter(port1, z, "Z, back after approval", capabilities: .fileTransfer, display: 1)
+            z1 = try bench.enter(port0, z, "Z, back after approval", capabilities: .fileTransfer, display: 0)
         } else {
             try z1.expectStatus(.accepted, skippingPending: true)
-            try z1.beginSession(display: 1)
+            try z1.beginSession(display: 0)
         }
         let second = FileTransfer.offer(id: secondId, name: "selftest-second.bin", size: size)
         try z1.sendSecure(.fileOffer, second.payload)

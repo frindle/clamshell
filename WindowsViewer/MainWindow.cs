@@ -75,7 +75,8 @@ internal sealed class MainWindow : Window
         Title = $"Clamshell -- connecting to {host}:{port}...";
         try { await client.ConnectAsync(host, port, requestedCodec); }
         // Same reason every other cross-thread touch in this class goes
-        // through Dispatcher.Invoke: a failed ConnectAsync's continuation
+        // through the Dispatcher (BeginInvoke for client callbacks, a
+        // one-frame slot for video, Invoke here): a failed ConnectAsync's continuation
         // isn't guaranteed to resume on the UI thread (caught live in CI --
         // this exact line threw System.InvalidOperationException "The
         // calling thread cannot access this object because a different

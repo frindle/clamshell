@@ -349,6 +349,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// handshake (a host with approval off, a client that never answered the
     /// challenge) has no device and so no bits: it never transfers files.
     private func startDeviceSessions(for link: StreamLink) {
+        // Files and controllers belong to the primary connection only; a
+        // secondary display's connection must not get sessions or a timer.
+        guard isPrimary else { return }
         guard let device = link.device else { return }
         if HostFileSession.allowed(phase: link.phase, capabilities: device.capabilities) {
             let name = device.name
