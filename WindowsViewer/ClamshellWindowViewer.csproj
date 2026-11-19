@@ -26,6 +26,8 @@
          reused here for decode via the built-in Windows H.264/HEVC decoder
          MFTs (no codec install required, no FFmpeg dependency). -->
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <!-- Sound out (WaveOutEvent + BufferedWaveProvider); the version WindowsServer pins. -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
   <ItemGroup>

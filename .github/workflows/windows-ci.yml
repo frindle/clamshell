@@ -267,3 +267,35 @@ jobs:
           $dlog = Get-Content decode-file-err.log -Raw -ErrorAction SilentlyContinue
           if ($dlog -notmatch "decode-file: PASS") { throw "decode-file stderr missing 'decode-file: PASS' line" }
           Write-Output "decode-file OK: real ffmpeg-produced H.264 decoded through a real Media Foundation decoder MFT"
+
+      - name: Generate a one-second 1 kHz stereo AAC-LC clip (ffmpeg, ADTS)
+        if: ${{ !cancelled() }}
+        # Same idea as the H.264 clip above: an independent encoder makes the
+        # input, so the viewer's decoder is checked against a known-good stream.
+        # The H.264 step normally installed ffmpeg already; install it here too
+        # if that step did not run.
+        shell: pwsh
+        run: |
+          $ffmpeg = "C:\ProgramData\chocolatey\bin\ffmpeg.exe"
+          if (-not (Test-Path $ffmpeg)) { choco install ffmpeg -y --no-progress }
+          & $ffmpeg -y -f lavfi -i "sine=frequency=1000:duration=1:sample_rate=48000" -ac 2 -c:a aac -profile:a aac_low -b:a 128k -f adts test-tone.aac
+          if (-not (Test-Path test-tone.aac) -or (Get-Item test-tone.aac).Length -eq 0) { throw "ffmpeg did not produce test-tone.aac" }
+          Write-Output "generated test-tone.aac: $((Get-Item test-tone.aac).Length) bytes"
+
+      - name: Viewer decode-audio-file (real AAC-LC -> real Media Foundation decode)
+        if: ${{ !cancelled() }}
+        # Feeds the raw access units of the clip (ADTS headers dropped) through
+        # the same AudioDecoder a live session uses, then checks the PCM: 48 kHz
+        # stereo, the length within one frame of 1024, and a 1 kHz tone in both
+        # channels. This proves the decoder. It plays nothing: this runner has no
+        # speakers and CI cannot hear.
+        shell: pwsh
+        run: |
+          dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- decode-audio-file test-tone.aac 1000 1 `
+            2> decode-audio-err.log
+          $code = $LASTEXITCODE
+          Write-Output "--- decode-audio-file stderr ---"; Get-Content decode-audio-err.log -ErrorAction SilentlyContinue
+          if ($code -ne 0) { throw "decode-audio-file FAILED (exit $code) -- see stderr above" }
+          $alog = Get-Content decode-audio-err.log -Raw -ErrorAction SilentlyContinue
+          if ($alog -notmatch "decode-audio-file: PASS") { throw "decode-audio-file stderr missing 'decode-audio-file: PASS' line" }
+          Write-Output "decode-audio-file OK: a real ffmpeg AAC-LC clip decoded through a real Media Foundation decoder MFT to a 1 kHz tone. Sound output itself was NOT checked."

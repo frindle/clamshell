@@ -165,6 +165,9 @@ internal sealed class ViewerClient : IDisposable
         private readonly Dictionary<FlowTimer, CancellationTokenSource> _timers = new();
         private readonly object _lock = new();
         private VideoDecoder? _decoder;
+        private AudioPlayer? _audio;
+        private bool _audioTried;
+        private volatile bool _gone;
         private bool _closedByFlow;
         private bool _answeredByFlag;
 
@@ -425,7 +428,18 @@ internal sealed class ViewerClient : IDisposable
                         _decoder?.Feed(p.Slice(9), pts);
                     }
                     break;
-                // StreamStatus, HostLockState, CursorPos, AudioFrame, Clipboard: not
+                case MessageType.AudioFrame:
+                    // The first one builds the player. A failure is logged once and
+                    // the session carries on without sound.
+                    if (!_audioTried)
+                    {
+                        _audioTried = true;
+                        _audio = AudioPlayer.TryCreate();
+                        if (_gone) { _audio?.Dispose(); _audio = null; }
+                    }
+                    _audio?.Play(p);
+                    break;
+                // StreamStatus, HostLockState, CursorPos, Clipboard: not
                 // needed for v1 of this viewer -- see report/README for what's skipped.
                 default:
                     break;
@@ -440,6 +454,10 @@ internal sealed class ViewerClient : IDisposable
             try { _ws.Abort(); } catch { }
             _ws.Dispose();
             _decoder?.Dispose();
+            _gone = true;
+            var audio = _audio;
+            _audio = null;
+            audio?.Dispose();
         }
     }
 

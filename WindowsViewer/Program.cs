@@ -16,6 +16,10 @@ namespace Clamshell;
 //   ClamshellWindowViewer decode-file <path> [codec]  decode a real Annex-B
 //                                                     elementary stream file
 //                                                     directly (no network)
+//   ClamshellWindowViewer decode-audio-file <file.aac> [hz] [seconds]
+//                                                     decode an ADTS AAC-LC file
+//                                                     through the session's audio
+//                                                     decoder and check the PCM
 //   ClamshellWindowViewer selftest                    pure protocol-logic checks
 //   ClamshellWindowViewer known-hosts                 list saved Macs
 //   ClamshellWindowViewer forget-host <addr|fingerprint>
@@ -35,6 +39,7 @@ internal static class Program
         // --allow-unverified belongs to --verify only. Anywhere else it is ignored.
         args = args.Where(a => a != "--allow-unverified").ToArray();
         if (args.Length > 0 && args[0] == "decode-file") return DecodeFileMain(args[1..]);
+        if (args.Length > 0 && args[0] == "decode-audio-file") return DecodeAudioFileMain(args[1..]);
 
         if (args.Length < 2)
         {
@@ -243,6 +248,45 @@ internal static class Program
         return 0;
     }
 
+    /// <summary>Decodes an ADTS AAC-LC file (48 kHz stereo) with the same
+    /// AudioDecoder a live session uses: the ADTS headers are dropped, each raw
+    /// access unit goes in as an AUDIO_FRAME payload would, and the PCM that comes
+    /// out is checked for its length and for a tone at `hz` (default 1000) lasting
+    /// `seconds` (default 1). Proves the decoder, not the sound device: nothing
+    /// here is played.</summary>
+    private static int DecodeAudioFileMain(string[] args)
+    {
+        if (args.Length < 1)
+        {
+            Console.Error.WriteLine("Usage: ClamshellWindowViewer decode-audio-file <file.aac> [hz] [seconds]");
+            return 1;
+        }
+        double hz = args.Length > 1 ? double.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture) : 1000;
+        double seconds = args.Length > 2 ? double.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture) : 1;
+
+        byte[] file;
+        try { file = File.ReadAllBytes(args[0]); }
+        catch (Exception e) { Log.Line($"decode-audio-file: could not read {args[0]}: {e.Message}"); return 1; }
+
+        var units = Adts.Split(file, out string? problem);
+        if (problem != null) { Log.Line($"decode-audio-file: FAIL -- {problem}"); return 1; }
+        if (units.Count == 0) { Log.Line("decode-audio-file: FAIL -- no AAC frames in the file"); return 1; }
+
+        var pcm = new MemoryStream();
+        using (var decoder = new AudioDecoder())
+        {
+            decoder.OnPcm = b => pcm.Write(b, 0, b.Length);
+            foreach (var u in units) decoder.Feed(u);
+            decoder.Flush();
+        }
+
+        bool ok = AudioCheck.Verify(pcm.ToArray(), units.Count, hz, seconds, out string detail);
+        if (!ok) { Log.Line($"decode-audio-file: FAIL -- {detail}"); return 1; }
+        Log.Line($"decode-audio-file: {detail}");
+        Log.Line("decode-audio-file: PASS");
+        return 0;
+    }
+
     // Inverse of VideoDecoder.cs's Avcc.ToAnnexB -- Annex-B (start-code
     // delimited NALs, what ffmpeg's raw h264 muxer produces) -> AVCC
     // (length-prefixed), the wire's actual VIDEO_FRAME payload shape. Exists
@@ -330,8 +374,81 @@ internal static class SelfTest
         byte[] move = Proto.MouseMove(0.25f, 0.75f);
         Assert(Be.F32(move.AsSpan(5), 0) == 0.25f && Be.F32(move.AsSpan(5), 4) == 0.75f, "mousemove coords");
 
+        AudioChecks();
+
         Console.WriteLine("SelfTest: all checks passed");
         return 0;
+    }
+
+    // The audio parts that need no decoder or sound device: the AAC user-data
+    // blob, ADTS splitting, the tone check, and the latency rules.
+    private static void AudioChecks()
+    {
+        // The renegotiation cap: four format changes per unit, then the unit is dropped;
+        // three dropped units in a row end the audio; a good unit resets the count.
+        var cap = new RenegotiationCap();
+        cap.StartFeed();
+        for (int i = 0; i < RenegotiationCap.MaxPerFeed; i++) Assert(cap.Allow(), "cap: change within the limit is allowed");
+        Assert(!cap.Allow(), "cap: the change past the limit is refused");
+        cap.StartFeed();
+        Assert(cap.Allow(), "cap: a new unit starts from zero");
+        Assert(!cap.DroppedUnit() && !cap.DroppedUnit(), "cap: two dropped units do not give up");
+        cap.FeedWorked();
+        Assert(!cap.DroppedUnit() && !cap.DroppedUnit(), "cap: a good unit resets the dropped count");
+        Assert(cap.DroppedUnit(), "cap: three dropped units in a row give up");
+
+        Assert(AudioDecoder.UserData.Length == 14 && AudioDecoder.UserData[12] == 0x11 && AudioDecoder.UserData[13] == 0x90,
+            "AAC user data: 12 HEAACWAVEINFO bytes, then 11 90");
+        Assert(AudioDecoder.UserData[0] == 0 && AudioDecoder.UserData[2] == 0x29, "AAC user data: raw payload, AAC-LC L2");
+
+        // Two ADTS frames (AAC-LC, 48 kHz, stereo, no CRC) with 3 and 5 payload bytes.
+        byte[] Frame(byte[] payload)
+        {
+            int len = 7 + payload.Length;
+            var f = new List<byte> { 0xFF, 0xF1, 0x4C, (byte)(0x80 | ((len >> 11) & 3)), (byte)((len >> 3) & 0xFF),
+                (byte)(((len & 7) << 5) | 0x1F), 0xFC };
+            f.AddRange(payload);
+            return f.ToArray();
+        }
+        var file = Frame(new byte[] { 1, 2, 3 }).Concat(Frame(new byte[] { 4, 5, 6, 7, 8 })).ToArray();
+        var units = Adts.Split(file, out string? problem);
+        Assert(problem == null && units.Count == 2, "ADTS: two frames");
+        Assert(units[0].SequenceEqual(new byte[] { 1, 2, 3 }) && units[1].SequenceEqual(new byte[] { 4, 5, 6, 7, 8 }),
+            "ADTS: headers dropped, payloads kept");
+        Adts.Split(file.Take(file.Length - 1).ToArray(), out string? cut);
+        Assert(cut != null, "ADTS: a cut-off last frame is reported");
+        Adts.Split(new byte[] { 0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC, 0xDE }, out string? noSync);
+        Assert(noSync != null, "ADTS: no sync word is reported");
+        var mono = Frame(new byte[] { 1 });
+        mono[3] = 0x40; // one channel
+        Adts.Split(mono, out string? notStereo);
+        Assert(notStereo != null, "ADTS: not stereo is reported");
+
+        // A 1 kHz stereo second: right length and tone pass; another pitch, silence and a wrong length fail.
+        byte[] Tone(double hz, int frames, double amp)
+        {
+            var b = new byte[frames * 4];
+            for (int i = 0; i < frames; i++)
+            {
+                short v = (short)(amp * Math.Sin(2 * Math.PI * hz * i / 48000));
+                BitConverter.GetBytes(v).CopyTo(b, i * 4);
+                BitConverter.GetBytes(v).CopyTo(b, i * 4 + 2);
+            }
+            return b;
+        }
+        Assert(AudioCheck.Verify(Tone(1000, 48128, 8000), 47, 1000, 1, out _), "tone check: 1 kHz passes");
+        Assert(!AudioCheck.Verify(Tone(440, 48128, 8000), 47, 1000, 1, out _), "tone check: 440 Hz fails as 1 kHz");
+        Assert(!AudioCheck.Verify(new byte[48128 * 4], 47, 1000, 1, out _), "tone check: silence fails");
+        Assert(!AudioCheck.Verify(Tone(1000, 48128, 8000), 40, 1000, 1, out _), "tone check: wrong length fails");
+        Assert(!AudioCheck.Verify(Tone(1000, 24064, 8000), 23, 1000, 1, out _), "tone check: half a second fails");
+
+        // The latency rules.
+        var p = new AudioPacing();
+        Assert(!p.ShouldStart(79) && p.ShouldStart(80), "pacing: starts at 80 ms");
+        Assert(p.Offer(100) == AudioPacing.Verdict.Queue && p.Offer(250) == AudioPacing.Verdict.Queue, "pacing: queues up to 250 ms");
+        Assert(p.Offer(251) == AudioPacing.Verdict.Drop, "pacing: drops past 250 ms");
+        Assert(p.Offer(150) == AudioPacing.Verdict.Drop, "pacing: keeps dropping until 100 ms");
+        Assert(p.Offer(100) == AudioPacing.Verdict.Queue && p.Offer(200) == AudioPacing.Verdict.Queue, "pacing: queues again at 100 ms");
     }
 
     // Builds an AVCC blob for the round-trip test without depending on the
