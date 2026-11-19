@@ -23,6 +23,17 @@ jobs:
           .build/debug/Clamshell self-heal-guard-selftest
           .build/debug/Clamshell confirmation-bridge-selftest
           .build/debug/Clamshell confirmation-coordinator-selftest
+          .build/debug/Clamshell auth-gate-selftest
+          # macOS asks before a program may use the local network, and nobody
+          # can answer on a runner. The selftest exits 75 when it was not
+          # allowed to announce at all. Root is not asked, so it then runs
+          # again as root. Any other failure, or a second 75, fails the step.
+          .build/debug/Clamshell discovery-selftest || {
+            code=$?
+            [ "$code" -eq 75 ] || exit "$code"
+            echo "Not allowed to announce as the runner user; running the discovery selftest as root."
+            sudo .build/debug/Clamshell discovery-selftest
+          }
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -30,6 +41,10 @@ jobs:
         run: node tests/test-webclient-hello.js
       - name: Web client input and audio tests
         run: node tests/test-webclient-input.js
+      - name: Web client auth tests
+        run: |
+          node tests/test-webclient-auth.js
+          node tests/test-webclient-auth-flow.js
       - name: Web client syntax check
         run: |
           # No build step for the web client, so a typo would only show up in
@@ -38,6 +53,23 @@ jobs:
             cp "$f" "$RUNNER_TEMP/check.mjs"
             node --check "$RUNNER_TEMP/check.mjs" || { echo "syntax error in $f"; exit 1; }
           done
+      # The interop check needs a global WebSocket, which Node 20 does not have
+      # without a flag. It runs the web client's auth.js against the real host
+      # (`Clamshell auth-interop-host`, loopback only, temporary state directory).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Web client auth against the real host
+        timeout-minutes: 3
+        run: node tests/test-webclient-auth-interop.js .build/debug/Clamshell 5994
+      # The same host set-up, driven by the C# client flow that the Windows
+      # viewer uses (WindowsShared/), over a plain ClientWebSocket.
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Windows viewer client flow against the real host
+        timeout-minutes: 5
+        run: dotnet run --project tests/WindowsViewerInterop/WindowsViewerInterop.csproj -c Release -- "$PWD/.build/debug/Clamshell" 5995
       - name: Lint probe plists
         run: plutil -lint scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist
       - name: Lint login-window agent scripts

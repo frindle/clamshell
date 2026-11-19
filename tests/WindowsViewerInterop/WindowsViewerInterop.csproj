@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- Interop check: the C# client flow (WindowsShared/) against the real Mac
+         host. Plain net8.0, so it builds and runs on macOS. No WPF, no Windows
+         calls. Run by the macOS job in .github/workflows/ci.yml. -->
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\WindowsShared\**\*.cs" Exclude="..\..\WindowsShared\SelfTest\**" Link="WindowsShared\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+</Project>

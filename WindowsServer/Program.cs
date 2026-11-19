@@ -30,6 +30,16 @@ internal static class Program
     private static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "selftest") return SelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-input")
+            return InputSelfTest.Run(args.Length > 1 ? args[1] : null);
+        if (args.Length > 0 && args[0] == "selftest-encoder") return EncoderSelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-hostkey") return HostKeySelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-store") return StoreSelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-gate") return GateSelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-screens") return ScreensSelfTest.Run();
+        if (args.Length > 0 && args[0] == "selftest-commands") return CommandsSelfTest.Run();
+        // Before the single-instance check: these work while the tray app is running.
+        if (DeviceCommands.IsCommand(args)) return DeviceCommands.RunFromMain(args);
         if (args.Length > 0 && args[0] == "windowlist") return WindowEnum.RunCli();
         if (args.Length > 0 && args[0] == "windowcaptureselftest")
         {

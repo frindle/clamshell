@@ -11,6 +11,10 @@ internal sealed class TrayApp : ApplicationContext
     private ushort _basePort;
     private List<StreamServer> _servers = new();
     private bool _encoderProbed;
+    private HostAuth? _auth;
+    private ApprovalController? _approvals;
+    // Never shown: gives the device list's change events a thread to land on.
+    private readonly Control _ui = new();
 
     private readonly NotifyIcon? _icon;
     private SettingsForm? _settingsForm;
@@ -75,7 +79,32 @@ internal sealed class TrayApp : ApplicationContext
             _encoderProbed = true;
         }
 
-        _servers = displays.Select(d => new StreamServer(d, _basePort)).ToList();
+        // The host key and the device list are opened once and shared by every display's
+        // listener. If either cannot be opened nothing is served: there is no way to say who
+        // may connect, and that is never answered with "anyone".
+        if (_auth is null)
+        {
+            try { _auth = new HostAuth(); }
+            catch (Exception e) when (e is DeviceKeyException or IOException or UnauthorizedAccessException)
+            {
+                Log.Line($"not serving: the host key or the device list could not be opened ({e.Message})");
+                return;
+            }
+        }
+        if (!_auth.RequireApproval)
+            Log.Line("*** device approval is OFF (RequireDeviceApproval is 0): any device that can reach this PC can connect without being approved ***");
+        if (_approvals is null)
+        {
+            _ = _ui.Handle;
+            _approvals = new ApprovalController(_auth, _ui, _icon);
+            _auth.Store.DidChange += RebuildMenuOnUi;
+            _auth.ApprovalDidChange += RebuildMenuOnUi;
+            _approvals.Refresh();
+        }
+        _auth.Directory.SetDisplays(displays.Select(d =>
+            new HostDirectory.DisplayEntry(d.Index, $"Display {d.Index + 1}", d.IsPrimary, d.Port(_basePort))));
+
+        _servers = displays.Select(d => new StreamServer(d, _basePort, _auth)).ToList();
         foreach (var s in _servers) s.Start();
         Log.Line("serving — use the tray icon to stop or exit");
     }
@@ -119,6 +148,26 @@ internal sealed class TrayApp : ApplicationContext
         settings.Click += (_, _) => OpenSettings();
         menu.Items.Add(settings);
 
+        if (_auth is not null)
+        {
+            int waiting = _auth.Store.Waiting().Count;
+            if (waiting > 0)
+            {
+                var answer = new ToolStripMenuItem(waiting == 1 ? "1 device is waiting for approval…" : $"{waiting} devices are waiting for approval…");
+                answer.Click += (_, _) => _approvals?.Refresh();
+                menu.Items.Insert(0, answer);
+            }
+            // The tooltip (63 characters at most) says it too, so it shows without opening the menu.
+            if (_icon is not null)
+                _icon.Text = _auth.RequireApproval ? "Clamshell Server" : "Clamshell Server: approval off";
+            if (!_auth.RequireApproval)
+            {
+                var off =new ToolStripMenuItem("Device approval is off: anyone who can reach this PC can connect") { Enabled = false };
+                menu.Items.Insert(0, off);
+            }
+            menu.Items.Add(new ToolStripMenuItem("This PC’s fingerprint: " + _auth.Identity.Fingerprint) { Enabled = false });
+        }
+
         if (_updateAvailable is { } u)
         {
             var update = new ToolStripMenuItem($"⬆ Update available: {u.Tag}");
@@ -146,8 +195,14 @@ internal sealed class TrayApp : ApplicationContext
             _settingsForm.Activate();
             return;
         }
-        _settingsForm = new SettingsForm(_basePort, RestartWithPort, _updateChecker);
+        _settingsForm = new SettingsForm(_basePort, RestartWithPort, _updateChecker, _auth);
         _settingsForm.Show();
+    }
+
+    private void RebuildMenuOnUi()
+    {
+        try { if (_ui.IsHandleCreated && !_ui.IsDisposed) _ui.BeginInvoke(new Action(RebuildMenu)); }
+        catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException) { }
     }
 
     private async Task CheckForUpdateAsync()
@@ -177,6 +232,7 @@ internal sealed class TrayApp : ApplicationContext
         Log.Line("exiting");
         StopServing();
         _updateTimer.Stop();
+        _approvals?.Dispose();
         if (_icon is not null) _icon.Visible = false;
         ExitThread();
     }

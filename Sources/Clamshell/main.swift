@@ -4,6 +4,17 @@ import AppKit
 //   clamshell test-virtual-display   create the virtual display for 10s, then tear down
 //   clamshell test-detect            print current remote-session detection state
 //
+//
+// Device list, usable over SSH (see DeviceCommands):
+//   clamshell devices                 this Mac's fingerprint and every known device
+//   clamshell approve <fingerprint>   also: deny, revoke, forget
+
+// These touch only the state directory, so they run before anything that
+// wants a window server and work in a session that has none.
+if CommandLine.arguments.count > 1, DeviceCommands.names.contains(CommandLine.arguments[1]) {
+    exit(DeviceCommands.run(Array(CommandLine.arguments.dropFirst())))
+}
+
 // SCContentFilter(desktopIndependentWindow:) (window-capture-selftest) hits
 // "CGS_REQUIRE_INIT" without an active WindowServer connection, unlike the
 // display-based filter other capture paths use -- touching NSApplication.shared
@@ -67,7 +78,7 @@ if args.count > 1 {
         // StreamFleet follows display topology changes: a client HELLO can
         // trigger a collapse that creates virtual display(s) mid-run, and
         // those must take over the ports (A at base, B at base+1).
-        let fleet = StreamFleet(basePort: basePort)
+        let fleet = StreamFleet(basePort: basePort, announce: BonjourAdvertiser.isEnabled)
         fleet.rebuild()
         guard fleet.isServing else {
             print("FAILED to start any stream server (ports in use?) — see log")
@@ -189,6 +200,25 @@ if args.count > 1 {
         // failed CGWindowID<->AXUIElement matching. Passive: reads the real
         // cursor position, no synthetic input. `clamshell window-at-cursor-selftest`.
         exit(WindowAtCursorSelfTest.run())
+    case "auth-gate-selftest":
+        // Device approval in front of the stream listeners: real loopback
+        // listeners and clients, a device list in a temporary directory.
+        // Its listeners are made to start no capture and no input.
+        exit(AuthGateSelfTest.run())
+#if DEBUG
+    case "auth-interop-host":
+        // A loopback-only listener with device approval on, for the client
+        // interop tests (tests/test-webclient-auth-interop.js and
+        // tests/WindowsViewerInterop). Starts no capture and no input. Needs
+        // CLAMSHELL_STATE_DIR to name a directory that is not the real one.
+        // Debug builds only: a release build does not contain it.
+        exit(AuthInteropHost.run(Array(args.dropFirst(2))))
+#endif
+    case "discovery-selftest":
+        // The local-network announcement, registered so that only this
+        // machine can see it and read back from the system's discovery
+        // service. Announces nothing on the network and listens on nothing.
+        exit(DiscoverySelfTest.run())
     case "confirmation-bridge-selftest":
         exit(ConfirmationBridgeSelfTest.run())
     case "confirmation-coordinator-selftest":
@@ -228,7 +258,8 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent]")
+              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
+              "devices | approve | deny | revoke | forget]")
         exit(64)
     }
 }

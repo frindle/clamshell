@@ -76,10 +76,27 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// The primary server (main display, base port) also carries system audio
     /// and clipboard sync; secondary displays are video+input only.
     private let isPrimary: Bool
+    /// Listen on this machine's loopback address only. For selftests, so a
+    /// test listener is never reachable from the network.
+    private let loopbackOnly: Bool
+    /// False for a listener that must never capture the screen or inject
+    /// input, whatever a client sends: a HELLO is then logged and ignored, so
+    /// no capture session, encoder, clipboard bridge or input injector starts.
+    /// Only the test host in `AuthInteropHost` and the gate selftest turn it off.
+    private let startsMedia: Bool
+    /// How many times a HELLO got as far as starting a capture session (read
+    /// through `mediaStartCount`; touched on `queue`).
+    private var mediaStarts = 0
 
     private var listener: NWListener?
+    /// Decides which connections get in (see StreamLink.swift). Nothing in
+    /// this class runs for a connection the gate has not handed over.
+    private let gate: StreamGate
+    private let auth: HostAuth
+    /// The client being served, and its socket. `connection` doubles as the
+    /// identity of the session in the async paths below.
+    private var liveLink: StreamLink?
     private var connection: NWConnection?
-    private var parser: StreamMessageParser?
     private var stream: SCStream?
     /// Read from the capture queue for every frame and replaced on `queue` when
     /// the stream is resized in place, so access goes through a lock.
@@ -92,10 +109,17 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var audioEncoder: AudioEncoder?
     private var clipboard: ClipboardBridge?
     private var injector: InputInjector?
+    /// What the connected device may bring along. Each exists only for a
+    /// device that was let in and set the matching capability bit (see
+    /// `admitted`), and ends with the connection.
+    private var fileSession: HostFileSession?
+    private var peripheralSession: HostPeripheralSession?
+    /// Drives the time-based parts of the two above; runs only while one exists.
+    private var deviceTimer: DispatchSourceTimer?
     private let audioQueue = DispatchQueue(label: "clamshell.stream.audio")
 
     /// Serial queue owning all connection/session state.
-    private let queue = DispatchQueue(label: "clamshell.stream")
+    private let queue: DispatchQueue
     private let videoQueue = DispatchQueue(label: "clamshell.stream.video")
 
     /// Send backpressure: frames handed to NWConnection but not yet consumed.
@@ -145,14 +169,40 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var cursorTimer: DispatchSourceTimer?
     private var lastSentCursor: CGPoint?
 
-    init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
+    /// Clipboard text from the client larger than this is ignored.
+    static let maxClipboardBytes = 1 << 20
+
+    /// `displayIndex` is this listener's place among the host's displays
+    /// (0 = Display A), told to clients in HOST_INFO; nil for a window.
+    init(source: StreamSource, port: UInt16 = streamDefaultPort, isPrimary: Bool = true,
+         auth: HostAuth = .shared, displayIndex: Int? = nil, loopbackOnly: Bool = false,
+         startsMedia: Bool = true) {
         self.source = source
         self.port = port
         self.isPrimary = isPrimary
+        self.loopbackOnly = loopbackOnly
+        self.startsMedia = startsMedia
+        self.auth = auth
+        let queue = DispatchQueue(label: "clamshell.stream")
+        self.queue = queue
+        gate = StreamGate(auth: auth, queue: queue, label: "port \(port)")
+        super.init()
+        gate.displayIndex = displayIndex
+        gate.onAdmit = { [weak self] link in self?.admitted(link) }
+        gate.onMessage = { [weak self] link, type, payload in
+            guard let self, link === self.liveLink else { return }
+            self.handle(type: type, payload: payload)
+        }
+        gate.onClose = { [weak self] link in
+            guard let self, link === self.liveLink else { return }
+            self.teardownSession()
+        }
     }
 
-    convenience init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true) {
-        self.init(source: .display(displayID), port: port, isPrimary: isPrimary)
+    convenience init(displayID: CGDirectDisplayID, port: UInt16 = streamDefaultPort, isPrimary: Bool = true,
+                     auth: HostAuth = .shared, displayIndex: Int? = nil) {
+        self.init(source: .display(displayID), port: port, isPrimary: isPrimary,
+                  auth: auth, displayIndex: displayIndex)
     }
 
     func start() throws {
@@ -162,12 +212,28 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         params.allowLocalEndpointReuse = true
         let ws = NWProtocolWebSocket.Options()
         ws.autoReplyPing = true
+        // Nothing a client sends is anywhere near this size; the room above
+        // the largest message is for the SECURE wrapping.
+        ws.maximumMessageSize = StreamGate.sessionMaxPayload + 4096
+        // The upgrade request's headers say who is behind a proxy (see
+        // ClientAddress); the gate reads them when the connection is ready.
+        let upgradeHeaders = gate.upgradeHeaders
+        ws.setClientRequestHandler(queue) { _, headers in
+            upgradeHeaders.record(headers)
+            return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+        }
         params.defaultProtocolStack.applicationProtocols.insert(ws, at: 0)
         guard let nwPort = NWEndpoint.Port(rawValue: port) else {
             clog("STREAM: invalid listen port \(port)")
             throw NWError.posix(.EINVAL)
         }
-        let listener = try NWListener(using: params, on: nwPort)
+        let listener: NWListener
+        if loopbackOnly {
+            params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: nwPort)
+            listener = try NWListener(using: params)
+        } else {
+            listener = try NWListener(using: params, on: nwPort)
+        }
         listener.newConnectionHandler = { [weak self] conn in
             self?.queue.async { self?.accept(conn) }
         }
@@ -177,7 +243,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         }
         listener.start(queue: queue)
         self.listener = listener
-        clog("STREAM: listening on port \(port) for \(source)")
+        auth.startWatchingSetting()
+        clog("STREAM: listening on port \(port)\(loopbackOnly ? " (this machine only)" : "") for \(source) — device approval is \(auth.requireApproval ? "on" : "OFF")")
     }
 
     // The bind happens after start() returns, so "port still in use" (the
@@ -218,6 +285,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         queue.async { [self] in
             stopped = true
             teardownSession()
+            gate.closeAll(why: "the listener is stopping")
             if let l = listener {
                 l.stateUpdateHandler = { state in
                     clog("STREAM: listener \(state)")
@@ -250,47 +318,88 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     var portNumber: UInt16 { port }
     var primary: Bool { isPrimary }
     var isClientConnected: Bool { queue.sync { connection != nil } }
+    /// How many HELLOs have started a capture session on this server. Always 0
+    /// when `startsMedia` is false.
+    var mediaStartCount: Int { queue.sync { mediaStarts } }
+    /// Whether an input injector exists (only a started session creates one).
+    var hasInputInjector: Bool { queue.sync { injector != nil } }
 
     // MARK: - Connection lifecycle (on `queue`)
 
+    /// A connection arrived. It belongs to the gate until the gate lets it
+    /// in; until then it cannot disturb the client being served.
     private func accept(_ conn: NWConnection) {
-        if connection != nil {
+        listenRetries = 0 // a connection reached us, so the port is ours
+        gate.accept(conn)
+    }
+
+    /// The gate let this connection in: it is the client from now on.
+    private func admitted(_ link: StreamLink) {
+        if liveLink != nil || connection != nil {
             clog("STREAM: new client replaces existing connection")
             teardownSession()
         }
-        connection = conn
-        listenRetries = 0 // a client got through, so the port is ours
+        liveLink = link
+        connection = link.conn
         sessionRequested = false
-        let parser = StreamMessageParser()
-        parser.onMessage = { [weak self] type, payload in
-            self?.handle(type: type, payload: payload)
-        }
-        self.parser = parser
-        conn.stateUpdateHandler = { [weak self] state in
-            clog("STREAM: connection \(state)")
-            if case .failed = state { self?.queue.async { self?.teardownSession() } }
-            if case .cancelled = state { self?.queue.async { self?.teardownSession() } }
-        }
-        conn.start(queue: queue)
-        receiveLoop(conn)
+        startDeviceSessions(for: link)
     }
 
-    private func receiveLoop(_ conn: NWConnection) {
-        conn.receiveMessage { [weak self] data, _, complete, error in
-            guard let self, self.connection === conn else { return }
-            if let data, !data.isEmpty { self.parser?.feed(data) }
-            if self.parser?.corrupt == true {
-                clog("STREAM: corrupt stream from client — disconnecting")
-                self.teardownSession()
-                return
-            }
-            if error != nil || (complete && data == nil) {
-                clog("STREAM: client disconnected (\(error.map(String.init(describing:)) ?? "eof"))")
-                self.teardownSession()
-                return
-            }
-            self.receiveLoop(conn)
+    /// Creates what the device's capability bits ask for. A connection with no
+    /// handshake (a host with approval off, a client that never answered the
+    /// challenge) has no device and so no bits: it never transfers files.
+    private func startDeviceSessions(for link: StreamLink) {
+        guard let device = link.device else { return }
+        if HostFileSession.allowed(phase: link.phase, capabilities: device.capabilities) {
+            let name = device.name
+            fileSession = HostFileSession(onStored: { url in
+                HostNotice.post(title: "File received",
+                                body: "\(url.lastPathComponent) from \(name) is in Downloads/Clamshell.")
+            })
         }
+        if HostPeripheralSession.allowed(phase: link.phase, capabilities: device.capabilities) {
+            // Controller events take the same path INPUT_* messages do: the
+            // injector, looked up when used because a session may not have
+            // started yet.
+            let session = HostPeripheralSession(device: device.name, output: LiveInjector(server: self))
+            PeripheralHub.shared.register(session: session.sessionId) { [weak self, weak session] id in
+                self?.queue.async {
+                    guard let self, let session, self.peripheralSession === session else { return }
+                    for frame in session.removeByHost(id: id) { self.send(frame) }
+                }
+            }
+            peripheralSession = session
+        }
+        if fileSession != nil || peripheralSession != nil { startDeviceTimer() }
+    }
+
+    /// Forwards to whatever injector the server has now (on `queue`).
+    private final class LiveInjector: GamepadOutput {
+        private unowned let server: StreamServer
+        init(server: StreamServer) { self.server = server }
+        func mouseRelative(dx: Float32, dy: Float32) { server.injector?.mouseRelative(dx: dx, dy: dy) }
+        func mouseButtonAtCursor(button: UInt8, down: Bool) {
+            server.injector?.mouseButtonAtCursor(button: button, down: down)
+        }
+        func scroll(dx: Float32, dy: Float32) { server.injector?.scroll(dx: dx, dy: dy) }
+        func key(macKeyCode: UInt16, down: Bool, flags: UInt64) {
+            server.injector?.key(macKeyCode: macKeyCode, down: down, flags: flags)
+        }
+    }
+
+    private func startDeviceTimer() {
+        guard deviceTimer == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 0.016, repeating: 0.016, leeway: .milliseconds(4))
+        timer.setEventHandler { [weak self] in self?.deviceTick() }
+        timer.resume()
+        deviceTimer = timer
+    }
+
+    private func deviceTick() {
+        let now = ProcessInfo.processInfo.systemUptime
+        for frame in fileSession?.tick(now: now) ?? [] { send(frame) }
+        for frame in peripheralSession?.tick(now: now) ?? [] { send(frame) }
     }
 
     private func teardownSession() {
@@ -299,9 +408,10 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             clientAnnounced = false
             scheduleRestorePost()
         }
-        connection?.cancel()
+        let link = liveLink
+        liveLink = nil
         connection = nil
-        parser = nil
+        if let link { gate.close(link, why: "the session ended") }
         pacer.reset()
         sessionRequested = false
         bitrate = VideoEncoder.minBitrate
@@ -321,7 +431,16 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         audioEncoder = nil
         clipboard?.stop()
         clipboard = nil
+        deviceTimer?.cancel()
+        deviceTimer = nil
+        // Controllers first: they release their keys and buttons through the
+        // injector, which is then released as a whole.
+        peripheralSession?.closeAll()
+        peripheralSession = nil
+        injector?.releaseAll()
         injector = nil
+        fileSession?.closeAll()
+        fileSession = nil
     }
 
     // MARK: - Messages (on `queue`)
@@ -347,24 +466,42 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             send(StreamMessage.frame(type: .ping, payload: Data()))
         case .keyframeRequest:
             encoder?.requestKeyframe()
-        case .mouseMove:
-            guard payload.count >= 8 else { return }
-            injector?.mouseMove(x: payload.beFloat32(at: 0), y: payload.beFloat32(at: 4))
-        case .mouseButton:
-            guard payload.count >= 10 else { return }
-            injector?.mouseButton(button: payload[payload.startIndex], down: payload[payload.startIndex + 1] == 1,
-                                  x: payload.beFloat32(at: 2), y: payload.beFloat32(at: 6))
-        case .key:
-            guard payload.count >= 11 else { return }
-            injector?.key(macKeyCode: payload.beUInt16(at: 0), down: payload[payload.startIndex + 2] == 1,
-                          flags: payload.beUInt64(at: 3))
-        case .scroll:
-            guard payload.count >= 8 else { return }
-            injector?.scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseMove, .mouseButton, .key, .scroll, .mouseRelative, .mouseButtonAtCursor, .text:
+            guard let input = InputMessage.decode(type: type, payload: payload) else { return }
+            switch input {
+            case let .mouseMove(x, y): injector?.mouseMove(x: x, y: y)
+            case let .mouseButton(button, down, x, y): injector?.mouseButton(button: button, down: down, x: x, y: y)
+            case let .key(code, down, flags): injector?.key(macKeyCode: code, down: down, flags: flags)
+            case let .scroll(dx, dy): injector?.scroll(dx: dx, dy: dy)
+            case let .mouseRelative(dx, dy): injector?.mouseRelative(dx: dx, dy: dy)
+            case let .mouseButtonAtCursor(button, down): injector?.mouseButtonAtCursor(button: button, down: down)
+            case let .text(data): injector?.text(data)
+            }
         case .clipboard:
+            guard payload.count <= Self.maxClipboardBytes else {
+                clog("STREAM: ignored \(payload.count) bytes of clipboard text from the client (limit \(Self.maxClipboardBytes))")
+                return
+            }
             if let text = String(data: payload, encoding: .utf8) { clipboard?.receiveFromClient(text) }
+        case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
+             .devicePending, .deviceDecision, .secure:
+            break // the gate deals with these; here they mean nothing
         case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
             break // host never receives these
+        case .fileOffer, .fileData, .fileEnd:
+            // Only a session made for a device that set the bit has one.
+            guard let files = fileSession else { return }
+            for frame in files.receive(type: type.rawValue, payload: payload,
+                                       now: ProcessInfo.processInfo.systemUptime) { send(frame) }
+        case .fileAnswer:
+            break // the host never offers a file, so there is nothing to answer
+        case .peripheralAttach, .peripheralDetach, .peripheralInput:
+            // Only a session made for a device that set the bit has one.
+            guard let peripherals = peripheralSession else { return }
+            for frame in peripherals.receive(type: type.rawValue, payload: payload,
+                                             now: ProcessInfo.processInfo.systemUptime) { send(frame) }
+        case .peripheralStatus, .peripheralOutput:
+            break // host to client only (rumble is not sent in this version)
         }
     }
 
@@ -426,6 +563,11 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     // MARK: - Capture session
 
     private func startSession(requestedCodec: StreamCodec) {
+        guard startsMedia else {
+            clog("STREAM: HELLO ignored — this listener starts no capture and no input")
+            return
+        }
+        mediaStarts += 1
         let source = self.source
         // Pin this session to the connection that sent HELLO. A second client
         // can connect (tearing down `connection` and installing a new one)
@@ -541,6 +683,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                         clipboard.onLocalChange = { [weak self] text in
                             self?.queue.async {
                                 guard self?.connection != nil else { return }
+                                // The same limit both ways: a client is not
+                                // sent more than the host would take from it.
+                                guard text.utf8.count <= Self.maxClipboardBytes else {
+                                    clog("STREAM: did not send \(text.utf8.count) bytes of clipboard text to the client (limit \(Self.maxClipboardBytes))")
+                                    return
+                                }
                                 self?.send(StreamMessage.clipboard(text: text))
                             }
                         }
@@ -781,16 +929,18 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         clog("STREAM: healthy for 5s — bitrate up to \(bitrate / 1_000_000) Mbps")
     }
 
+    /// Sends one message to the client being served, through the gate, which
+    /// encrypts it on a session that has a key. On `queue`.
     private func send(_ data: Data, completion: (() -> Void)? = nil) {
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .binary)
-        let context = NWConnection.ContentContext(identifier: "msg", metadata: [metadata])
-        connection?.send(content: data, contentContext: context, isComplete: true,
-                         completion: .contentProcessed { [weak self] error in
+        guard let link = liveLink else { return }
+        gate.send(data, to: link) { [weak self] error in
             self?.queue.async {
                 completion?()
-                if error != nil { self?.teardownSession() }
+                // A late failure from a client that has since been replaced
+                // must not end its successor's session.
+                if error != nil, let self, self.liveLink === link { self.teardownSession() }
             }
-        })
+        }
     }
 
     // MARK: - SCStreamOutput / SCStreamDelegate (on `videoQueue`)
@@ -837,9 +987,16 @@ final class StreamFleet {
     static var shared: StreamFleet?
     
     private let basePort: UInt16
+    /// The host's key, device list and approval setting, shared by every
+    /// listener of this fleet.
+    private let auth: HostAuth
     private var servers: [StreamServer] = []
     private var currentIDs: [CGDirectDisplayID] = []
     private var pendingRebuild: DispatchWorkItem?
+    /// Whether the primary display's port is announced on the local network
+    /// (PROTOCOL.md "Discovery"), and what does the announcing.
+    private var announce: Bool
+    private var advertiser: BonjourAdvertiser?
 
     /// Current screen-lock state, tracked from the `com.apple.screenIsLocked` /
     /// `...Unlocked` distributed notifications. Seeded from the login-session
@@ -877,8 +1034,13 @@ final class StreamFleet {
     /// `reportLockState: false` keeps HOST_LOCK_STATE at "unlocked" for good —
     /// for the login-window agent, where the lock screen is what's being
     /// served and the client must not fall back to VNC.
-    init(basePort: UInt16, reportLockState: Bool = true) {
+    ///
+    /// `announce` is off unless asked for: a test rig or the login-window
+    /// agent should not put this Mac in the clients' list of nearby hosts.
+    init(basePort: UInt16, reportLockState: Bool = true, auth: HostAuth = .shared, announce: Bool = false) {
         self.basePort = basePort
+        self.auth = auth
+        self.announce = announce
         CGDisplayRegisterReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
         callbackRegistered = true
         guard reportLockState else { return }
@@ -930,6 +1092,8 @@ final class StreamFleet {
         for s in servers { s.stop() }
         servers = []
         currentIDs = []
+        auth.directory.setDisplays([])
+        updateAnnouncement()
         if callbackRegistered {
             CGDisplayRemoveReconfigurationCallback(reconfigCallback, Unmanaged.passUnretained(self).toOpaque())
             callbackRegistered = false
@@ -985,18 +1149,55 @@ final class StreamFleet {
         // Wait for every old listener's port to actually release before
         // binding new ones on the same ports — see stop()'s doc comment.
         group.notify(queue: .main) { [self] in
+            var served: [HostDirectory.Display] = []
             for (i, id) in ids.enumerated() {
-                let server = StreamServer(displayID: id, port: basePort + UInt16(i), isPrimary: i == 0)
+                let port = basePort + UInt16(i)
+                let server = StreamServer(displayID: id, port: port, isPrimary: i == 0,
+                                          auth: auth, displayIndex: i)
                 do {
                     try server.start()
                     server.setLockState(screenLocked) // inherit current lock state
                     servers.append(server)
+                    served.append(HostDirectory.Display(index: i, name: Self.displayName(i),
+                                                        primary: i == 0, port: port))
                 } catch {
-                    clog("STREAM: failed to start server on port \(basePort + UInt16(i)): \(error)")
+                    clog("STREAM: failed to start server on port \(port): \(error)")
                 }
             }
+            // What HOST_INFO tells a client it can also connect to.
+            auth.directory.setDisplays(served)
+            updateAnnouncement()
             clog("STREAM: serving \(servers.count) display(s) on ports \(basePort)–\(basePort + UInt16(max(servers.count, 1) - 1))")
         }
+    }
+
+    /// The Streaming menu's switch.
+    func setAnnounce(_ on: Bool) {
+        announce = on
+        updateAnnouncement()
+    }
+
+    /// How the announcement stands, for the menu.
+    var announcement: BonjourAdvertiser.Outcome { advertiser?.outcome ?? .off }
+
+    /// Announces the primary display's port while it is being served and the
+    /// user wants it announced. The port stays the same across rebuilds, so
+    /// the announcement is left alone while the listeners are replaced.
+    private func updateAnnouncement() {
+        guard announce, let primary = servers.first(where: { $0.primary }) else {
+            advertiser?.stop()
+            return
+        }
+        if advertiser == nil {
+            advertiser = BonjourAdvertiser(hostId: auth.identity.id, name: auth.hostName)
+        }
+        advertiser?.start(port: primary.portNumber)
+    }
+
+    /// "Display A", "Display B", …: the names the clients already use.
+    static func displayName(_ index: Int) -> String {
+        let letters = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+        return letters.indices.contains(index) ? "Display \(letters[index])" : "Display \(index + 1)"
     }
 
     /// A display kept its ID but changed pixel size. Each server compares its

@@ -36,4 +36,11 @@
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Device-auth handshake, shared with the viewer and with tests/. -->
+    <Compile Include="..\WindowsShared\**\*.cs" Link="WindowsShared\%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Windows-only code the viewer and the server both use (the CNG key). -->
+    <Compile Include="..\WindowsCommon\**\*.cs" Link="WindowsCommon\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
 </Project>

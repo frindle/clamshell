@@ -24,7 +24,9 @@ on LAN/Tailscale; `wss://` through a Cloudflare Tunnel for remote use — WS was
 chosen over raw TCP precisely so the tunnel's zero-config HTTP path carries it,
 matching how Clamshell's noVNC web access is already tunneled). No NAT
 traversal, no custom TLS. TCP head-of-line blocking is an accepted tradeoff
-for simplicity. One client at a time; a new connection replaces the old one.
+for simplicity. One client at a time; a new connection replaces the old one
+(from host 0.12 on, only a connection that has passed "Device authentication
+and encrypted session" below does).
 
 Host side is an `NWListener` with `NWProtocolWebSocket`; client side is
 `URLSessionWebSocketTask`. Every protocol message is sent as one **binary**
@@ -52,14 +54,37 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x05 | HOST_LOCK_STATE  | host → client | locked(1: 0/1) — see "Lock screen fallback" |
 | 0x06 | CURSOR_POS       | host → client | x(Float32 BE), y(Float32 BE) — normalized 0..1 in this display's source-frame space; see "Cursor-follow auto-pan" |
 | 0x07 | PING             | both | empty. Keepalive: the browser client sends one after 20 s of sending nothing; the host echoes it. Hosts older than 0.9.23 skip it as an unknown type |
+| 0x08 | AUTH_CHALLENGE   | host → client | first message on every connection — see "Device authentication and encrypted session" |
+| 0x09 | AUTH_RESPONSE    | client → host | device key, device name, signature |
+| 0x0A | AUTH_RESULT      | host → client | status(1) and the host's signature; repeats while the device waits for approval |
+| 0x0B | HOST_INFO        | host → client | UTF-8 JSON — host name, kind, displays, known endpoints |
+| 0x0C | CLIENT_INFO      | client → host | UTF-8 JSON — the URL the client connected to, app, version |
+| 0x0D | DEVICE_PENDING   | host → client | UTF-8 JSON — devices waiting for approval |
+| 0x0E | DEVICE_DECISION  | client → host | UTF-8 JSON — approve or deny one waiting device |
+| 0x0F | SECURE           | both | AES-256-GCM ciphertext of exactly one inner message, then the 16-byte tag |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
 | 0x20 | INPUT_MOUSE_MOVE | client → host | x(Float32 BE), y(Float32 BE) — normalized 0..1 in display space |
-| 0x21 | INPUT_MOUSE_BUTTON | client → host | button(1: 0=left, 1=right), down(1: 0/1), x(Float32 BE), y(Float32 BE) |
+| 0x21 | INPUT_MOUSE_BUTTON | client → host | button(1: 0=left, 1=right, 2=middle, 3=back, 4=forward), down(1: 0/1), x(Float32 BE), y(Float32 BE). Buttons 2–4 only to a host that advertises `extraButtons`; older hosts treat every button other than 1 as left |
 | 0x22 | INPUT_KEY        | client → host | macKeyCode(2 BE), down(1), cgEventFlags(8 BE) |
 | 0x23 | INPUT_SCROLL     | client → host | dx(Float32 BE), dy(Float32 BE) — pixel wheel deltas |
-| 0x30 | CLIPBOARD        | both          | UTF-8 plain text |
+| 0x24 | INPUT_MOUSE_RELATIVE | client → host | dx(Float32 BE), dy(Float32 BE) — pointer movement in points, for a captured pointer. Only to a host that advertises `relativeMouse` |
+| 0x25 | INPUT_TEXT       | client → host | UTF-8 text to type as-is (dictation, input-method text, emoji), at most 16 KB. Only to a host that advertises `textInput` |
+| 0x26 | INPUT_MOUSE_BUTTON_AT_CURSOR | client → host | button(1: as INPUT_MOUSE_BUTTON), down(1: 0/1) — a press or release where the host cursor is now, for a captured pointer. Only to a host that advertises `relativeMouse` |
+| 0x30 | CLIPBOARD        | both          | UTF-8 plain text, at most 1 MB (1,048,576 bytes); a host from 0.12 on ignores more and sends no more |
+| 0x50 | PERIPHERAL_ATTACH | client → host | UTF-8 JSON — one peripheral the client offers; see "Peripherals attached to the client" |
+| 0x51 | PERIPHERAL_STATUS | host → client | id(4 BE), status(1) |
+| 0x52 | PERIPHERAL_DETACH | client → host | id(4 BE) |
+| 0x53 | PERIPHERAL_INPUT  | client → host | id(4 BE), then a report whose layout depends on the peripheral's kind |
+| 0x54 | PERIPHERAL_OUTPUT | host → client | id(4 BE), then a report for the peripheral (rumble, MIDI) |
+| 0x58 | FILE_OFFER       | both          | UTF-8 JSON — one file the sender wants to transfer; see "File transfer" |
+| 0x59 | FILE_ANSWER      | both          | id(4 BE), status(1) |
+| 0x5A | FILE_DATA        | both          | id(4 BE), then the next bytes of the file, at most 64 KB |
+| 0x5B | FILE_END         | both          | id(4 BE), status(1) |
+
+Reserved, not specified yet: 0x40–0x49 (Window Handoff v2, below) and
+0x55–0x57 (further peripheral messages).
 
 Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
 host picks what its hardware encoder actually supports (HEVC preferred on
@@ -148,6 +173,72 @@ Coordinates are normalized (0..1, origin top-left) so the client never needs
 the Mac's coordinate space; the host maps them into `CGDisplayBounds` of the
 streamed display and injects with `CGEventPost`. Key codes are macOS virtual
 key codes (client is responsible for any translation).
+
+From host 0.12 (each gated by a capability bit, see "Capabilities"):
+
+- **Non-finite numbers are dropped.** A move, button or relative-move message
+  with a NaN or infinite value is ignored. In INPUT_SCROLL a NaN or infinite
+  delta counts as 0 and the other axis still scrolls.
+- **Deltas are capped.** Each INPUT_SCROLL and INPUT_MOUSE_RELATIVE delta is
+  cut to ±10 000.
+- **Short messages are ignored, extra bytes skipped.** A message shorter than
+  its layout does nothing. Bytes after the layout are skipped, so a later
+  version can add fields. A button above 4 or a key code above 0xFF is
+  ignored.
+- **Buttons 2–4** (middle, back, forward) are posted as "other" mouse buttons
+  with that button number.
+- **Clicks carry a click count.** Two presses of the same button within the
+  system double-click interval and a few points of each other are posted as a
+  double-click (then triple, and so on), so double-click-to-select works for
+  every client without the client sending anything extra.
+- **INPUT_MOUSE_RELATIVE** moves the host cursor by (dx, dy) points from where
+  it is now. A move that would leave every display is clamped to the display
+  the cursor is on. While a button is held the move is posted as a drag, like
+  an absolute move. Clients use it when they capture the pointer (pointer
+  lock), where there is no absolute position to send.
+- **INPUT_MOUSE_BUTTON_AT_CURSOR** presses or releases a button where the host
+  cursor is now, without moving it. Button numbers and click counts work as
+  for INPUT_MOUSE_BUTTON. A client that has captured the pointer sends this
+  for every button event and never an absolute INPUT_MOUSE_BUTTON: it has no
+  position of its own, and the last CURSOR_POS it saw can be behind the moves
+  it has already sent, so an absolute press would pull the cursor back.
+  Example, left button down: `26 00000002 00 01`.
+- **Input is applied in the order it arrived.** Mouse, scroll, key and text
+  events from one connection are posted one after another in arrival order,
+  also while a long INPUT_TEXT is still being typed: a click sent after text
+  lands after that text, and a modifier key sent before a click is down
+  before the click.
+- **Only the modifier bits of cgEventFlags are used.** The host keeps bits
+  16–23 (caps lock, shift, control, option, command, numeric pad, help, fn)
+  and ignores every other bit.
+- **Modifier keys are also sent as keys.** A client sends each modifier's own
+  INPUT_KEY down and up, as a hardware keyboard does, and sets the modifier's
+  bit in the flags of every key pressed while it is down. A Mac host applies
+  the flags. A host on another system uses only the key events and ignores
+  the flags, so a client that sent flags alone would lose its modifiers
+  there.
+- **The backlog is bounded.** When more input is waiting than the host is
+  willing to hold, it drops new events, but never the release of a key or
+  button it has already taken as down.
+- **INPUT_TEXT** types the text through keyboard events that carry the
+  characters themselves, in pieces of at most 20 UTF-16 units that never
+  split a code point. A line feed, a carriage return, or the pair CR LF
+  becomes one press of the Return key, and a tab one press of the Tab key.
+  Other control characters (U+0000–U+001F, U+007F–U+009F) are left out. It is
+  for text that has no key code. A payload that is not valid UTF-8, or is
+  longer than 16 KB, is ignored as a whole: use CLIPBOARD and paste for long
+  text.
+- **Held input is released when the session ends.** The host tracks which
+  buttons and keys a client has down and posts the matching "up" events when
+  the connection drops or another client takes over, so a lost connection
+  cannot leave a key or a drag stuck on the Mac. Text and other input still
+  waiting at that moment is abandoned, so the host does not keep typing for
+  a client that has gone.
+
+**Reference vectors.** `tests/vectors/input-v1.json` holds the exact bytes of
+every input message, the messages a host must ignore, the deltas and flag
+bits it uses, and what it types for a range of INPUT_TEXT payloads. Every
+encoder must reproduce the bytes, and every host the outcomes.
 
 ## Encoder contract (host)
 
@@ -261,14 +352,729 @@ fixed on both ends, so no magic cookie / ADTS header is transmitted — the iPad
 rebuilds the same `AVAudioFormat` and decodes to PCM for `AVAudioEngine`.
 Only the primary connection carries audio; secondary displays are video+input.
 
+## Device authentication and encrypted session (host 0.12+)
+
+*Status: specified here, implementation in progress. Hosts before 0.12 send no
+challenge and serve any connection that reaches them.*
+
+Where a connection comes from (LAN, VPN, loopback, Cloudflare Access) is not
+what lets it control the host. Every client device holds a long-term P-256
+key, every host holds a long-term P-256 identity key, and each connection
+opens with a signed key exchange. The host does nothing for a connection — no
+collapse, no capture, no input — until its device key is one the user has
+approved. From then on every message is encrypted, so plain `ws://` on a LAN
+cannot be read or injected into, and a tunnel's edge sees only ciphertext.
+
+There are no pairing codes. A new device asks; the user approves it once, on
+the host or from a device that is already trusted.
+
+### Keys, ids and names
+
+- P-256 throughout. Public keys travel as the 65-byte X9.63 uncompressed point
+  (`0x04 ‖ X ‖ Y`). Signatures are ECDSA over SHA-256 in the 64-byte raw
+  `r ‖ s` form (IEEE P1363, not DER). These are the native formats of
+  CryptoKit, browser WebCrypto and .NET, so no client needs an ASN.1 codec.
+- A **device id** is the lowercase hex SHA-256 of the 65-byte public key (64
+  characters). The **fingerprint** people compare is its first 16 characters
+  in upper case, grouped in fours: `AB12-CD34-EF56-7890`. A host's id and
+  fingerprint come from its identity key the same way.
+- Names are for display and prove nothing. Both sides drop control characters
+  and invisible formatting characters (the bidirectional overrides, for
+  example) before showing one. A host also drops the characters that draw
+  nothing (the default-ignorable code points and U+115F, U+1160, U+3164,
+  U+FFA0 and U+2800) from a name before it stores or shows it. A device waiting
+  for approval keeps the name it was first listed with, whatever it calls
+  itself on later connections, until it is approved. When a device waiting for
+  approval has the same name as a trusted device, the host's approval window
+  says so. "The same" is judged on a skeleton of the name: Unicode NFKD without
+  combining marks or invisible characters, case folded, Cyrillic and Greek
+  letters that look like a Latin letter written as that letter, every
+  apostrophe and quote as `'`, `i`, `1`, `|` and dotless i as `l`, `0` as `o`,
+  and runs of white space as one space. That is a hint and never a check. In
+  the approval window, any change to what is shown about the device in question
+  turns the buttons off again for the full delay.
+
+### Handshake
+
+```
+host   → client   AUTH_CHALLENGE   as soon as the WebSocket opens
+client → host     AUTH_RESPONSE
+host   → client   AUTH_RESULT      repeated while the device waits for approval
+```
+
+All three travel in the clear in the normal `[type][len][payload]` frame, so
+names and public keys are visible to anyone on the path. Nothing else is.
+
+**AUTH_CHALLENGE payload**
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| version | 1 | 1 |
+| caps | 4 BE | host capability bits — see "Capabilities" |
+| hostNonce | 32 | random, new for every connection |
+| hostEphemeral | 65 | key-exchange public key, new for every connection |
+| hostIdentity | 65 | the host's long-term public key |
+| nameLen, name | 1 + n | UTF-8 host name, n ≤ 64 |
+| extLen, ext | 2 BE + n | extension records |
+
+**AUTH_RESPONSE payload**
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| version | 1 | 1 |
+| caps | 4 BE | client capability bits |
+| clientNonce | 32 | random, new for every connection |
+| clientEphemeral | 65 | key-exchange public key, new for every connection |
+| deviceKey | 65 | the device's long-term public key |
+| nameLen, name | 1 + n | UTF-8 device name, n ≤ 64 |
+| extLen, ext | 2 BE + n | extension records |
+| signature | 64 | by the device key |
+
+**AUTH_RESULT payload**
+
+| Field | Bytes | Meaning |
+|---|---|---|
+| status | 1 | see below |
+| extLen, ext | 2 BE + n | extension records |
+| signature | 64 | by the host identity key |
+
+Extension records are `type(1) len(2 BE) value`, repeated to fill `extLen`. A
+record of an unknown type is skipped. Version 1 defines none; type 0x01 is
+reserved for an account-signed device certificate.
+
+**What is signed.** Write `L(x)` for `u32be(length of x) ‖ x`, and call a
+message's payload without its trailing 64 signature bytes its *body*.
+
+```
+client signs   "clamshell-auth-v1/client" ‖ 0x00 ‖ L(challenge) ‖ L(response body)
+host signs     "clamshell-auth-v1/host"   ‖ 0x00 ‖ L(challenge) ‖ L(response) ‖ L(result body)
+```
+
+`challenge` and `response` are the whole payloads exactly as they crossed the
+wire. Each signature therefore covers both long-term keys, both key-exchange
+keys, both nonces and both capability sets, so nobody in the middle can swap a
+key or strip a capability. For status 4 and 5 the host may never have seen a
+response, so there `response` is always the empty string.
+
+**Status**
+
+| Status | Name | Then |
+|---|---|---|
+| 0 | accepted | the encrypted session starts |
+| 1 | pending | the device is waiting for approval. The host keeps the socket open and repeats this result every 20 s (which also keeps a tunnel from idling the socket out) |
+| 2 | denied | the device was denied or revoked. The client stops retrying and says so |
+| 3 | invalid | malformed response, unsupported version or bad signature |
+| 4 | busy | too many connections or devices are already waiting; try again later |
+| 5 | timeout | no response within 10 s, or no approval within 10 minutes. The device stays on the waiting list, so the client reconnects and keeps waiting |
+
+After any status other than 0 or 1 the host closes the connection.
+
+**Host rules**
+
+- Before `accepted`, the host accepts one message from the connection: an
+  AUTH_RESPONSE of at most 4 KB, within 10 s. Anything else is ignored and
+  starts nothing; anything larger closes the connection.
+- The host checks the version, that both client keys are valid curve points,
+  and the signature, then looks the device id up: trusted → `accepted`,
+  denied → `denied`, unknown → added to the waiting list → `pending`.
+- Room in three small tables is shared out by the address the connection
+  came from, reduced to a group: an IPv4 address as it is, an IPv4-mapped
+  IPv6 address as its IPv4 address, any other IPv6 address as its first 64
+  bits, and "unknown" when there is no usable address. The group is used only
+  for this, and is never a reason to trust a device. Connections that come
+  through the web relay or a tunnel reach the host from 127.0.0.1, so the host
+  looks at their upgrade request when the TCP peer is a trusted proxy: this
+  Mac itself always, and any address or CIDR range listed in the host's
+  `trustedProxies` setting (empty by default). The reported address is
+  `CF-Connecting-IP`, or else the right-most `X-Forwarded-For` entry that is
+  not itself a trusted proxy; with neither, or nothing that reads as an
+  address, there is none. The upgrade handler cannot tell which connection a
+  request belongs to, so the headers are used only when no doubt is possible:
+  when a connection reaches ready, exactly one request is outstanding and this
+  is the only connection not yet ready. Otherwise, and whenever a connection
+  closes before it is ready, the outstanding requests are dropped and the
+  connection keeps the TCP peer. The web relay applies the same rule to its
+  browser and passes the result to the host in `X-Forwarded-For`.
+  The TCP peer is the address the host shows and stores. A reported address
+  is the client's own header, believed only far enough to pick the group, and
+  the host shows it only as "the proxy reported ...; not verified". For a
+  loopback peer the host says it came through a local proxy. Groups are not
+  a security boundary: a process on the Mac itself can choose any group.
+
+  | Table | Size | Share per group | May be replaced | First to go |
+  |---|---|---|---|---|
+  | Connections that have not answered the challenge | 32 | 8 | all | oldest |
+  | Connections waiting for approval | 8 | 3 | all | oldest |
+  | Devices on the waiting list | 16 | 4 | no open connection, and not seen in the last 5 minutes | least recently seen |
+
+  An arrival is let in when there is room and its group is under its share.
+  When its group is at its share, it takes the place of that group's first
+  replaceable entry, or is turned away if it has none. When the table is full,
+  the group holding the most entries (the one listed first on a tie) is picked:
+  if the arrival's group holds fewer, the arrival takes the place of the picked
+  group's first replaceable entry, or is turned away if it has none;
+  otherwise it is turned away. An unanswered connection that loses its place
+  is closed; a waiting connection that loses its place gets `busy` and is
+  closed; a new device that is turned away gets `busy`.
+- A device has one waiting connection per listener: when it connects again
+  on a listener where it already waits, the earlier connection gets `busy`
+  and is closed and the new one takes its place (both proved they hold the
+  key).
+- At most 10 new devices are listed per minute, and at most 3 per minute from
+  one group; the rest get `busy`. Every verified handshake from a device
+  that is already on the waiting list counts as seeing it, also when the
+  answer is `busy`. A waiting device nobody approves is dropped after 24
+  hours.
+- The host changes its device list only while it holds the list's file lock.
+  If it cannot take the lock within 2 s, or cannot open the lock file, nothing
+  is changed or written and every device that asks gets `busy`. The same goes
+  for a list written by a newer Clamshell (a higher list `version`, which goes
+  up whenever a build changes what a field or a state means): that file is left
+  exactly as it is, nobody is let in, nothing is decided, and the host's log
+  and `clamshell` commands say the list was written by a newer Clamshell.
+- Someone with as many addresses as a table has room, or who shares the real
+  device's address, can still keep a new device off the list for as long as
+  they keep trying. Devices that are already trusted are not kept out by
+  that.
+- Approval while the device's connection is still open sends `accepted` on
+  that connection, so the session starts without a reconnect.
+- Nothing a waiting connection sends is read. One that sends more than 64 KB
+  while it waits is closed; its device stays on the waiting list.
+- A connection that is let in replaces the session its listener was serving,
+  as a new connection always has. One that is waiting, or has not answered,
+  does not disturb that session.
+
+**Client rules**
+
+- The client waits for AUTH_CHALLENGE before sending anything. It checks the
+  version and that both host keys are valid curve points; a challenge that
+  fails either check is a failed connection.
+- It keeps the host identity key from the first handshake that ends in a
+  verified `accepted` (trust on first use) together with that host's saved
+  addresses. From then on, for that host:
+  - a challenge carrying a different identity key is refused and shown as a
+    changed identity, with both fingerprints. Replacing the saved key takes a
+    deliberate action by the user; it is never automatic;
+  - no challenge within 2 s is refused too. A host that has spoken this
+    protocol once never falls back to an open connection.
+- For a host it has no key for, no challenge within 2 s means a host older
+  than 0.12 (which sends nothing until HELLO). The client may then send HELLO
+  in the clear and carry on as before 0.12, with every capability bit taken
+  as 0, and it shows the session as unverified. If a challenge arrives after
+  the client has sent HELLO (a slow link, not an old host), the client closes
+  the connection and connects again, this time waiting up to 10 s for the
+  challenge.
+- Every AUTH_RESULT's signature is checked against the `hostIdentity` from the
+  challenge. A result that does not verify is treated as a failed connection,
+  whatever its status says.
+  The repeats sent while a device waits are the same signed bytes each time;
+  the client verifies every one and does not treat a repeat as a replay.
+- While `pending`, the client shows the host's name and both fingerprints so
+  the user can compare them with what the host shows before approving.
+
+### Session keys and SECURE
+
+```
+th    = SHA-256( L(challenge) ‖ L(response) )
+Z     = ECDH on P-256 between the two key-exchange keys: the shared point's X coordinate, 32 bytes
+okm   = HKDF-SHA256( ikm = Z, salt = hostNonce ‖ clientNonce,
+                     info = "clamshell-session-v1" ‖ th, length = 64 )
+k_h2c = okm[0 ..< 32]     host → client
+k_c2h = okm[32 ..< 64]    client → host
+```
+
+After `accepted`, every message in both directions is one SECURE message:
+
+```
+SECURE payload = AES-256-GCM( key, nonce, plaintext, no additional data ) ‖ tag(16)
+plaintext      = one whole inner message: [type][4-byte BE length][payload]
+nonce          = 0x00000000 ‖ u64be(counter)
+```
+
+Each direction has its own key and its own counter. The counter starts at 0,
+goes up by one per SECURE message and is not sent; the WebSocket keeps
+messages in order. A side closes the connection when a SECURE message fails to
+decrypt, when the inner message is itself SECURE or an AUTH message, when any
+message other than SECURE arrives after `accepted`, or before its counter
+could pass 2^48. Reconnecting runs the handshake again and gives fresh keys.
+
+HELLO and everything after it are unchanged; they simply travel inside SECURE.
+The first inner message from the host is HOST_INFO.
+
+The host reads SECURE payloads of at most 4 MB (4,194,304 bytes) from a
+client; a larger one closes the connection. Nothing a client sends comes near
+that: the largest are CLIPBOARD at 1 MB and FILE_DATA at 64 KB.
+
+**Reference vectors.** `tests/vectors/auth-v1.json` holds one complete
+exchange from fixed test keys: the three handshake payloads, both signature
+inputs, the ids and fingerprints, the transcript hash, the shared secret, both
+session keys and four SECURE frames. ECDSA signatures are randomized, so an
+implementation checks that the recorded ones verify; every other value must
+come out byte for byte. Each client and host is tested against this file.
+
+### Hosts that do not require approval
+
+Approval is on by default (capability bit 0 in the challenge). A host with it
+turned off still sends the challenge. A client that answers is accepted
+whatever its key and gets the encrypted session; a client that sends HELLO in
+the clear instead is served the way hosts before 0.12 served it. Such a host
+is only as safe as its network, as before.
+
+With approval off, a clear HELLO is accepted in place of the AUTH_RESPONSE, and
+a device that is denied is let in like any other; the denial is kept and counts
+again when approval is turned back on. The AUTH_RESPONSE may be at most 4096
+bytes; a connection that is waiting for approval may send up to 64 KB, which is
+ignored, before it is closed. Approval is on unless the stored setting
+`requireDeviceApproval` is the boolean false or the integer 0: any other value
+or type, or none, leaves it on. A change made from outside (`defaults write`) is
+noticed within 5 s; the switch in the host's Devices menu takes effect at once.
+
+A host with approval on never answers a HELLO in the clear: the connection is
+closed when the 10 s response deadline passes. Clients older than this section
+therefore cannot use it.
+
+### Approving a device
+
+A waiting device is approved or denied in one of three ways: on the host's own
+screen, on the host's command line (`clamshell approve <id or fingerprint>`,
+usable over SSH), or from a connected trusted device with the two messages
+below. Revoking a trusted device makes it `denied` and closes its live
+connections; forgetting a device removes it, so it may ask again.
+
+A device that is denied can be approved after all in two places only: the
+Devices menu's "Approve…" on the host and `clamshell approve`. A
+DEVICE_DECISION acts on waiting devices only.
+
+Both messages travel inside SECURE and only when both sides set capability bit
+4. The host sets bit 4 in every challenge, so the bit does not say who may
+decide; the rule that counts is that the host acts on a DEVICE_DECISION only
+from a device that is trusted at that moment (see below).
+
+- **DEVICE_PENDING** (host → trusted client), UTF-8 JSON, sent after
+  `accepted` when devices are waiting and again whenever the list changes
+  (an empty list means none are):
+  `{"devices":[{"id":"<64 hex>","name":"iPhone","fingerprint":"AB12-CD34-EF56-7890","firstSeen":1794000000,"address":"192.168.1.23"}]}`
+  `address` is the TCP peer as the host saw it. `reportedAddress` is added
+  only when a proxy on the host claimed another one (see "Host rules"); it is
+  not verified and a client shows it only as the proxy's claim.
+- **DEVICE_DECISION** (trusted client → host), UTF-8 JSON:
+  `{"id":"<64 hex>","decision":"approve"}` or `"deny"`. The client sends it
+  only after showing the name and fingerprint and getting an explicit answer
+  from the user. The host replies with a fresh DEVICE_PENDING and shows on its
+  own screen which device made the decision.
+
+A trusted device can already type and click on the host, so letting it approve
+another device gives it nothing it could not do through the host's own
+approval window.
+
+The host applies a DEVICE_DECISION only if the device that sent it is trusted in
+the device list as it is read for that same change. A device that was revoked a
+moment earlier, by the host's own menu or by `clamshell revoke` in another
+process, therefore changes nothing: the decision is dropped and the host closes
+that device's session, as it does for any revoked device. The host notices a
+change another process made to the list within moments; if it cannot watch the
+folder it says so once in its log and reads the list again every 5 s.
+
+The host's approval window does not come back as fast as devices can ask. When
+a question it raised by itself ends (approved, denied or closed), it stays away
+for the shorter of 15 minutes and 20 s times 2 to the power n, and n goes up by
+one; n starts over after an hour in which the window raised no question. Closing
+also sets every waiting device aside; approving or denying does not, and the
+others come up when the quiet time is over. Three such questions in a row that
+end in Deny or closing, the third within 10 minutes of the first, keep the
+window away for 12 hours. A device the user picks in the host's menu is shown
+at once, and its answer changes neither n nor the quiet time. While the window
+stays away, waiting devices stay in the Devices menu and the menu-bar icon shows
+that devices are waiting.
+
+### The Windows host
+
+A Windows host (`WindowsServer/`) takes part in the handshake above and reports
+`kind` `windows` in HOST_INFO. Devices are approved on the host only: in its
+approval window, in the Devices section of its Settings, or with its command
+line (`ClamshellServer approve <id or fingerprint>`, also `devices`, `deny`,
+`revoke` and `forget`). It does not accept DEVICE_DECISION, so it sets
+capability bit 4 to 0 in every challenge and sends no DEVICE_PENDING.
+
+Its host identity key is a P-256 key in the current user's Windows CNG key
+store (software provider, key name `Clamshell.Host.IdentityKey.v1`, not
+exportable). Its device list is the file `devices.dat` under
+`%LOCALAPPDATA%\Clamshell` (or the folder in `CLAMSHELL_STATE_DIR`), protected
+with the current user's DPAPI, with a lock file `devices.lock` beside it; the
+host and the command line take that lock for every change, and a running host
+notices a change made by the command line. Both are tied to the Windows user
+the host runs as: another process of the same user can use that user's key and
+read that user's list, as on the Mac. If either cannot be opened the host
+serves nothing. Approval is on unless the value `RequireDeviceApproval` under
+`HKEY_CURRENT_USER\Software\Clamshell` is the DWORD 0; when it is off the tray
+tooltip and menu say so and the host logs it at start. A host behind a reverse
+proxy lists the proxies it trusts in the multi-string value `TrustedProxies`
+there (loopback is always trusted); the address a proxy reports is used to
+group connections and is shown only as "the proxy reported X; not verified"
+next to the TCP peer, never as the address.
+
+Same-user risk. Approval protects against other machines and other users, not
+against code already running as the same Windows user. Any process of that user
+can approve a waiting device itself (the `approve` command, or by writing the
+device list), and can set `RequireDeviceApproval` to 0 in that user's registry
+hive, after which the unapproved HELLO path is open on every interface the host
+listens on. An administrator can do the same. Other non-administrator users
+cannot. The off state is made visible (tooltip, menu, log) but not prevented.
+
+### Browser client
+
+The browser client reaches the stream through the web server's WebSocket
+relay. The handshake runs end to end through the relay, which is trusted no
+more than any other network hop. Browsers offer WebCrypto only to pages loaded
+over HTTPS (or from `localhost`), so the browser client needs the tunnel
+hostname or the host's own LAN certificate; it cannot authenticate from a
+plain `http://` page.
+
+The browser client keeps the host's identity key in the browser's own storage,
+the same trust on first use as any other client. That key protects a saved
+Mac against a changed host or a relay that tampers with the handshake after
+the first connection. It does not protect against whoever serves the page and
+its scripts (`auth.js` included): they can skip the check or read what the
+page can read. The first connection to a Mac is not protected either.
+
+## Capabilities
+
+The `caps` field of AUTH_CHALLENGE says what the host does; the same field in
+AUTH_RESPONSE says what the client does. A side uses a feature only when the
+other side set its bit. Both fields are covered by both signatures. A host
+that sent no challenge has every bit 0.
+
+| Bit | Name | Meaning |
+|---|---|---|
+| 0 | `approvalRequired` | host only: unknown devices must be approved |
+| 1 | `relativeMouse` | host accepts INPUT_MOUSE_RELATIVE |
+| 2 | `textInput` | host accepts INPUT_TEXT |
+| 3 | `extraButtons` | host accepts mouse buttons 2–4 |
+| 4 | `deviceApproval` | host: trusted devices may approve others. Client: can show the approval prompt |
+| 5 | `fileTransfer` | both: can send and receive files — see "File transfer" |
+| 6 | `peripherals` | host: accepts peripherals attached to the client. Client: can send them — see "Peripherals attached to the client" |
+
+Unassigned bits are sent as 0 and ignored on receipt.
+
+## Host and client info (HOST_INFO / CLIENT_INFO)
+
+Both are UTF-8 JSON inside SECURE. Unknown fields are ignored.
+
+**HOST_INFO** (host → client) is the first message of the encrypted session:
+
+```json
+{
+  "name": "Studio",
+  "kind": "mac",
+  "version": "0.12.0",
+  "hostId": "<64 hex>",
+  "display": 0,
+  "displays": [
+    {"index": 0, "name": "Display A", "primary": true,
+     "urls": ["ws://192.168.1.20:5903", "wss://mac.example.com/ws/a"]},
+    {"index": 1, "name": "Display B",
+     "urls": ["ws://192.168.1.20:5904", "wss://mac.example.com/ws/b"]}
+  ]
+}
+```
+
+`kind` is `mac`, `windows` or `kvm`. `display` is the index this connection
+serves. `urls` lists every address the host knows for a display: its own LAN
+and VPN addresses, then the ones clients have reported. With this a client
+that reached Display A by any route can open Display B without the user typing
+a second address, and can keep a host's LAN, VPN and tunnel addresses together
+under one saved entry, trying them in turn. Every address still has to pass
+the handshake with the saved identity key, so a wrong or hostile entry can
+waste a connection attempt but cannot stand in for the host.
+
+An optional `peripherals` array, for example `["gamepad","midi"]`, lists the
+kinds of peripheral the host accepts (see "Peripherals attached to the
+client"). A client leaves the other kinds out of what it offers the user.
+
+**CLIENT_INFO** (client → host), sent once after `accepted`:
+
+```json
+{"url": "wss://mac.example.com/ws/a", "app": "ios", "version": "1.5.0"}
+```
+
+`url` is the address the client actually connected to. That is how a host
+learns the tunnel or VPN names it is reachable under, which it cannot see for
+itself. The host keeps a reported URL only if it is `ws://` or `wss://`, at
+most 256 bytes, with no user info, query or fragment; it keeps at most 16 per
+display, dropping the one unused longest; and it hands reported URLs only to
+devices the user approved.
+
+## Discovery (Bonjour)
+
+The host advertises `_clamshell._tcp` on the primary display's port, with TXT
+records `v` (the handshake version, `1`), `id` (the first 16 characters of the
+host id), `name` and `kind`. These are hints for building a list of nearby
+hosts. They prove nothing: a discovered host still has to pass the handshake,
+and one whose `id` matches a saved host must present that host's saved key.
+
+A host can be told not to advertise. Advertising is also separate from
+listening: a host that is not advertising, by choice or because the system
+refused it, still answers a client that has its address.
+
+Off the LAN there is nothing to browse, so a client reaches a host through an
+address saved from an earlier HOST_INFO, or one typed in once.
+
+## File transfer (FILE_OFFER / FILE_ANSWER / FILE_DATA / FILE_END)
+
+*Status: built in one direction. The Mac host receives files (it sets bit 5,
+and stores what it is sent in `~/Downloads/Clamshell`, with a switch in its
+menu to turn receiving off) and the iOS app sends them (it sets bit 5 and
+answers any offer from the host with "declined"). Not built yet: the web and
+Windows clients and the Windows host, and files from the Mac to the iPad.*
+
+Either side can send the other a file. This is how something on a drive
+plugged into the client reaches the host: the client's file picker can open
+it, so the client can send it. All four messages travel only inside SECURE and
+only when both sides set capability bit 5. A session without the handshake
+never transfers files.
+
+```
+sender   → receiver   FILE_OFFER    {"id":7,"name":"scan.pdf","size":1048576,"modified":1794000000}
+receiver → sender     FILE_ANSWER   id, status
+sender   → receiver   FILE_DATA     id, bytes      repeated, in order
+sender   → receiver   FILE_END      id, 0          every byte sent
+receiver → sender     FILE_END      id, 0          stored
+```
+
+- `id` is chosen by the sender (below 2^32) and is unique among the transfers
+  it has open on this connection. The two directions number separately.
+- `name` is a file name, at most 255 bytes of UTF-8. `size` is the exact
+  length in bytes, a whole number from 0 to 2^53 − 1. `modified` (seconds
+  since 1970) is optional, and left out by the receiver when it is not a
+  whole number. Fields the receiver does not know are skipped.
+- An offer that is not a JSON object, or has no usable `id`, is ignored, and
+  so is one that reuses an id still open. An offer with a usable `id` but a
+  missing or wrong `name` or `size` is answered with status 1.
+- FILE_ANSWER status: 0 accept, 1 declined, 2 too large or no room, 3 too many
+  transfers open, 4 transfers are turned off.
+- FILE_DATA carries the next bytes of the file, at most 64 KB per message.
+  There is no offset: messages arrive in order. The sender hands the network
+  one FILE_DATA at a time and lets waiting input and video go first, so a
+  large file never holds them up by more than one message. On a slow link it
+  uses smaller pieces. A FILE_DATA with no bytes is ignored. One with more
+  than 64 KB fails the transfer.
+- FILE_END status: 0 complete (from the sender: every byte was sent; from the
+  receiver: the file is stored), 1 cancelled, 2 failed. Either side may send 1
+  or 2 at any time; the transfer is then over and the receiver discards what
+  it has. FILE_DATA for a transfer that is no longer open is ignored.
+- Closing the connection ends every transfer on it. Nothing resumes in this
+  version.
+
+**Receiver rules.** They matter most on the host, where the sender is a remote
+device.
+
+- The name is never used as a path. The receiver keeps what follows the last
+  `/` or `\`, removes control characters, `:` and invisible format
+  characters (including U+2028, U+2029 and U+3164), replaces look-alike dots
+  and slashes (such as U+FF0E and U+2215) with `_`, then removes dots and
+  blanks from the start and blanks from the end, and uses `file` if nothing
+  is left. A receiver also changes whatever its own file system refuses (on
+  Windows the characters `< > " | ? *`, trailing dots, and device names such
+  as `CON`).
+- The receiver never overwrites. A name already taken gets ` 2`, ` 3`, …
+  before its extension (the part from the last dot on, unless that dot is the
+  first or last character), and the final name is claimed in one step that
+  cannot replace an existing file.
+- The host stores received files in one folder (`~/Downloads/Clamshell` by
+  default). It writes each file under a temporary name and renames it only
+  after the sender's FILE_END 0, with exactly `size` bytes received. More
+  bytes than `size`, or a FILE_END 0 after fewer, fails the transfer and
+  removes the partial file.
+- The host marks a received file as downloaded (the quarantine attribute on
+  macOS, the zone identifier on Windows), so the system's usual checks apply
+  when someone opens it. The host never opens or runs a received file.
+- At most 4 transfers are open per connection. An offer larger than the free
+  space, less a reserve, is answered with status 2. A transfer that receives
+  nothing for 60 s fails.
+- A client that receives a file asks the user where to save it before it
+  answers 0.
+
+**Reference vectors.** `tests/vectors/file-transfer-v1.json` holds the message
+bytes, offers a receiver must accept, decline or ignore, the stored name for a
+range of offered names, and the receiver's handling of one transfer step by
+step (complete, too many bytes, ended early, cancelled).
+
+## Peripherals attached to the client (PERIPHERAL_*)
+
+*Status: built for game controllers from the iOS app to the Mac host. The Mac
+host sets bit 6, lists `gamepad` in HOST_INFO's `peripherals`, and maps a
+controller to keys and the pointer, answering status 1 (it has no virtual
+controller to offer, so it never answers status 0). The iOS app sets bit 6 and
+sends its controllers. Not built yet: MIDI instruments, a virtual controller on
+the host, rumble from the host to the controller, the web and Windows clients
+and the Windows host, and sending a peripheral from the Mac to the iPad.*
+
+A game controller or MIDI instrument plugged into the client, or paired with
+it, can be used on the host as though it were attached there. This is not USB
+passthrough: the client reads the peripheral through its own system and sends
+what it reads, and the host builds a matching virtual device of a kind it
+already knows. A peripheral the client's system gives an app no way to read
+cannot be sent.
+
+"Peripheral" never means the client itself, which is the *device* of the
+handshake above. Keyboards, mice and trackpads are not peripherals in this
+sense either: what they do travels as INPUT_* messages. Files on an attached
+drive travel by file transfer. A security key is used through remote
+confirmation (below), not sent as a peripheral.
+
+All five messages travel only inside SECURE and only when both sides set
+capability bit 6. A session without the handshake never carries a peripheral.
+
+```
+client → host     PERIPHERAL_ATTACH   {"id":1,"kind":"gamepad","name":"DualSense Wireless Controller","rumble":true}
+host   → client   PERIPHERAL_STATUS   id, status
+client → host     PERIPHERAL_INPUT    id, report      whenever its state changes
+host   → client   PERIPHERAL_OUTPUT   id, report      when the host has something for it
+client → host     PERIPHERAL_DETACH   id
+```
+
+- `id` is chosen by the client, from 1 to 2^32 − 1, and is never used twice on
+  one connection, so a late message about a peripheral that has gone cannot be
+  taken for one about its replacement.
+- `kind` is `gamepad` or `midi`. More kinds will follow. HOST_INFO's
+  `peripherals` array says which ones a host accepts.
+- `name` is for display only: at most 64 bytes of UTF-8, cleaned the way
+  device names are.
+- A client with several connections to one host attaches a peripheral on only
+  one of them.
+- PERIPHERAL_STATUS answers every PERIPHERAL_ATTACH and is sent again if the
+  answer changes later:
+
+  | Status | Meaning |
+  |---|---|
+  | 0 | attached: the host presents a device of this kind |
+  | 1 | attached as keys and pointer (`gamepad` only): the host cannot present a game controller and turns its reports into key presses and pointer movement instead |
+  | 2 | this host does not accept this kind |
+  | 3 | too many peripherals |
+  | 4 | peripherals are turned off |
+  | 5 | removed: the host could not create it, or has taken it away |
+
+- The client sends PERIPHERAL_INPUT only after status 0 or 1. After any other
+  status the id is finished. A message for an id that is not attached is
+  ignored.
+
+### Game controllers (`gamepad`)
+
+A PERIPHERAL_INPUT report is the controller's whole state, not a change:
+
+```
+id(4 BE), buttons(4 BE), leftTrigger(1), rightTrigger(1),
+leftX(2 BE), leftY(2 BE), rightX(2 BE), rightY(2 BE)          18 bytes
+```
+
+`buttons` is a bit field, bit 0 the least significant. The numbering is that
+of the W3C "standard gamepad", which goes by where a button sits, not by what
+is printed on it:
+
+| Bit | Button |
+|---|---|
+| 0–3 | face buttons: bottom, right, left, top (A, B, X, Y on an Xbox controller; Cross, Circle, Square, Triangle on a PlayStation one) |
+| 4, 5 | left and right shoulder |
+| 6, 7 | always 0: the triggers travel as values |
+| 8, 9 | the centre pair: left (View, Share, Select) and right (Menu, Options, Start) |
+| 10, 11 | left and right stick pressed in |
+| 12–15 | d-pad up, down, left, right |
+| 16 | Home / Guide |
+| 17–31 | 0 until assigned |
+
+- Triggers run from 0 (released) to 255 (fully pressed). A trigger that is
+  only a switch sends 0 or 255.
+- Stick values are signed 16-bit, −32767 to 32767, 0 at the centre. Positive X
+  is right and positive Y is **down**, as in the W3C layout. GameController
+  and XInput count up as positive, so clients built on them negate Y. −32768
+  is not used.
+- The client sends a report when the state changes, at most 250 a second for
+  one controller, and always finishes with the latest state. A host that is
+  sent more may skip some, but always applies the last.
+- The client also sends a report at least once a second while nothing changes.
+  A host that receives none for 3 s puts the controller at rest (no buttons,
+  triggers 0, sticks centred) until the next one arrives, so a client that
+  froze with a stick held over cannot keep it there. A client about to stop
+  reading a controller for a while (its app leaves the foreground) sends the
+  at-rest report first.
+- A report longer than 18 bytes is accepted and the extra bytes ignored, which
+  leaves room for later fields. A shorter one is ignored.
+
+Example: the bottom face button and d-pad left held, the right trigger half
+pressed and the left stick fully right, for peripheral 1. The whole message,
+before SECURE wraps it:
+
+```
+53 00000012  00000001 00004001 00 80 7FFF 0000 0000 0000
+```
+
+**Rumble.** When PERIPHERAL_ATTACH carried `"rumble": true`, the host may send
+PERIPHERAL_OUTPUT: `id(4 BE), strong(1), weak(1), durationMs(2 BE)`. `strong`
+is the low-frequency motor and `weak` the high-frequency one, each 0–255. The
+client runs them for the duration and then stops by itself. A new report
+replaces the one before, and 0, 0 stops at once. The client never runs longer
+than 5 s on one report, so a stop that never arrives cannot leave the motors
+on.
+
+### MIDI instruments (`midi`)
+
+PERIPHERAL_ATTACH adds two fields: `"sends": true` when the instrument
+produces MIDI (carried to the host by PERIPHERAL_INPUT) and `"receives": true`
+when it accepts MIDI (carried from the host by PERIPHERAL_OUTPUT). At least
+one is true. The host shows a virtual MIDI source, destination or both under
+the peripheral's name.
+
+A report in either direction is `id(4 BE)` followed by MIDI 1.0 bytes: one or
+more whole messages, each with its own status byte (no running status), at
+most 64 KB in all. A System Exclusive message has to fit in one report. A
+report that does not parse as whole MIDI messages is dropped.
+
+Reports are played as they arrive. There are no timestamps in this version, so
+timing carries the network's jitter: fine for playing and controlling, not for
+recording that has to be sample-accurate.
+
+When a MIDI peripheral detaches or its connection ends, the host ends any note
+it left sounding and releases the sustain pedal. The client does the same
+toward the instrument.
+
+### Host rules
+
+They matter because a remote device is asking the host to create an input
+device.
+
+- The host builds only the kinds it implements, each from a description fixed
+  in the host. A client never supplies a HID report descriptor, raw HID
+  reports, or vendor and product numbers for the host to adopt. A virtual game
+  controller has buttons, triggers and sticks and nothing else: it cannot type
+  or move the pointer.
+- With status 1 the host itself turns reports into the key and pointer events
+  that INPUT_* messages produce, under every rule that applies to those. Which
+  control does what is a host setting.
+- At most 4 game controllers and 8 peripherals in all per connection. Beyond
+  that the answer is status 3.
+- A peripheral never outlives its connection. On PERIPHERAL_DETACH, and when
+  the connection or the session ends for any reason, the host puts the
+  peripheral at rest and removes the virtual device.
+- The host shows which peripherals are attached and which device brought each
+  one. The user can remove one there (status 5) or turn peripherals off
+  (status 4).
+- On macOS a virtual game controller needs Apple's
+  `com.apple.developer.hid.virtual.device` entitlement in the host's
+  signature. A host without it answers a game controller with status 1 or 2.
+  MIDI needs no entitlement.
+
+**Reference vectors.** `tests/vectors/peripheral-v1.json` holds game
+controller states with the exact message bytes for each, plus rumble and
+status messages. Every encoder and decoder must reproduce them byte for byte.
+
 ## Future (not in v1)
 
 H.264/HEVC negotiation beyond the single byte, multi-touch
-gestures, auth on the WS endpoint (currently: VPN, trusted LAN, or Cloudflare
-Access in front of the tunnel). Cloudflare Access, if used, is enforced at the
+gestures. Cloudflare Access, if used, is enforced at the
 edge — via WARP-enrolled devices or an Access policy that trusts the
 connection at the network layer — not by app-level Service Token headers (the
-apps send no `CF-Access-*` headers). Also on the roadmap, explicitly
+apps send no `CF-Access-*` headers); it is a second gate in front of the
+device authentication above, not a replacement for it. Also on the roadmap, explicitly
 deferred: Apache Guacamole (guacd) support — Guacamole natively speaks only
 VNC/RDP/SSH, so real support means a custom guacd protocol plugin.
 

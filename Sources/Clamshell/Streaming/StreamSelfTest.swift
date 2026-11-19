@@ -208,6 +208,12 @@ enum HelloCollapseSelfTest {
         func spinUntilPost() {
             RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         }
+        // These servers never listen, but each still needs the host's auth
+        // state: give them a throwaway one, not the user's.
+        let stateDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("clamshell-hello-selftest-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: stateDir) }
+        let auth = HostAuth(directory: stateDir, requireApproval: false, watch: false)
 
         // Case 1: 11-byte HELLO [1, 1] + BE32(2732) + BE32(2048) + [0] at offset 2
         do {
@@ -215,7 +221,7 @@ enum HelloCollapseSelfTest {
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2732).bigEndian) { Data($0) })
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2048).bigEndian) { Data($0) })
             bytes.append(0)
-            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true, auth: auth)
             posts.removeAll()
             server.handleClientDisplayInfo(bytes, at: 2)
             spinUntilPost()
@@ -232,7 +238,7 @@ enum HelloCollapseSelfTest {
 
         // Case 2: 2-byte HELLO [1, 1] at offset 2 (too short, no post)
         do {
-            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true, auth: auth)
             posts.removeAll()
             server.handleClientDisplayInfo(Data([1, 1]), at: 2)
             spinUntilPost()
@@ -250,7 +256,7 @@ enum HelloCollapseSelfTest {
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(1920).bigEndian) { Data($0) })
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(1080).bigEndian) { Data($0) })
             bytes.append(0)
-            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true, auth: auth)
             posts.removeAll()
             server.handleClientDisplayInfo(bytes, at: 0)
             spinUntilPost()
@@ -271,7 +277,7 @@ enum HelloCollapseSelfTest {
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2048).bigEndian) { Data($0) })
             bytes.append(0)
             let sliced = Data([0xFF] + bytes).dropFirst()
-            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true, auth: auth)
             posts.removeAll()
             server.handleClientDisplayInfo(sliced, at: 2)
             spinUntilPost()
@@ -291,7 +297,7 @@ enum HelloCollapseSelfTest {
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(600).bigEndian) { Data($0) })
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(400).bigEndian) { Data($0) })
             bytes.append(0)
-            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true, auth: auth)
             posts.removeAll()
             server.handleClientDisplayInfo(bytes, at: 2)
             spinUntilPost()
@@ -309,7 +315,7 @@ enum HelloCollapseSelfTest {
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2732).bigEndian) { Data($0) })
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2048).bigEndian) { Data($0) })
             bytes.append(0)
-            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: false)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: false, auth: auth)
             posts.removeAll()
             server.handleClientDisplayInfo(bytes, at: 2)
             spinUntilPost()
@@ -328,7 +334,7 @@ enum HelloCollapseSelfTest {
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(2560).bigEndian) { Data($0) })
             bytes.append(contentsOf: withUnsafeBytes(of: UInt32(1440).bigEndian) { Data($0) })
             bytes.append(flags)
-            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true)
+            let server = StreamServer(source: .display(CGMainDisplayID()), port: 5997, isPrimary: true, auth: auth)
             posts.removeAll()
             server.handleClientDisplayInfo(bytes, at: 0)
             spinUntilPost()

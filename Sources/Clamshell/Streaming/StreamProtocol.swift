@@ -12,6 +12,16 @@ enum StreamMessageType: UInt8 {
     case hostLockState = 0x05  // host -> client: screen locked/unlocked (1 byte bool)
     case cursorPos = 0x06      // host -> client: remote cursor position (see "Cursor-follow auto-pan")
     case ping = 0x07           // both directions: empty keepalive; the host echoes the client's
+    // 0x08...0x0F belong to the authentication/encryption layer (PROTOCOL.md
+    // "Device authentication and encrypted session"); constants only here.
+    case authChallenge = 0x08
+    case authResponse = 0x09
+    case authResult = 0x0A
+    case hostInfo = 0x0B
+    case clientInfo = 0x0C
+    case devicePending = 0x0D
+    case deviceDecision = 0x0E
+    case secure = 0x0F
     case videoFrame = 0x10
     case keyframeRequest = 0x11
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
@@ -19,7 +29,33 @@ enum StreamMessageType: UInt8 {
     case mouseButton = 0x21
     case key = 0x22
     case scroll = 0x23        // client -> host: dx, dy wheel deltas
+    case mouseRelative = 0x24 // client -> host: dx, dy in points (needs relativeMouse)
+    case text = 0x25          // client -> host: UTF-8 text to type (needs textInput)
+    case mouseButtonAtCursor = 0x26 // client -> host: button, down; at the host cursor (needs relativeMouse)
     case clipboard = 0x30     // both directions: UTF-8 plain text
+    // 0x50...0x54: peripherals attached to the client (needs peripherals).
+    case peripheralAttach = 0x50
+    case peripheralStatus = 0x51
+    case peripheralDetach = 0x52
+    case peripheralInput = 0x53
+    case peripheralOutput = 0x54
+    // 0x58...0x5B: file transfer, both directions (needs fileTransfer).
+    case fileOffer = 0x58
+    case fileAnswer = 0x59
+    case fileData = 0x5A
+    case fileEnd = 0x5B
+}
+
+/// Feature bits exchanged in the handshake (PROTOCOL.md "Capabilities").
+struct StreamCapabilities: OptionSet {
+    let rawValue: UInt32
+    static let approvalRequired = StreamCapabilities(rawValue: 1 << 0)
+    static let relativeMouse    = StreamCapabilities(rawValue: 1 << 1)
+    static let textInput        = StreamCapabilities(rawValue: 1 << 2)
+    static let extraButtons     = StreamCapabilities(rawValue: 1 << 3)
+    static let deviceApproval   = StreamCapabilities(rawValue: 1 << 4)
+    static let fileTransfer     = StreamCapabilities(rawValue: 1 << 5)
+    static let peripherals      = StreamCapabilities(rawValue: 1 << 6)
 }
 
 enum StreamCodec: UInt8 {
@@ -149,6 +185,23 @@ enum StreamMessage {
         return frame(type: .scroll, payload: p)
     }
 
+    /// Pointer movement in points for a captured pointer (needs `relativeMouse`).
+    static func mouseRelative(dx: Float32, dy: Float32) -> Data {
+        var p = Data(); p.appendBE(dx); p.appendBE(dy)
+        return frame(type: .mouseRelative, payload: p)
+    }
+
+    /// A press or release where the host cursor is now, for a captured pointer
+    /// (needs `relativeMouse`).
+    static func mouseButtonAtCursor(button: UInt8, down: Bool) -> Data {
+        frame(type: .mouseButtonAtCursor, payload: Data([button, down ? 1 : 0]))
+    }
+
+    /// Text to type as-is (needs `textInput`); the host refuses more than 16 KB.
+    static func text(_ s: String) -> Data {
+        frame(type: .text, payload: Data(s.utf8))
+    }
+
     static func audioFrame(_ aac: Data) -> Data { frame(type: .audioFrame, payload: aac) }
 
     /// Live stream status for the client's quality indicator: current encoder
@@ -180,16 +233,74 @@ enum StreamMessage {
     }
 }
 
+// MARK: - Input message decoding
+
+/// The client-to-host input messages (0x20-0x26), decoded from their payloads.
+/// Pure: only the length checks and field reads live here. What a host does
+/// with the values (clamping, dropping non-finite numbers) is up to the caller.
+enum InputMessage {
+    case mouseMove(x: Float32, y: Float32)
+    case mouseButton(button: UInt8, down: Bool, x: Float32, y: Float32)
+    case key(macKeyCode: UInt16, down: Bool, flags: UInt64)
+    case scroll(dx: Float32, dy: Float32)
+    case mouseRelative(dx: Float32, dy: Float32)
+    case mouseButtonAtCursor(button: UInt8, down: Bool)
+    case text(Data)
+
+    /// Nil for a payload shorter than its layout needs and for any other
+    /// message type. Extra trailing bytes are skipped.
+    static func decode(type: StreamMessageType, payload: Data) -> InputMessage? {
+        let s = payload.startIndex
+        switch type {
+        case .mouseMove:
+            guard payload.count >= 8 else { return nil }
+            return .mouseMove(x: payload.beFloat32(at: 0), y: payload.beFloat32(at: 4))
+        case .mouseButton:
+            guard payload.count >= 10 else { return nil }
+            return .mouseButton(button: payload[s], down: payload[s + 1] == 1,
+                                x: payload.beFloat32(at: 2), y: payload.beFloat32(at: 6))
+        case .key:
+            guard payload.count >= 11 else { return nil }
+            return .key(macKeyCode: payload.beUInt16(at: 0), down: payload[s + 2] == 1,
+                        flags: payload.beUInt64(at: 3))
+        case .scroll:
+            guard payload.count >= 8 else { return nil }
+            return .scroll(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseRelative:
+            guard payload.count >= 8 else { return nil }
+            return .mouseRelative(dx: payload.beFloat32(at: 0), dy: payload.beFloat32(at: 4))
+        case .mouseButtonAtCursor:
+            guard payload.count >= 2 else { return nil }
+            return .mouseButtonAtCursor(button: payload[s], down: payload[s + 1] == 1)
+        case .text:
+            return .text(payload)
+        default:
+            return nil
+        }
+    }
+}
+
 // MARK: - Incremental parser
 
 /// Feed raw bytes from the socket; emits complete (type, payload) messages.
 /// Unknown message types are skipped (forward compatibility).
 final class StreamMessageParser {
     private var buffer = Data()
-    /// Cap a single message at 64 MB — anything bigger is a corrupt stream.
-    private let maxPayload = 64 << 20
+    /// Default cap for a single message: 64 MB — anything bigger is a corrupt stream.
+    static let defaultMaxPayload = 64 << 20
+    /// Settable so a host can read a small cap before a connection has
+    /// authenticated and the normal one after.
+    var maxPayload: Int
+
+    init(maxPayload: Int = StreamMessageParser.defaultMaxPayload) {
+        self.maxPayload = maxPayload
+    }
 
     var onMessage: ((StreamMessageType, Data) -> Void)?
+    /// A whole message whose type this build does not know. It is skipped
+    /// either way; a caller that must not skip one (an encrypted session, where
+    /// everything is SECURE) sets this to hear about it.
+    var onUnknown: ((UInt8) -> Void)?
     /// Set when the stream is unrecoverably corrupt; caller should disconnect.
     private(set) var corrupt = false
 
@@ -205,6 +316,8 @@ final class StreamMessageParser {
             buffer.removeFirst(5 + length)
             if let type = StreamMessageType(rawValue: typeByte) {
                 onMessage?(type, payload)
+            } else {
+                onUnknown?(typeByte)
             }
         }
     }

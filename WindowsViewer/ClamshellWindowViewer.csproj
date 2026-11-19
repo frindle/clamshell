@@ -16,7 +16,8 @@
     <RootNamespace>Clamshell</RootNamespace>
     <Platforms>x64</Platforms>
     <PlatformTarget>x64</PlatformTarget>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- WPF text (the auth screens) needs real cultures: invariant mode throws in its font cache. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
@@ -25,6 +26,15 @@
          reused here for decode via the built-in Windows H.264/HEVC decoder
          MFTs (no codec install required, no FFmpeg dependency). -->
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
+    <!-- Sound out (WaveOutEvent + BufferedWaveProvider); the version WindowsServer pins. -->
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Device-auth handshake, shared with tests/ (the macOS interop project). -->
+    <Compile Include="..\WindowsShared\**\*.cs" Link="WindowsShared\%(RecursiveDir)%(Filename)%(Extension)" />
+    <!-- Windows-only code the viewer and the server both use (the CNG key). -->
+    <Compile Include="..\WindowsCommon\**\*.cs" Link="WindowsCommon\%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
 </Project>

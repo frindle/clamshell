@@ -15,8 +15,34 @@ jobs:
         run: dotnet build WindowsServer/ClamshellServer.csproj -c Release
       - name: Self-test (pure protocol/framing logic)
         run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest
+      - name: Input self-test (shared vectors, tests/vectors/input-v1.json)
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-input tests/vectors/input-v1.json
+
+      - name: Encoder self-test (the session's encoder path, synthetic frames, real AVCC out)
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-encoder
+
+      - name: Host key self-test (real Windows key store, throwaway key)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-hostkey
+
+      - name: Device list self-test (real DPAPI and file system, throwaway folder)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-store
+
+      - name: Gate self-test (real server on loopback, real handshakes, throwaway key and list)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-gate
+
+      - name: Device commands self-test (devices, approve, deny, revoke, forget against a throwaway list)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-commands
+
+      - name: Host screens self-test (approval window, Devices section, Settings built once, no network)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsServer/ClamshellServer.csproj -c Release -- selftest-screens
 
       - name: Live smoke test (real display enum, encoder probe, listener bind)
+        if: ${{ !cancelled() }}
         # `selftest` above never touches DXGI/Media Foundation/HttpListener —
         # those need an actual display/session, which is exactly what nobody
         # had verified on Windows at all (see README). windows-latest runners
@@ -53,9 +79,31 @@ jobs:
           Write-Output "smoke test OK: process stayed up and completed the real startup sequence"
 
       - name: Build Windows viewer client
+        if: ${{ !cancelled() }}
         run: dotnet build WindowsViewer/ClamshellWindowViewer.csproj -c Release
       - name: Viewer self-test (pure protocol/AVCC-AnnexB framing logic)
+        if: ${{ !cancelled() }}
         run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest
+      - name: Viewer device-auth self-test (vectors, handshakes, tampered frames)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest-auth tests/vectors/auth-v1.json
+      - name: Viewer key store self-test (real Windows key store, throwaway key)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest-keystore
+
+      - name: Viewer screens self-test (each device-auth screen built once, no network)
+        if: ${{ !cancelled() }}
+        run: dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- selftest-screens
+      - name: Viewer saved-Macs commands (known-hosts, forget-host with nothing saved)
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- known-hosts
+          if ($LASTEXITCODE -ne 0) { throw "known-hosts failed (exit $LASTEXITCODE)" }
+          dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- forget-host nothing-here
+          if ($LASTEXITCODE -ne 1) { throw "forget-host of an unknown Mac should exit 1, got $LASTEXITCODE" }
+          # The exit code 1 above was the expected one; do not let it fail the step.
+          exit 0
 
       - name: Viewer GUI smoke test (real WPF Application/Window on a real virtual display)
         # The `--verify`/`decode-file` steps below never construct MainWindow
@@ -84,6 +132,15 @@ jobs:
           Write-Output "viewer GUI smoke test OK: WPF Application/Window constructed and stayed up on a real virtual display"
 
       - name: End-to-end viewer connect (real host HELLO/HELLO_ACK -> real client)
+        if: ${{ !cancelled() }}
+        # The host now asks before it lets a new device in, and this step no
+        # longer passes --allow-unverified: the viewer connects as an unknown
+        # device and waits; this script approves it through the host's own
+        # command line (`ClamshellServer approve <fingerprint>`, against a
+        # throwaway state folder), and only then does the session start. What
+        # this step proves is that handshake and approval, and then that the
+        # host's own encoder produced a frame the viewer decoded (`verify: PASS`).
+        #
         # Both the proven host (above) and the new viewer run in this same
         # job, so this drives the real wire handshake on real Windows.
         # ClamshellServer.exe is launched as a real display-stream source
@@ -92,26 +149,15 @@ jobs:
         # cleanly unattended) does a real WebSocket connect and a real
         # HELLO/HELLO_ACK round trip.
         #
-        # KNOWN GAP, discovered by writing this test (not present before --
-        # the old "Live smoke test" step above never had a client connect,
-        # so it never exercised this path): WindowsServer's *software*
-        # H.264 encoder fails to initialize on this runner
-        # (VideoEncoder.Create -> Build -> SetInputType/SetOutputType
-        # throws E_FAIL) once a client actually connects and starts a
-        # session, even though the earlier smoke test's encoder *probe*
-        # (EncoderProbe.Run, which never builds a session) passes. That is
-        # a WindowsServer-side issue, out of scope for this change (this PR
-        # only touches WindowsViewer), so no VIDEO_FRAME ever arrives here
-        # and this step can only prove the handshake, not real decode --
-        # see the "Viewer decode-file" step below for that, using an
-        # independent encoder instead of the host's.
-        #
-        # Scope note: even once that's fixed, this would still be a
-        # *display* stream, not a *window* stream -- WindowsServer has no
+        # Scope note: this is a *display* stream, not a *window* stream --
+        # WindowsServer has no
         # window-capture/streaming implementation yet (WindowEnum.cs is
         # enumeration only, PROTOCOL.md "Window Handoff v2, PROPOSED").
         shell: pwsh
         run: |
+          # A throwaway device list for this step: the host and the command
+          # line below both read it from here.
+          $env:CLAMSHELL_STATE_DIR = Join-Path $PWD "e2e-state"
           $notepad = Start-Process notepad.exe -PassThru
           Start-Sleep -Seconds 2
 
@@ -126,10 +172,37 @@ jobs:
             throw "ClamshellServer exited early instead of staying up for the viewer test"
           }
 
+          # No --allow-unverified. The viewer connects as a device the host has
+          # never seen and waits to be approved.
           $viewer = Start-Process -FilePath dotnet `
-            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","--verify","127.0.0.1","5951","h264","25" `
-            -NoNewWindow -PassThru -Wait `
+            -ArgumentList "run","--project","WindowsViewer/ClamshellWindowViewer.csproj","-c","Release","--","--verify","127.0.0.1","5951","h264","60" `
+            -NoNewWindow -PassThru `
             -RedirectStandardOutput viewer-out.log -RedirectStandardError viewer-err.log
+          $null = $viewer.Handle   # keeps the exit code readable after it exits
+
+          # Find the waiting device the way a person at the PC would, then approve it.
+          # The program has no console of its own here, so it writes its answer to this file.
+          $env:CLAMSHELL_CLI_OUTPUT = Join-Path $PWD "cli-out.txt"
+          $cli = @("run","--no-build","--project","WindowsServer/ClamshellServer.csproj","-c","Release","--")
+          $fingerprint = $null
+          $listing = ""
+          for ($i = 0; $i -lt 40 -and -not $fingerprint; $i++) {
+            & dotnet @cli devices 2>&1 | Out-Null
+            $listing = if (Test-Path cli-out.txt) { Get-Content cli-out.txt -Raw } else { "" }
+            if ($listing -match "Waiting for approval:\s+([0-9A-F]{4}(?:-[0-9A-F]{4}){3})") { $fingerprint = $Matches[1] }
+            else { Start-Sleep -Seconds 1 }
+          }
+          Write-Output "--- host device list ---"; Write-Output $listing
+          $approveOut = $null
+          $approveCode = $null
+          if ($fingerprint) {
+            & dotnet @cli approve $fingerprint 2>&1 | Out-Null
+            $approveCode = $LASTEXITCODE
+            $approveOut = if (Test-Path cli-out.txt) { Get-Content cli-out.txt -Raw } else { "" }
+            Write-Output "--- approve $fingerprint (exit $approveCode) ---"; Write-Output $approveOut
+          }
+
+          if (-not $viewer.WaitForExit(70000)) { Stop-Process -Id $viewer.Id -Force -ErrorAction SilentlyContinue }
 
           Write-Output "--- server stderr ---"; Get-Content server-err.log -ErrorAction SilentlyContinue
           Write-Output "--- viewer stderr ---"; Get-Content viewer-err.log -ErrorAction SilentlyContinue
@@ -137,15 +210,27 @@ jobs:
           Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           Stop-Process -Id $notepad.Id -Force -ErrorAction SilentlyContinue
 
+          if (-not $fingerprint) { throw "the host never listed a device waiting for approval: the viewer did not reach the gate" }
+          if ($approveCode -ne 0) { throw "approving the waiting device from the command line failed (exit $approveCode)" }
           $vlog = Get-Content viewer-err.log -Raw -ErrorAction SilentlyContinue
-          if ($vlog -notmatch "verify: HELLO_ACK") { throw "viewer never received HELLO_ACK -- real connectivity failure, not the known encoder gap" }
-          if ($vlog -match "verify: PASS") {
-            Write-Output "end-to-end viewer connect+decode OK: real HELLO_ACK + real decoded VIDEO_FRAME over a real WebSocket"
-          } else {
-            Write-Warning "handshake OK (real HELLO_ACK) but no VIDEO_FRAME arrived -- known WindowsServer software-encoder gap on this runner, see step comment. Not failing this step for it; see the 'Viewer decode-file' step for a decode proof independent of the host's encoder."
-          }
+          if (-not $vlog) { $vlog = "" }
+          # The steps have to happen in this order: told to wait, then let in, then
+          # HELLO_ACK, then a decoded frame.
+          $waiting = $vlog.IndexOf("verify: state WaitingForApproval", [StringComparison]::Ordinal)
+          $connected = $vlog.IndexOf("verify: state Connected", [StringComparison]::Ordinal)
+          $helloAck = $vlog.IndexOf("verify: HELLO_ACK", [StringComparison]::Ordinal)
+          $pass = $vlog.IndexOf("verify: PASS", [StringComparison]::Ordinal)
+          if ($waiting -lt 0) { throw "the viewer was never told it was waiting for approval" }
+          if ($connected -lt 0) { throw "the viewer was not connected after the device was approved" }
+          if ($helloAck -lt 0) { throw "viewer never received HELLO_ACK after approval -- real connectivity failure" }
+          if (-not ($waiting -lt $connected -and $connected -lt $helloAck)) { throw "the viewer's states were out of order (waiting $waiting, connected $connected, HELLO_ACK $helloAck)" }
+          Write-Output "handshake and approval checked: the device waited, was approved on the host from the command line, was let in, and received HELLO_ACK"
+          if ($pass -lt 0) { throw "no decoded video: the viewer did not print 'verify: PASS', so no VIDEO_FRAME from the real host was decoded" }
+          if ($pass -lt $helloAck) { throw "'verify: PASS' appeared before HELLO_ACK (PASS $pass, HELLO_ACK $helloAck)" }
+          Write-Output "video checked: a real VIDEO_FRAME from the host's own encoder was decoded by the viewer over the encrypted session"
 
       - name: Generate a real single-frame H.264 test clip (ffmpeg, independent of WindowsServer)
+        if: ${{ !cancelled() }}
         # ffmpeg isn't preinstalled on windows-latest -- chocolatey is, so
         # install it from there. A single-keyframe clip (-frames:v 1) is
         # exactly one access unit (SPS+PPS+IDR, Annex-B start-code
@@ -163,11 +248,12 @@ jobs:
           Write-Output "generated test-frame.h264: $((Get-Item test-frame.h264).Length) bytes"
 
       - name: Viewer decode-file (real H.264 -> real Media Foundation decode)
+        if: ${{ !cancelled() }}
         # Proves the viewer's own decode pipeline (VideoDecoder.cs, a real
         # Media Foundation H.264 decoder MFT -- software path, since this
         # runner has no GPU) against a real H.264 stream from an
-        # independent, known-good encoder (ffmpeg/libx264), sidestepping
-        # the WindowsServer encoder gap noted above entirely. PASS requires
+        # independent, known-good encoder (ffmpeg/libx264), so it checks the
+        # viewer's decoder independently of the host's encoder. PASS requires
         # an actual decoded frame with non-uniform pixel content (the
         # ffmpeg testsrc pattern is not a flat color), not just "it didn't
         # throw".
@@ -181,3 +267,35 @@ jobs:
           $dlog = Get-Content decode-file-err.log -Raw -ErrorAction SilentlyContinue
           if ($dlog -notmatch "decode-file: PASS") { throw "decode-file stderr missing 'decode-file: PASS' line" }
           Write-Output "decode-file OK: real ffmpeg-produced H.264 decoded through a real Media Foundation decoder MFT"
+
+      - name: Generate a one-second 1 kHz stereo AAC-LC clip (ffmpeg, ADTS)
+        if: ${{ !cancelled() }}
+        # Same idea as the H.264 clip above: an independent encoder makes the
+        # input, so the viewer's decoder is checked against a known-good stream.
+        # The H.264 step normally installed ffmpeg already; install it here too
+        # if that step did not run.
+        shell: pwsh
+        run: |
+          $ffmpeg = "C:\ProgramData\chocolatey\bin\ffmpeg.exe"
+          if (-not (Test-Path $ffmpeg)) { choco install ffmpeg -y --no-progress }
+          & $ffmpeg -y -f lavfi -i "sine=frequency=1000:duration=1:sample_rate=48000" -ac 2 -c:a aac -profile:a aac_low -b:a 128k -f adts test-tone.aac
+          if (-not (Test-Path test-tone.aac) -or (Get-Item test-tone.aac).Length -eq 0) { throw "ffmpeg did not produce test-tone.aac" }
+          Write-Output "generated test-tone.aac: $((Get-Item test-tone.aac).Length) bytes"
+
+      - name: Viewer decode-audio-file (real AAC-LC -> real Media Foundation decode)
+        if: ${{ !cancelled() }}
+        # Feeds the raw access units of the clip (ADTS headers dropped) through
+        # the same AudioDecoder a live session uses, then checks the PCM: 48 kHz
+        # stereo, the length within one frame of 1024, and a 1 kHz tone in both
+        # channels. This proves the decoder. It plays nothing: this runner has no
+        # speakers and CI cannot hear.
+        shell: pwsh
+        run: |
+          dotnet run --project WindowsViewer/ClamshellWindowViewer.csproj -c Release -- decode-audio-file test-tone.aac 1000 1 `
+            2> decode-audio-err.log
+          $code = $LASTEXITCODE
+          Write-Output "--- decode-audio-file stderr ---"; Get-Content decode-audio-err.log -ErrorAction SilentlyContinue
+          if ($code -ne 0) { throw "decode-audio-file FAILED (exit $code) -- see stderr above" }
+          $alog = Get-Content decode-audio-err.log -Raw -ErrorAction SilentlyContinue
+          if ($alog -notmatch "decode-audio-file: PASS") { throw "decode-audio-file stderr missing 'decode-audio-file: PASS' line" }
+          Write-Output "decode-audio-file OK: a real ffmpeg AAC-LC clip decoded through a real Media Foundation decoder MFT to a 1 kHz tone. Sound output itself was NOT checked."

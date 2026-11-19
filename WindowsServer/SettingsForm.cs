@@ -24,7 +24,10 @@ internal sealed class SettingsForm : Form
     private readonly ListBox _displays = new() { Left = 12, Top = 80, Width = 296, Height = 110 };
     private readonly Button _checkUpdates = new() { Text = "Check for Updates Now", Left = 12, Top = 200, Width = 296 };
 
-    public SettingsForm(ushort currentBasePort, Action<ushort> onApplyBasePort, UpdateChecker updateChecker)
+    /// <param name="auth">The host's key and device list; null when they could not be opened,
+    /// in which case the Devices section says so.</param>
+    public SettingsForm(ushort currentBasePort, Action<ushort> onApplyBasePort, UpdateChecker updateChecker,
+        HostAuth? auth = null)
     {
         _onApplyBasePort = onApplyBasePort;
         _updateChecker = updateChecker;
@@ -35,7 +38,22 @@ internal sealed class SettingsForm : Form
         MinimizeBox = false;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(320, 240);
+        ClientSize = new Size(452, 548);
+
+        var devices = new GroupBox { Text = "Devices", Left = 12, Top = 240, Width = 428, Height = 296 };
+        if (auth is null)
+        {
+            devices.Controls.Add(new Label
+            {
+                Text = "The host key or the device list could not be opened, so nothing is being served. The reason is in the log file.",
+                Left = 8, Top = 20, Width = 400, Height = 60,
+            });
+        }
+        else
+        {
+            devices.Controls.Add(new DevicesPanel(auth) { Left = 6, Top = 18 });
+        }
+        Controls.Add(devices);
 
         var portLabel = new Label { Text = "Base port:", Left = 12, Top = 46, AutoSize = true };
 

@@ -54,6 +54,8 @@ cat > "${APP}/Contents/Info.plist" <<EOF
     <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
+    <key>NSLocalNetworkUsageDescription</key><string>Clamshell announces this Mac on your local network so your own devices can find it.</string>
+    <key>NSBonjourServices</key><array><string>_clamshell._tcp</string></array>
     <key>NSHighResolutionCapable</key><true/>
     <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict>

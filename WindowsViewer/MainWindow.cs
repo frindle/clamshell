@@ -1,4 +1,5 @@
 using System.Windows;
+using Clamshell.Auth;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -23,11 +24,19 @@ internal sealed class MainWindow : Window
     private WriteableBitmap? _bitmap;
     private ViewerClient? _client;
     private int _srcW, _srcH;
+    private readonly Grid _root = new();
+    private readonly ContentControl _screen = new();
+    private readonly UIElement _badge = AuthScreens.BuildNotVerifiedBadge();
 
     public MainWindow()
     {
         Title = "Clamshell";
-        Content = _image;
+        _badge.Visibility = Visibility.Collapsed;
+        _screen.Visibility = Visibility.Collapsed;
+        _root.Children.Add(_image);
+        _root.Children.Add(_badge);
+        _root.Children.Add(_screen);
+        Content = _root;
         Background = System.Windows.Media.Brushes.Black;
         Width = 800; Height = 600;
 
@@ -42,11 +51,26 @@ internal sealed class MainWindow : Window
 
     public async void Start(string host, int port, StreamCodec requestedCodec)
     {
-        var client = new ViewerClient();
+        ViewerClient client;
+        try { client = ViewerClient.OpenDefault(); }
+        catch (DeviceKeyException e)
+        {
+            // No key, no connection: nothing else is used in its place.
+            Title = "Clamshell -- cannot start";
+            Log.Line(e.Message);
+            return;
+        }
         _client = client;
-        client.OnHelloAck = (codec, w, h) => Dispatcher.Invoke(() => OnHelloAck(codec, w, h));
-        client.OnFrame = (w, h, bgra) => Dispatcher.Invoke(() => OnFrame(w, h, bgra));
-        client.OnDisconnected = reason => Dispatcher.Invoke(() => Title = $"Clamshell -- disconnected ({reason})");
+        // BeginInvoke, never Invoke, for everything the receive thread raises: it
+        // holds the decoder lock while a frame comes out, and closing the window
+        // (or StopAndClose) takes that lock on the UI thread, so waiting for the
+        // UI there would be a deadlock. The posts keep their order.
+        client.OnHelloAck = (codec, w, h) => Dispatcher.BeginInvoke(() => OnHelloAck(codec, w, h));
+        client.OnFrame = PostFrame;
+        // The client also calls these while it holds its own lock, and the UI
+        // thread takes that lock to send input.
+        client.OnState = state => Dispatcher.BeginInvoke(() => OnState(state));
+        client.OnDisconnected = reason => Dispatcher.BeginInvoke(() => OnDisconnected(reason));
 
         Title = $"Clamshell -- connecting to {host}:{port}...";
         try { await client.ConnectAsync(host, port, requestedCodec); }
@@ -57,6 +81,41 @@ internal sealed class MainWindow : Window
         // calling thread cannot access this object because a different
         // thread owns it" when setting Title directly here).
         catch (Exception e) { Dispatcher.Invoke(() => Title = $"Clamshell -- connect failed ({e.Message})"); }
+    }
+
+    /// <summary>What is on screen over the stream (null when none). For the self-test.</summary>
+    internal UIElement? ScreenForTest => _screen.Content as UIElement;
+
+    /// <summary>Stop on one of the screens. The viewer has no start screen to go
+    /// back to, so a stopped connection would leave an empty window: the app
+    /// closes instead, as the window's own close button does.</summary>
+    private void StopAndClose()
+    {
+        _client?.Stop();
+        Close();
+    }
+
+    internal void OnState(FlowState state)
+    {
+        Title = $"Clamshell -- {AuthScreens.Title(state)}";
+        // While a session runs without proof of who answers, say so.
+        _badge.Visibility = state.Kind == FlowStateKind.Connected && !state.Verified
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (AuthScreens.IsScreen(state))
+        {
+            _screen.Content = AuthScreens.Build(state, yes => _client?.Answer(yes), StopAndClose);
+            _screen.Visibility = Visibility.Visible;
+        }
+        else
+        {
+            _screen.Content = null;
+            _screen.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void OnDisconnected(string reason)
+    {
+        Title = $"Clamshell -- disconnected ({reason})";
     }
 
     private void OnHelloAck(StreamCodec codec, int w, int h)
@@ -71,6 +130,36 @@ internal sealed class MainWindow : Window
 
         _bitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
         _image.Source = _bitmap;
+    }
+
+    // At most one frame waits for the UI: a newer one replaces it. The decoder
+    // hands over a fresh array for every frame, so nothing is reused under it.
+    private readonly object _frameGate = new();
+    private (int W, int H, byte[] Bgra)? _waitingFrame;
+    private bool _frameDeliveryPosted;
+
+    private void PostFrame(int w, int h, byte[] bgra)
+    {
+        bool post;
+        lock (_frameGate)
+        {
+            _waitingFrame = (w, h, bgra);
+            post = !_frameDeliveryPosted;
+            _frameDeliveryPosted = true;
+        }
+        if (post) Dispatcher.BeginInvoke(() => DeliverFrame());
+    }
+
+    private void DeliverFrame()
+    {
+        (int W, int H, byte[] Bgra)? frame;
+        lock (_frameGate)
+        {
+            frame = _waitingFrame;
+            _waitingFrame = null;
+            _frameDeliveryPosted = false;
+        }
+        if (frame is { } f) OnFrame(f.W, f.H, f.Bgra);
     }
 
     private void OnFrame(int w, int h, byte[] bgra)

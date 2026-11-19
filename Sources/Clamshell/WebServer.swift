@@ -22,11 +22,97 @@ final class WebServer {
     /// single local endpoint.
     var bindHosts: [String] = []
 
-    /// Optional token gating the /clipboard endpoint. nil (the default)
-    /// leaves it open — fine on a trusted LAN, but set this if the server
-    /// is exposed through a tunnel. `defaults write com.frindle.clamshell
-    /// clipboardToken <secret>`.
-    var clipboardToken: String?
+    /// The secret every /clipboard request must carry. There is always one:
+    /// a server starts with a random token of its own, and setting an empty
+    /// one makes another. The menu-bar app keeps its token in the
+    /// preferences (`defaults write com.frindle.clamshell clipboardToken
+    /// <secret>`) so a page that was open before a relaunch goes on working.
+    ///
+    /// The pages this server hands out carry the token, so it keeps out
+    /// what never loaded one: another website open in the same browser, or
+    /// a script that only knows the address. It does not keep out anyone
+    /// who can load a page.
+    var clipboardToken: String = WebServer.newClipboardToken() {
+        didSet { if clipboardToken.isEmpty { clipboardToken = WebServer.newClipboardToken() } }
+    }
+
+    /// 16 random bytes as 32 hex characters.
+    static func newClipboardToken() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<16).map { _ in
+            String(format: "%02x", UInt8.random(in: .min ... .max, using: &generator))
+        }.joined()
+    }
+
+    /// The value of the query item called `name` in a request target,
+    /// percent-decoded. nil when there is no such item, when it has no `=`,
+    /// or when its value is not valid percent-encoding.
+    static func queryValue(named name: String, in target: String) -> String? {
+        var rest = Substring(target)
+        if let hash = rest.firstIndex(of: "#") { rest = rest[..<hash] }
+        guard let mark = rest.firstIndex(of: "?") else { return nil }
+        for item in rest[rest.index(after: mark)...].split(separator: "&") {
+            let pair = item.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard pair.count == 2, pair[0] == name else { continue }
+            return String(pair[1]).removingPercentEncoding
+        }
+        return nil
+    }
+
+    /// The credential of the `Authorization: Bearer …` header in a request
+    /// head. Only that header counts: the word "Bearer" anywhere else in the
+    /// request means nothing.
+    static func bearer(in head: String) -> String? {
+        let scheme = "bearer "
+        for line in head.split(separator: "\r\n").dropFirst() {
+            guard let colon = line.firstIndex(of: ":"),
+                  line[..<colon].trimmingCharacters(in: .whitespaces).lowercased() == "authorization" else { continue }
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            guard value.count > scheme.count, value.prefix(scheme.count).lowercased() == scheme else { return nil }
+            return value.dropFirst(scheme.count).trimmingCharacters(in: .whitespaces)
+        }
+        return nil
+    }
+
+    /// Whether two tokens are the same bytes. The time it takes depends on
+    /// their length, not on where they differ. Nothing equals an empty token.
+    static func sameToken(_ a: String, _ b: String) -> Bool {
+        let x = Array(a.utf8), y = Array(b.utf8)
+        guard !x.isEmpty, x.count == y.count else { return false }
+        var difference: UInt8 = 0
+        for i in x.indices { difference |= x[i] ^ y[i] }
+        return difference == 0
+    }
+
+    /// Whether a request carries exactly `token`, as its `token` query item
+    /// or as a bearer credential.
+    static func carriesToken(_ token: String, target: String, head: String) -> Bool {
+        if let presented = queryValue(named: "token", in: target), sameToken(presented, token) { return true }
+        if let presented = bearer(in: head), sameToken(presented, token) { return true }
+        return false
+    }
+
+    /// The token as it is written into a page: percent-encoded down to
+    /// letters, digits and `-._~`, so whatever the user chose as a secret it
+    /// cannot end a script string or an HTML attribute.
+    static func encodedToken(_ token: String) -> String {
+        var allowed = CharacterSet()
+        allowed.insert(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        return token.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
+    }
+
+    static let clipboardTokenMetaName = "clamshell-clipboard-token"
+
+    /// The web client's page with the token in a `<meta>` tag at the end of
+    /// its head, where client.js reads it. A page with no head is returned
+    /// as it is.
+    static func withClipboardToken(_ page: Data, token: String) -> Data {
+        guard let end = page.range(of: Data("</head>".utf8)) else { return page }
+        let tag = "<meta name=\"\(clipboardTokenMetaName)\" content=\"\(encodedToken(token))\">"
+        var out = page
+        out.insert(contentsOf: Data(tag.utf8), at: end.lowerBound)
+        return out
+    }
 
     /// Non-nil when dual display mode is on: the point sizes of virtual
     /// displays A and B. Drives the "/" picker page and the /display-a and
@@ -271,13 +357,13 @@ final class WebServer {
         }
         let path = String(parts[1].split(separator: "?").first ?? "/")
 
-        // Clipboard bridge. When clipboardToken is set, require it (query
-        // param or bearer header) — a Cloudflare Tunnel would otherwise
-        // expose the Mac's clipboard to the internet unauthenticated.
+        // Clipboard bridge. Every request needs the token, as the `token`
+        // query item or a bearer credential, and it has to be the whole
+        // token: this reads the Mac's clipboard and replaces it, and without
+        // the token any website open in a browser that can reach this server
+        // could post to it.
         if path == "/clipboard" {
-            if let token = clipboardToken,
-               !parts[1].contains("token=\(token)"),
-               !requestHead.contains("Bearer \(token)") {
+            guard Self.carriesToken(clipboardToken, target: String(parts[1]), head: requestHead) else {
                 send(conn, status: "401 Unauthorized", contentType: "text/plain", body: Data("token required".utf8))
                 return
             }
@@ -301,7 +387,8 @@ final class WebServer {
                      body: Data("web client resources missing from bundle".utf8))
                 return
             }
-            send(conn, status: "200 OK", contentType: "text/html; charset=utf-8", body: html)
+            send(conn, status: "200 OK", contentType: "text/html; charset=utf-8",
+                 body: Self.withClipboardToken(html, token: clipboardToken))
             return
         }
         if path.hasPrefix("/client/") {
@@ -373,8 +460,8 @@ final class WebServer {
     // MARK: - Clipboard bridge
 
     /// GET returns the Mac clipboard as {"text","changeCount"}; POST sets it
-    /// from {"text"}. Exposed to anyone who can reach the web server — same
-    /// trust boundary as the VNC bridge itself.
+    /// from {"text"}. Reached only with the token (see `respond`), which
+    /// anyone who can load a page from this server has.
     private func handleClipboard(_ conn: NWConnection, method: String, body: Data) {
         switch method {
         case "GET":
@@ -413,7 +500,7 @@ final class WebServer {
         // The injected pages get the token so browser sync keeps working;
         // the token's job is blocking direct API access from clients that
         // never legitimately loaded a page.
-        let q = clipboardToken.map { "?token=\($0)" } ?? ""
+        let q = "?token=\(Self.encodedToken(clipboardToken))"
         return """
     <script>
     (() => {
@@ -686,16 +773,23 @@ final class WebServer {
         var listeners: [NWListener] = []
         for (i, port) in Self.streamBridgePorts.enumerated() {
             let targetPort = Self.streamTargetPorts[i]
+            // The browser's upgrade request says who is behind a tunnel (see
+            // ClientAddress); the bridge reads it when the browser leg is ready.
+            let upgradeHeaders = UpgradeHeaders()
             let ls = try makeListeners(port: port) {
                 let wsParams = LANTLS.parameters()
                 let wsOptions = NWProtocolWebSocket.Options()
                 wsOptions.autoReplyPing = true
+                wsOptions.setClientRequestHandler(queue) { _, headers in
+                    upgradeHeaders.record(headers)
+                    return NWProtocolWebSocket.Response(status: .accept, subprotocol: nil)
+                }
                 wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
                 return wsParams
             }
             for listener in ls {
                 listener.newConnectionHandler = { [weak self] browserWS in
-                    self?.streamBridge(browserWS, toPort: targetPort)
+                    self?.streamBridge(browserWS, toPort: targetPort, upgradeHeaders: upgradeHeaders)
                 }
                 watch(listener)
                 listener.start(queue: queue)
@@ -724,29 +818,33 @@ final class WebServer {
     /// same one the iPad uses" per its own comment. Swapping `inner` to that
     /// avoids the broken combination entirely instead of debugging
     /// Network.framework's dual-role loopback behavior further.
-    private func streamBridge(_ browserWS: NWConnection, toPort targetPort: UInt16) {
-        let inner = URLSession.shared.webSocketTask(with: URL(string: "ws://127.0.0.1:\(targetPort)")!)
-        inner.maximumMessageSize = 64 << 20
+    private func streamBridge(_ browserWS: NWConnection, toPort targetPort: UInt16, upgradeHeaders: UpgradeHeaders) {
+        // The inner leg is dialled once the browser leg is ready, so the
+        // address found in the browser's upgrade request can go with it.
+        var innerTask: URLSessionWebSocketTask?
 
+        // Upgrade headers go to a connection only when they surely belong to
+        // it (see `UpgradeHeaders`): this one is counted from here until it is
+        // ready, or until it closes without getting there.
+        upgradeHeaders.connectionAccepted()
+        var readyReached = false
         var closed = false
         let close: () -> Void = { [weak self] in
             guard !closed else { return }
             closed = true
+            if !readyReached {
+                upgradeHeaders.connectionClosedBeforeReady()
+                readyReached = true
+            }
             browserWS.cancel()
-            inner.cancel(with: .goingAway, reason: nil)
+            innerTask?.cancel(with: .goingAway, reason: nil)
             self?.sessionEnded()
         }
 
         sessionStarted()
         clog("browser stream session opened -> 127.0.0.1:\(targetPort)")
 
-        browserWS.stateUpdateHandler = { state in
-            clog("stream bridge: browserWS state -> \(state)")
-            if case .failed(let err) = state { clog("stream bridge: browserWS failed: \(err)"); close() }
-            if case .cancelled = state { close() }
-        }
-
-        func pumpBrowserToInner() {
+        func pumpBrowserToInner(_ inner: URLSessionWebSocketTask) {
             browserWS.receiveMessage { data, context, isComplete, error in
                 if let error { clog("stream bridge: browserWS.receiveMessage error: \(error)") }
                 guard error == nil else { close(); return }
@@ -754,36 +852,57 @@ final class WebServer {
                     clog("stream bridge: browser->inner \(data.count) bytes")
                     inner.send(.data(data)) { sendErr in
                         if let sendErr { clog("stream bridge: inner.send error: \(sendErr)") }
-                        if sendErr != nil { close() } else { pumpBrowserToInner() }
+                        if sendErr != nil { close() } else { pumpBrowserToInner(inner) }
                     }
                 } else {
-                    pumpBrowserToInner()
+                    pumpBrowserToInner(inner)
                 }
             }
         }
-        func pumpInnerToBrowser() {
+        func pumpInnerToBrowser(_ inner: URLSessionWebSocketTask) {
             inner.receive { result in
                 switch result {
                 case .failure(let error):
                     clog("stream bridge: inner.receive error: \(error)")
                     close()
                 case .success(let message):
-                    guard case .data(let data) = message, !data.isEmpty else { pumpInnerToBrowser(); return }
+                    guard case .data(let data) = message, !data.isEmpty else { pumpInnerToBrowser(inner); return }
                     clog("stream bridge: inner->browser \(data.count) bytes")
                     let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
                     let ctx = NWConnection.ContentContext(identifier: "toBrowser", metadata: [meta])
                     browserWS.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
                         if let sendErr { clog("stream bridge: browserWS.send error: \(sendErr)") }
-                        if sendErr != nil { close() } else { pumpInnerToBrowser() }
+                        if sendErr != nil { close() } else { pumpInnerToBrowser(inner) }
                     })
                 }
             }
         }
 
+        browserWS.stateUpdateHandler = { state in
+            clog("stream bridge: browserWS state -> \(state)")
+            if case .failed(let err) = state { clog("stream bridge: browserWS failed: \(err)"); close() }
+            if case .cancelled = state { close() }
+            if case .ready = state, innerTask == nil, !closed {
+                // Same rule as the stream server's: headers count only from a
+                // trusted proxy. The result goes on to the stream server in
+                // X-Forwarded-For, where this relay (127.0.0.1) is trusted.
+                readyReached = true
+                let peer = StreamGate.remoteAddress(of: browserWS)
+                let client = upgradeHeaders.bindAtReady().map {
+                    ClientAddress.resolve(peer: peer, headers: $0, trusted: HostAuth.storedTrustedProxies())
+                } ?? peer
+                var request = URLRequest(url: URL(string: "ws://127.0.0.1:\(targetPort)")!)
+                if !client.isEmpty { request.setValue(client, forHTTPHeaderField: "X-Forwarded-For") }
+                let inner = URLSession.shared.webSocketTask(with: request)
+                inner.maximumMessageSize = 64 << 20
+                innerTask = inner
+                inner.resume()
+                pumpBrowserToInner(inner)
+                pumpInnerToBrowser(inner)
+            }
+        }
+
         browserWS.start(queue: queue)
-        inner.resume()
-        pumpBrowserToInner()
-        pumpInnerToBrowser()
     }
 
     private func sessionStarted() {

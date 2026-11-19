@@ -211,4 +211,74 @@ final class StreamProtocolTests: XCTestCase {
         d.appendBE(UInt32(64 << 20))
         XCTAssertFalse(parse(d).corrupt)
     }
+
+    // MARK: remote-ready additions
+
+    func testNewMessageTypeValues() {
+        let expected: [(StreamMessageType, UInt8)] = [
+            (.authChallenge, 0x08), (.authResponse, 0x09), (.authResult, 0x0A), (.hostInfo, 0x0B),
+            (.clientInfo, 0x0C), (.devicePending, 0x0D), (.deviceDecision, 0x0E), (.secure, 0x0F),
+            (.mouseRelative, 0x24), (.text, 0x25), (.mouseButtonAtCursor, 0x26),
+            (.peripheralAttach, 0x50), (.peripheralStatus, 0x51), (.peripheralDetach, 0x52),
+            (.peripheralInput, 0x53), (.peripheralOutput, 0x54),
+            (.fileOffer, 0x58), (.fileAnswer, 0x59), (.fileData, 0x5A), (.fileEnd, 0x5B)]
+        for (t, v) in expected { XCTAssertEqual(t.rawValue, v) }
+        // The cores carry their own type numbers; they must agree with the enum.
+        XCTAssertEqual(FileTransfer.offerType, StreamMessageType.fileOffer.rawValue)
+        XCTAssertEqual(Peripheral.attachType, StreamMessageType.peripheralAttach.rawValue)
+    }
+
+    func testMouseButtonAtCursorFrame() {
+        // The documented example: left button down.
+        XCTAssertEqual([UInt8](StreamMessage.mouseButtonAtCursor(button: 0, down: true)),
+                       [0x26, 0, 0, 0, 2, 0, 1])
+        XCTAssertEqual([UInt8](StreamMessage.mouseButtonAtCursor(button: 2, down: false)),
+                       [0x26, 0, 0, 0, 2, 2, 0])
+        let r = parse(StreamMessage.mouseButtonAtCursor(button: 3, down: true))
+        XCTAssertEqual(r.messages[0].0, .mouseButtonAtCursor)
+        XCTAssertEqual([UInt8](r.messages[0].1), [3, 1])
+    }
+
+    func testMouseRelativeRoundTrip() {
+        let r = parse(StreamMessage.mouseRelative(dx: -3.5, dy: 12))
+        XCTAssertEqual(r.messages.count, 1)
+        XCTAssertEqual(r.messages[0].0, .mouseRelative)
+        XCTAssertEqual(r.messages[0].1.beFloat32(at: 0), -3.5)
+        XCTAssertEqual(r.messages[0].1.beFloat32(at: 4), 12)
+    }
+
+    func testTextRoundTrip() {
+        let s = "héllo 😀\n"
+        let r = parse(StreamMessage.text(s), chunk: 3)
+        XCTAssertEqual(r.messages.count, 1)
+        XCTAssertEqual(r.messages[0].0, .text)
+        XCTAssertEqual(String(data: r.messages[0].1, encoding: .utf8), s)
+    }
+
+    func testCapabilityBits() {
+        XCTAssertEqual(StreamCapabilities.approvalRequired.rawValue, 1)
+        XCTAssertEqual(StreamCapabilities.relativeMouse.rawValue, 2)
+        XCTAssertEqual(StreamCapabilities.textInput.rawValue, 4)
+        XCTAssertEqual(StreamCapabilities.extraButtons.rawValue, 8)
+        XCTAssertEqual(StreamCapabilities.deviceApproval.rawValue, 16)
+        XCTAssertEqual(StreamCapabilities.fileTransfer.rawValue, 32)
+        XCTAssertEqual(StreamCapabilities.peripherals.rawValue, 64)
+        let c: StreamCapabilities = [.textInput, .extraButtons]
+        XCTAssertEqual(c.rawValue, 12)
+        XCTAssertTrue(c.contains(.textInput))
+        XCTAssertFalse(c.contains(.relativeMouse))
+        XCTAssertEqual(StreamCapabilities(rawValue: 0xFFFF_FFFF).intersection([.relativeMouse]), .relativeMouse)
+    }
+
+    func testParserCapIsSettable() {
+        XCTAssertEqual(StreamMessageParser.defaultMaxPayload, 64 << 20)
+        let parser = StreamMessageParser(maxPayload: 16)
+        var got: [StreamMessageType] = []
+        parser.onMessage = { t, _ in got.append(t) }
+        parser.feed(StreamMessage.clipboard(text: String(repeating: "a", count: 16)))
+        XCTAssertFalse(parser.corrupt)
+        XCTAssertEqual(got, [.clipboard])
+        parser.feed(StreamMessage.clipboard(text: String(repeating: "a", count: 17)))
+        XCTAssertTrue(parser.corrupt)
+    }
 }

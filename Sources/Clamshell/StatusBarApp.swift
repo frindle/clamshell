@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// and the panel/icon below need no change when it does.
     private let confirmations = ConfirmationCoordinator()
     private var confirmationWC: ConfirmationWindowController?
+    /// The Devices menu and the window that asks before a new device may
+    /// connect (PROTOCOL.md "Approving a device").
+    private let devices = DevicesController()
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
     // Remote-session state is the OR of the two signals: polled VNC/Jump
@@ -122,6 +125,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.updateIcon()
             self.rebuildMenu()
         }
+        // Devices asking to connect. Started here, after the status item
+        // exists, because the first look at the device list already updates
+        // the icon. The menu itself is rebuilt whenever it opens.
+        devices.onChange = { [weak self] in self?.updateIcon() }
+        devices.start()
         monitor.onChange = { [weak self] connected, _ in
             guard let self else { return }
             self.vncSessionActive = connected
@@ -136,9 +144,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         webServer.bindHosts = UserDefaults.standard.stringArray(forKey: "bindHosts")
             ?? UserDefaults.standard.string(forKey: "bindHost").map { [$0] } // migrate pre-multi-select key
             ?? []
-        // Optional token gating the /clipboard endpoint (see README):
+        // The token every /clipboard request must carry (see README). The
+        // one in the preferences is used; when there is none, the server's
+        // own random one is kept there, so a page that was open before a
+        // relaunch goes on working.
         //   defaults write com.frindle.clamshell clipboardToken <secret>
-        webServer.clipboardToken = UserDefaults.standard.string(forKey: "clipboardToken")
+        if let stored = UserDefaults.standard.string(forKey: "clipboardToken"), !stored.isEmpty {
+            webServer.clipboardToken = stored
+        } else {
+            UserDefaults.standard.set(webServer.clipboardToken, forKey: "clipboardToken")
+        }
         if UserDefaults.standard.bool(forKey: "webAccess") {
             webServer.start()
         }
@@ -284,20 +299,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // the collapse/desk icon the moment it settles.
         let symbol: String
         let description: String
+        let usual = coordinator.state == .collapsed ? "rectangle.compress.vertical" : "rectangle.expand.vertical"
         if confirmations.isPending {
             symbol = "key.fill"
             description = "Clamshell — confirmation pending"
-        } else if coordinator.state == .collapsed {
-            symbol = "rectangle.compress.vertical"
-            description = "Clamshell Server"
+        } else if devices.waitingCount > 0 {
+            // A device waits until somebody answers, and the approval window
+            // can be closed: the icon is what still says so afterwards.
+            symbol = "person.crop.circle.badge.questionmark"
+            description = "Clamshell — a device is waiting for approval"
         } else {
-            symbol = "rectangle.expand.vertical"
+            symbol = usual
             description = "Clamshell Server"
         }
-        statusItem.button?.image = NSImage(
-            systemSymbolName: symbol,
-            accessibilityDescription: description
-        )
+        // Never leave the menu bar without an icon over a symbol name.
+        statusItem.button?.image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
+            ?? NSImage(systemSymbolName: usual, accessibilityDescription: description)
     }
 
     private let menu = NSMenu()
@@ -319,6 +336,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.target = self
             menu.addItem(item)
         }
+        // What needs the user: devices waiting for an answer, approval off.
+        for item in devices.attentionItems() { menu.addItem(item) }
         menu.addItem(.separator())
 
         // Grouped into Display / Streaming / System submenus so the
@@ -402,6 +421,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stream.target = self
         streamingMenu.addItem(stream)
 
+        // Whether the apps can find this Mac by themselves on the local
+        // network. Finding it gives a device nothing: it still has to be
+        // approved.
+        let announce = NSMenuItem(
+            title: "Announce on Local Network (apps find this Mac)",
+            action: #selector(toggleAnnounce), keyEquivalent: ""
+        )
+        announce.state = BonjourAdvertiser.isEnabled ? .on : .off
+        announce.target = self
+        streamingMenu.addItem(announce)
+        if case .failed(let code)? = streamFleet?.announcement {
+            let why = NSMenuItem(title: "Not announced: \(BonjourAdvertiser.describe(code))",
+                                 action: nil, keyEquivalent: "")
+            why.isEnabled = false
+            streamingMenu.addItem(why)
+        }
+
         // Bind-address picker — only interesting with more than one LAN IP.
         // Multi-select: each interface toggles independently; "All Interfaces"
         // clears the selection (empty selection = bind everything).
@@ -467,6 +503,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let streamingItem = NSMenuItem(title: "Streaming", action: nil, keyEquivalent: "")
         menu.addItem(streamingItem)
         menu.setSubmenu(streamingMenu, for: streamingItem)
+
+        // Who may connect: waiting, trusted and denied devices.
+        let devicesItem = NSMenuItem(title: "Devices", action: nil, keyEquivalent: "")
+        menu.addItem(devicesItem)
+        menu.setSubmenu(devices.makeMenu(), for: devicesItem)
+
+        // Files a connected device sends land in Downloads/Clamshell.
+        let receiveFiles = NSMenuItem(title: "Receive Files from Devices", action: #selector(toggleReceiveFiles), keyEquivalent: "")
+        receiveFiles.state = HostDeviceSettings.filesEnabled ? .on : .off
+        receiveFiles.target = self
+        menu.addItem(receiveFiles)
+
+        // Game controllers attached to a connected device act as keys and the
+        // pointer here; each can be removed, and all can be turned off.
+        let peripheralsMenu = NSMenu()
+        let acceptPeripherals = NSMenuItem(title: "Accept Game Controllers", action: #selector(togglePeripherals), keyEquivalent: "")
+        acceptPeripherals.state = HostDeviceSettings.peripheralsEnabled ? .on : .off
+        acceptPeripherals.target = self
+        peripheralsMenu.addItem(acceptPeripherals)
+        let attachedPeripherals = PeripheralHub.shared.attached
+        peripheralsMenu.addItem(.separator())
+        if attachedPeripherals.isEmpty {
+            let none = NSMenuItem(title: "None attached", action: nil, keyEquivalent: "")
+            none.isEnabled = false
+            peripheralsMenu.addItem(none)
+        }
+        for p in attachedPeripherals {
+            let item = NSMenuItem(title: "Remove \(p.name) (from \(p.device))", action: #selector(removePeripheral(_:)), keyEquivalent: "")
+            item.representedObject = p.key
+            item.target = self
+            peripheralsMenu.addItem(item)
+        }
+        let peripheralsItem = NSMenuItem(title: attachedPeripherals.isEmpty ? "Game Controllers" : "Game Controllers (\(attachedPeripherals.count))",
+                                         action: nil, keyEquivalent: "")
+        menu.addItem(peripheralsItem)
+        menu.setSubmenu(peripheralsMenu, for: peripheralsItem)
 
         let systemMenu = NSMenu()
         let mute = NSMenuItem(title: "Mute Speakers While Remote", action: #selector(toggleMute), keyEquivalent: "")
@@ -642,7 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func startNativeStreaming() {
         guard streamFleet == nil else { return }
-        let fleet = StreamFleet(basePort: streamDefaultPort)
+        let fleet = StreamFleet(basePort: streamDefaultPort, announce: BonjourAdvertiser.isEnabled)
         fleet.rebuild()
         streamFleet = fleet
         StreamFleet.shared = fleet
@@ -654,6 +726,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         streamFleet = nil
         StreamFleet.shared = nil
         clog("native streaming disabled from menu bar")
+    }
+
+    @objc private func toggleAnnounce() {
+        let on = !BonjourAdvertiser.isEnabled
+        BonjourAdvertiser.setEnabled(on)
+        streamFleet?.setAnnounce(on)
+        rebuildMenu()
     }
 
     @objc private func toggleNativeStreaming() {
@@ -792,6 +871,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         invertScroll.toggle()
         UserDefaults.standard.set(invertScroll, forKey: "invertScroll")
         rebuildMenu()
+    }
+
+    @objc private func toggleReceiveFiles() {
+        HostDeviceSettings.filesEnabled.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func togglePeripherals() {
+        HostDeviceSettings.peripheralsEnabled.toggle()
+        rebuildMenu()
+    }
+
+    @objc private func removePeripheral(_ sender: NSMenuItem) {
+        guard let key = sender.representedObject as? String else { return }
+        PeripheralHub.shared.requestRemove(key: key)
     }
 
     @objc private func toggleLogin() {
