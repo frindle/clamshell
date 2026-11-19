@@ -17,6 +17,19 @@ jobs:
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ github.event_name == 'push' && fromJSON('["self-hosted","Windows","X64","clamshell-win"]') || 'windows-latest' }}
     steps:
+      # On our VM the desktop tests need the VM's own screen. While someone is
+      # signed in over Remote Desktop they would fail, so wait (up to 60 min)
+      # until that session is handed back to the console.
+      - name: Wait while the VM is in a Remote Desktop session
+        if: runner.environment == 'self-hosted'
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          $deadline = (Get-Date).AddMinutes(60)
+          while ([System.Windows.Forms.SystemInformation]::TerminalServerSession) {
+            if ((Get-Date) -gt $deadline) { throw "still in a Remote Desktop session after 60 minutes" }
+            Start-Sleep -Seconds 30
+          }
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
