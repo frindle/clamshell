@@ -440,7 +440,19 @@
     },
     {
       "name": "trailing.dot.",
-      "stored": "trailing.dot."
+      "stored": "trailing.dot"
+    },
+    {
+      "name": "invoice\uff61pdf",
+      "stored": "invoice_pdf"
+    },
+    {
+      "name": "invoice\u3002pdf",
+      "stored": "invoice_pdf"
+    },
+    {
+      "name": "invoice.pdf...",
+      "stored": "invoice.pdf"
     },
     {
       "name": "~/.ssh/authorized_keys",

@@ -128,8 +128,13 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(FileTransfer.storedName(for: "x\u{2024}y\u{FE52}z\u{FF3C}w"), "x_y_z_w")
         // A name made only of such characters is not empty any more, and is still a plain child.
         XCTAssertEqual(FileTransfer.storedName(for: "\u{FF0E}\u{FF0E}"), "__")
-        // Trailing dots stay (the shared vectors say so); ordinary dots and a real slash are unchanged.
-        XCTAssertEqual(FileTransfer.storedName(for: "trailing.dot."), "trailing.dot.")
+        // The half-width and ideographic full stops fake an extension too.
+        XCTAssertEqual(FileTransfer.storedName(for: "invoice\u{FF61}pdf"), "invoice_pdf")
+        XCTAssertEqual(FileTransfer.storedName(for: "invoice\u{3002}pdf"), "invoice_pdf")
+        // Trailing dots (and blanks among them) go; ordinary dots and a real slash are unchanged.
+        XCTAssertEqual(FileTransfer.storedName(for: "trailing.dot."), "trailing.dot")
+        XCTAssertEqual(FileTransfer.storedName(for: "invoice.pdf. . "), "invoice.pdf")
+        XCTAssertEqual(FileTransfer.storedName(for: "..."), "file")
         XCTAssertEqual(FileTransfer.storedName(for: "dir/scan.pdf"), "scan.pdf")
     }
 
