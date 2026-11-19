@@ -489,7 +489,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
              .devicePending, .deviceDecision, .secure:
             break // the gate deals with these; here they mean nothing
-        case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos:
+        case .helloAck, .videoFrame, .audioFrame, .streamStatus, .hostLockState, .cursorPos, .videoState:
             break // host never receives these
         case .fileOffer, .fileData, .fileEnd:
             // Only a session made for a device that set the bit has one.

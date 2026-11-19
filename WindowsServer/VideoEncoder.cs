@@ -25,6 +25,14 @@ namespace Clamshell;
 // bitrate throttles and rare client keyframe requests. Upgrade path: ICodecAPI
 // (CODECAPI_AVEncCommonMeanBitRate / AVEncVideoForceKeyFrame) for in-place
 // changes without a rebuild hitch.
+/// <summary>What the host tells the client about the video encoder (VIDEO_STATE, PROTOCOL.md).</summary>
+internal enum VideoState : byte
+{
+    Running = 0,   // frames are flowing (or flowing again)
+    Retrying = 1,  // the encoder is being rebuilt; video is paused and will try again
+    GaveUp = 2,    // rebuilds keep failing; no video until the next keyframe request or a reconnect
+}
+
 internal sealed class VideoEncoder : IDisposable
 {
     public const int MaxBitrate = 20_000_000;
@@ -34,6 +42,15 @@ internal sealed class VideoEncoder : IDisposable
     public StreamCodec Codec { get; }
     public EncoderStatus Status { get; }
     public Action<bool, ulong, byte[]>? OnFrame;
+    /// <summary>Called (never under the encoder lock) when the video state changes. May run on a timer thread.</summary>
+    public Action<VideoState>? OnState;
+
+    /// <summary>Test seam: replaces the MFT activation. Null in production.</summary>
+    internal static Func<StreamCodec, bool, IMFTransform>? ActivateOverride;
+    /// <summary>How long to wait before the next rebuild attempt, given the number of failures so far.
+    /// Tests shorten it.</summary>
+    internal Func<int, TimeSpan> RetryDelay = failures =>
+        TimeSpan.FromMilliseconds(Math.Min(500 << Math.Min(failures - 1, 3), 4000));
 
     private readonly int _width, _height;
     private readonly bool _hardware;
@@ -47,6 +64,11 @@ internal sealed class VideoEncoder : IDisposable
     private bool _rebuild;          // rebuild before next frame (bitrate/keyframe)
     private bool _firstAfterBuild = true;
     private readonly object _lock = new();
+    private System.Threading.Timer? _retryTimer;
+    private bool _disposed;
+    private bool _gaveUpLogged;
+    private VideoState _state = VideoState.Running;     // last state reported to OnState
+    private VideoState? _pendingState;                  // set under _lock, reported after it is released
 
     private VideoEncoder(StreamCodec codec, EncoderStatus status, int width, int height, bool hardware)
     {
@@ -92,7 +114,7 @@ internal sealed class VideoEncoder : IDisposable
 
     private void Build()
     {
-        _mft = ActivateEncoder(Codec, _hardware);
+        _mft = (ActivateOverride ?? ActivateEncoder)(Codec, _hardware);
 
         // Ask the encoder not to hold frames back: on a still screen only one frame is
         // captured, and a buffering encoder would never emit it. A transform that does
@@ -137,7 +159,7 @@ internal sealed class VideoEncoder : IDisposable
         _firstAfterBuild = true;
     }
 
-    private static IMFTransform ActivateEncoder(StreamCodec codec, bool hardware)
+    internal static IMFTransform ActivateEncoder(StreamCodec codec, bool hardware)
     {
         Guid subtype = codec == StreamCodec.Hevc ? MFAttr.Hevc : MFAttr.H264;
         var outInfo = new RegisterTypeInfo { GuidMajorType = MFAttr.Video, GuidSubtype = subtype };
@@ -168,26 +190,29 @@ internal sealed class VideoEncoder : IDisposable
                 if (_rebuild)
                 {
                     _rebuild = false;
-                    if (!RebuildLocked()) return;
+                    RebuildLocked(manual: true);
                 }
-                // A failed rebuild leaves no transform until the next keyframe request retries it.
-                if (_mft == null) return;
+                // No transform: a rebuild failed. The retry timer (or the next keyframe
+                // request) brings it back; frames are dropped meanwhile.
+                if (_mft != null)
+                {
+                    using var sample = MediaFactory.MFCreateSample();
+                    using var buffer = MediaFactory.MFCreateMemoryBuffer(nv12.Length);
+                    buffer.Lock(out IntPtr p, out _, out _);
+                    Marshal.Copy(nv12, 0, p, nv12.Length);
+                    buffer.Unlock();
+                    buffer.CurrentLength = nv12.Length;
+                    sample.AddBuffer(buffer);
+                    sample.SampleTime = (long)ptsMicros * 10;      // 100ns units
+                    sample.SampleDuration = 10_000_000 / Fps;
 
-                using var sample = MediaFactory.MFCreateSample();
-                using var buffer = MediaFactory.MFCreateMemoryBuffer(nv12.Length);
-                buffer.Lock(out IntPtr p, out _, out _);
-                Marshal.Copy(nv12, 0, p, nv12.Length);
-                buffer.Unlock();
-                buffer.CurrentLength = nv12.Length;
-                sample.AddBuffer(buffer);
-                sample.SampleTime = (long)ptsMicros * 10;      // 100ns units
-                sample.SampleDuration = 10_000_000 / Fps;
-
-                _mft.ProcessInput(0, sample, 0);
-                DrainLocked(ptsMicros);
+                    _mft.ProcessInput(0, sample, 0);
+                    DrainLocked(ptsMicros);
+                }
             }
             catch (Exception e) { Log.Line($"encode error: {e.Message}"); }
         }
+        ReportState();
     }
 
     private void DrainLocked(ulong ptsMicros)
@@ -266,17 +291,22 @@ internal sealed class VideoEncoder : IDisposable
         return RebuildLocked();
     }
 
-    private const int MaxRebuildFailures = 3;
+    private const int MaxRebuildFailures = 5;
     private int _rebuildFailures;
 
     /// <summary>Rebuilds the transform. A failure does not leave a disposed one behind: the
-    /// partly built transform is released, the next keyframe request or bitrate change tries
-    /// again, and after <see cref="MaxRebuildFailures"/> failures in a row it stops trying
-    /// (logged once), so video stays off for the rest of the session instead of failing on
-    /// every frame.</summary>
-    private bool RebuildLocked()
+    /// partly built transform is released and a retry is scheduled on a back-off timer, so it
+    /// does not depend on frames arriving (none can while there is no transform). After
+    /// <see cref="MaxRebuildFailures"/> failures in a row it stops the timer, logs the give-up
+    /// once and tells the client; the next keyframe request or bitrate change makes one more
+    /// attempt. A <paramref name="manual"/> attempt (keyframe request, bitrate change) always
+    /// gets one try, even after the give-up.</summary>
+    private bool RebuildLocked(bool manual = false)
     {
-        if (_rebuildFailures >= MaxRebuildFailures) return false;
+        if (_disposed) return false;
+        if (_rebuildFailures >= MaxRebuildFailures && !manual) return false;
+        _retryTimer?.Dispose();
+        _retryTimer = null;
         try { _mft?.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, UIntPtr.Zero); } catch { }
         try { _mft?.Dispose(); } catch { }
         _mft = null!;
@@ -284,32 +314,83 @@ internal sealed class VideoEncoder : IDisposable
         {
             Build();
             _rebuildFailures = 0;
+            _rebuild = false;
+            _gaveUpLogged = false;
+            _pendingState = VideoState.Running;
             return true;
         }
         catch (Exception e)
         {
             try { _mft?.Dispose(); } catch { }
             _mft = null!;
-            _rebuildFailures++;
-            Log.Line(_rebuildFailures >= MaxRebuildFailures
-                ? $"encoder: rebuild failed ({e.Message.Trim()}); giving up, no video until the client reconnects"
-                : $"encoder: rebuild failed ({e.Message.Trim()}); will try again at the next keyframe request");
+            _rebuildFailures = Math.Min(_rebuildFailures + 1, MaxRebuildFailures);
+            if (_rebuildFailures >= MaxRebuildFailures)
+            {
+                if (!_gaveUpLogged)
+                {
+                    _gaveUpLogged = true;
+                    Log.Line($"encoder: rebuild failed {MaxRebuildFailures} times ({e.Message.Trim()}); giving up until the client asks for a keyframe or reconnects");
+                }
+                _pendingState = VideoState.GaveUp;
+            }
+            else
+            {
+                Log.Line($"encoder: rebuild failed ({e.Message.Trim()}); trying again shortly");
+                _pendingState = VideoState.Retrying;
+                var delay = RetryDelay(_rebuildFailures);
+                _retryTimer = new System.Threading.Timer(_ => RetryTick(manual: false), null, delay, Timeout.InfiniteTimeSpan);
+            }
             return false;
         }
     }
 
-    public void RequestKeyframe() { lock (_lock) _rebuild = true; }
+    private void RetryTick(bool manual)
+    {
+        lock (_lock)
+        {
+            if (_disposed || _mft != null) return;
+            try { RebuildLocked(manual); } catch (Exception e) { Log.Line($"encoder: retry error: {e.Message}"); }
+        }
+        ReportState();
+    }
+
+    private void ReportState()
+    {
+        VideoState? s;
+        lock (_lock)
+        {
+            s = _pendingState;
+            _pendingState = null;
+            if (s is null || s == _state) return;
+            _state = s.Value;
+        }
+        try { OnState?.Invoke(s.Value); } catch (Exception e) { Log.Line($"encoder: state callback failed: {e.Message}"); }
+    }
+
+    public void RequestKeyframe() { lock (_lock) { _rebuild = true; KickIfGaveUpLocked(); } }
+
+    // After the give-up there is no timer and may be no frames (idle screen), so a keyframe
+    // request or bitrate change starts its one extra attempt itself.
+    private void KickIfGaveUpLocked()
+    {
+        if (_disposed || _mft != null || _rebuildFailures < MaxRebuildFailures) return;
+        _retryTimer?.Dispose();
+        _retryTimer = new System.Threading.Timer(_ => RetryTick(manual: true), null, TimeSpan.Zero, Timeout.InfiniteTimeSpan);
+    }
 
     public void SetBitrate(int bps)
     {
         bps = Math.Clamp(bps, MinBitrate, MaxBitrate);
-        lock (_lock) { if (bps != _bitrate) { _bitrate = bps; _rebuild = true; } }
+        lock (_lock) { if (bps != _bitrate) { _bitrate = bps; _rebuild = true; KickIfGaveUpLocked(); } }
     }
 
     public void Dispose()
     {
         lock (_lock)
         {
+            _disposed = true;
+            _retryTimer?.Dispose();
+            _retryTimer = null;
             try { _mft?.ProcessMessage((TMessageType)Mf.NotifyEndOfStream, UIntPtr.Zero); } catch { }
             try { _mft?.Dispose(); } catch { }
             _mft = null!;

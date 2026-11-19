@@ -53,6 +53,8 @@ internal sealed partial class StreamServer
         _lastCongestionTicks = _lastStepTicks = 0;
 
         _encoder.OnFrame = (keyframe, ptsMicros, avcc) => SendFrame(keyframe, ptsMicros, avcc);
+        // Rebuild trouble (retrying / given up / back) reaches the client so it can say why video stopped.
+        _encoder.OnState = state => { _ = SendAsync(Proto.VideoStateMsg(state)); };
         SendHelloAck(_encoder.Codec, _encoder.Status);
         SendStreamStatus(); // initial bitrate for the quality dot
 

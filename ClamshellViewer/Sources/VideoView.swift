@@ -261,6 +261,21 @@ struct SoftwareEncodingBanner: View {
     }
 }
 
+/// Shown while the host's video encoder is being rebuilt (VIDEO_STATE 1) or the host
+/// gave up (2): the picture is frozen, and this says why.
+struct VideoStalledBanner: View {
+    let gaveUp: Bool
+    var body: some View {
+        Label(gaveUp ? "Host video stopped — reconnect to try again"
+                     : "Host is restarting its video encoder — picture paused",
+              systemImage: "exclamationmark.triangle.fill")
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background((gaveUp ? Color.red : Color.orange).opacity(0.9), in: Capsule())
+    }
+}
+
 /// Shown while the host reports its screen is locked (HOST_LOCK_STATE). Native
 /// ScreenCaptureKit capture and CGEventPost input can't cross the macOS lock
 /// screen, so the video freezes — this embeds the browser VNC bridge (Apple's

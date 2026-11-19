@@ -24,6 +24,7 @@ enum StreamMessageType: UInt8 {
     case secure = 0x0F
     case videoFrame = 0x10
     case keyframeRequest = 0x11
+    case videoState = 0x12    // host -> client: video encoder state (0 running, 1 rebuilding, 2 gave up)
     case audioFrame = 0x13    // host -> client: one AAC-LC packet (fixed 48kHz stereo)
     case mouseMove = 0x20
     case mouseButton = 0x21
