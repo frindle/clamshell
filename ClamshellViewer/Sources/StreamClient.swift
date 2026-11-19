@@ -28,6 +28,8 @@ final class StreamClient: ObservableObject {
     /// native capture path can't survive the macOS lock screen, so the UI shows
     /// a banner pointing at the browser VNC fallback until the host unlocks.
     @Published var hostLocked = false
+    /// Host video encoder state from VIDEO_STATE: 0 running, 1 rebuilding, 2 gave up.
+    @Published var videoState: UInt8 = 0
     /// Remote cursor position from the host's periodic CURSOR_POS reports,
     /// normalized 0..1 in this display's source-frame space — nil until the
     /// first report arrives. Values outside 0...1 mean the cursor is
@@ -588,6 +590,7 @@ final class StreamClient: ObservableObject {
         softwareEncoding = false
         currentBitrateKbps = 0
         hostLocked = false
+        videoState = 0
         lastError = nil
         cursorPos = nil
         hostCapabilities = []
@@ -752,6 +755,10 @@ final class StreamClient: ObservableObject {
             let locked = byte == 1
             clogViewer("HOST_LOCK_STATE: host screen \(locked ? "LOCKED — showing browser VNC fallback" : "unlocked")")
             DispatchQueue.main.async { self.hostLocked = locked }
+        case .videoState:
+            guard let state = payload.first else { return }
+            clogViewer("VIDEO_STATE: \(state == 0 ? "running" : state == 1 ? "host is rebuilding its encoder" : "host gave up rebuilding its encoder")")
+            DispatchQueue.main.async { self.videoState = state }
         case .cursorPos:
             guard payload.count >= 8 else { return }
             let p = CGPoint(x: Double(payload.beFloat32(at: 0)), y: Double(payload.beFloat32(at: 4)))

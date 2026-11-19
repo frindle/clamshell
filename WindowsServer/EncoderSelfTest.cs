@@ -24,6 +24,7 @@ internal static class EncoderSelfTest
         int rc = 0;
         if (!Session(w, h, "primary display size")) rc = 1;
         if (!Session(1280, 720, "1280x720")) rc = 1;
+        if (!RebuildRetry(1280, 720)) rc = 1;
         if (rc != 0)
         {
             Console.Error.WriteLine("encoder-selftest: FAILED, running the variant matrix for the log");
@@ -31,6 +32,108 @@ internal static class EncoderSelfTest
         }
         Console.Error.WriteLine(rc == 0 ? "encoder-selftest: PASS" : "encoder-selftest: FAIL");
         return rc;
+    }
+
+    // A rebuild whose MFT activation fails must not freeze video for good: the encoder retries
+    // on a timer (no frames needed), reports Retrying then Running, and after repeated failures
+    // gives up once (GaveUp) until a keyframe request. The activation is faked to fail, then
+    // handed to the real one.
+    private static bool RebuildRetry(int w, int h)
+    {
+        const string L = "encoder-selftest [rebuild retry]";
+        try
+        {
+            var nv12 = new byte[w * h * 3 / 2];
+            Array.Fill(nv12, (byte)128);
+            var gate = new object();
+            var states = new List<VideoState>();
+            int frames = 0, keys = 0;
+            bool firstAfterRecoveryKey = false;
+            bool expectFirst = false;
+
+            using var enc = VideoEncoder.Create(w, h, StreamCodec.H264);
+            enc.RetryDelay = _ => TimeSpan.FromMilliseconds(40);
+            enc.OnState = st => { lock (gate) states.Add(st); };
+            enc.OnFrame = (key, _, _) =>
+            {
+                lock (gate)
+                {
+                    frames++;
+                    if (key) keys++;
+                    if (expectFirst) { firstAfterRecoveryKey = key; expectFirst = false; }
+                }
+            };
+            long pts = 0;
+            void FeedSome(int n) { for (int i = 0; i < n; i++) { Array.Fill(nv12, (byte)(i * 7), 0, w * h); enc.Feed(nv12, (ulong)(pts += 16_667)); } }
+            int Count() { lock (gate) return frames; }
+            bool WaitFor(Func<bool> cond, int ms)
+            {
+                var end = Environment.TickCount64 + ms;
+                while (Environment.TickCount64 < end) { lock (gate) if (cond()) return true; Thread.Sleep(20); }
+                lock (gate) return cond();
+            }
+
+            FeedSome(10);
+            if (Count() == 0) { Console.Error.WriteLine($"{L}: no frames before the fault"); return false; }
+
+            // 1. Activation fails once, then works: Retrying, then Running, with no frame fed in between.
+            int calls = 0;
+            VideoEncoder.ActivateOverride = (c, hw) =>
+            {
+                if (Interlocked.Increment(ref calls) == 1) throw new InvalidOperationException("fake activation failure");
+                return VideoEncoder.ActivateEncoder(c, hw);
+            };
+            try
+            {
+                int before = Count();
+                enc.RequestKeyframe();
+                FeedSome(1); // the rebuild runs here and fails; this frame is dropped
+                if (Count() != before) { Console.Error.WriteLine($"{L}: a frame came out of a failed rebuild"); return false; }
+                if (!WaitFor(() => states.Contains(VideoState.Running) && states.Contains(VideoState.Retrying), 5000))
+                { Console.Error.WriteLine($"{L}: no Retrying then Running after one failure (states: {string.Join(",", states)}, activations {calls})"); return false; }
+                lock (gate) expectFirst = true;
+                FeedSome(5);
+                lock (gate)
+                    if (frames <= before || !firstAfterRecoveryKey)
+                    { Console.Error.WriteLine($"{L}: video did not resume with a keyframe (frames {frames}, before {before})"); return false; }
+            }
+            finally { VideoEncoder.ActivateOverride = null; }
+
+            // 2. Activation always fails: gives up after the limit, tells the client exactly once, retries on a keyframe request.
+            int fails = 0;
+            VideoEncoder.ActivateOverride = (c, hw) => { Interlocked.Increment(ref fails); throw new InvalidOperationException("fake activation failure"); };
+            try
+            {
+                lock (gate) states.Clear();
+                enc.RequestKeyframe();
+                FeedSome(1);
+                if (!WaitFor(() => states.Contains(VideoState.GaveUp), 8000))
+                { Console.Error.WriteLine($"{L}: never gave up (states: {string.Join(",", states)}, activations {fails})"); return false; }
+                int atGiveUp = Volatile.Read(ref fails);
+                Thread.Sleep(300);
+                if (Volatile.Read(ref fails) != atGiveUp) { Console.Error.WriteLine($"{L}: kept retrying after giving up"); return false; }
+                lock (gate) if (states.FindAll(x => x == VideoState.GaveUp).Count != 1) { Console.Error.WriteLine($"{L}: GaveUp reported more than once"); return false; }
+
+                // Fixed now: a keyframe request alone (no frames) brings video back.
+                VideoEncoder.ActivateOverride = null;
+                lock (gate) states.Clear();
+                enc.RequestKeyframe();
+                if (!WaitFor(() => states.Contains(VideoState.Running), 5000))
+                { Console.Error.WriteLine($"{L}: a keyframe request after the give-up did not rebuild"); return false; }
+                int b2 = Count();
+                FeedSome(5);
+                if (Count() <= b2) { Console.Error.WriteLine($"{L}: no frames after recovering from the give-up"); return false; }
+            }
+            finally { VideoEncoder.ActivateOverride = null; }
+
+            Console.Error.WriteLine($"{L}: PASS");
+            return true;
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"{L}: {Describe(e)}{Environment.NewLine}{e.StackTrace}");
+            return false;
+        }
     }
 
     private static bool Session(int w, int h, string label)

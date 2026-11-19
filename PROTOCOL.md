@@ -64,6 +64,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x0F | SECURE           | both | AES-256-GCM ciphertext of exactly one inner message, then the 16-byte tag |
 | 0x10 | VIDEO_FRAME      | host → client | flags(1), ptsMicros(8 BE), NAL data (see below) |
 | 0x11 | KEYFRAME_REQUEST | client → host | empty |
+| 0x12 | VIDEO_STATE      | host → client | state(1): 0 running, 1 encoder rebuilding (video paused, host retries), 2 host gave up (no video until a KEYFRAME_REQUEST or reconnect). Sent only on a change. Older clients skip it as an unknown type |
 | 0x13 | AUDIO_FRAME      | host → client | one AAC-LC access unit (fixed 48 kHz stereo, no ADTS/cookie) |
 | 0x20 | INPUT_MOUSE_MOVE | client → host | x(Float32 BE), y(Float32 BE) — normalized 0..1 in display space |
 | 0x21 | INPUT_MOUSE_BUTTON | client → host | button(1: 0=left, 1=right, 2=middle, 3=back, 4=forward), down(1: 0/1), x(Float32 BE), y(Float32 BE). Buttons 2–4 only to a host that advertises `extraButtons`; older hosts treat every button other than 1 as left |

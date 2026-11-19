@@ -543,6 +543,7 @@ struct ContentView: View {
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
                             if client.softwareEncoding { SoftwareEncodingBanner() }
+                            if client.videoState != 0 { VideoStalledBanner(gaveUp: client.videoState >= 2) }
                             QualityIndicator(client: client)
                         }
                         .padding(.top, 8)

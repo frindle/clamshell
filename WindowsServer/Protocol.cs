@@ -17,6 +17,7 @@ internal enum MessageType : byte
     CursorPos = 0x06,
     VideoFrame = 0x10,
     KeyframeRequest = 0x11,
+    VideoState = 0x12,
     AudioFrame = 0x13,
     MouseMove = 0x20,
     MouseButton = 0x21,
@@ -112,6 +113,10 @@ internal static class Proto
         nalData.CopyTo(p.AsSpan(9));
         return Frame(MessageType.VideoFrame, p);
     }
+
+    /// <summary>VIDEO_STATE: 0 running, 1 encoder rebuilding (retrying), 2 gave up.</summary>
+    public static byte[] VideoStateMsg(VideoState state) =>
+        Frame(MessageType.VideoState, new[] { (byte)state });
 
     public static byte[] AudioFrame(ReadOnlySpan<byte> aac) => Frame(MessageType.AudioFrame, aac);
 
