@@ -737,6 +737,7 @@ final class StreamClient: ObservableObject {
             let hardware = payload.count >= 11 ? (payload[payload.startIndex + 10] & 1) == 1 : true
             clogViewer("HELLO_ACK: \(codec == .hevc ? "HEVC" : "H.264") \(width)x\(height)\(hardware ? "" : " [SOFTWARE ENCODE on host]") — streaming")
             assembler = FrameAssembler(codec: codec)
+            audio?.open() // before any AUDIO_FRAME of this session; a late packet of the last one found the gate shut
             let codecName = codec == .hevc ? "HEVC" : "H.264"
             DispatchQueue.main.async {
                 self.videoSize = CGSize(width: Double(width), height: Double(height))
