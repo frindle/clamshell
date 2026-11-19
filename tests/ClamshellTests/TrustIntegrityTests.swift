@@ -8,10 +8,13 @@ final class TrustIntegrityTests: XCTestCase {
     private final class FakeKeys: IntegrityKeyStore {
         var key: Data?
         var failReads = false
-        func readKey() throws -> Data? {
-            if failReads { throw KeychainStatusError(status: -25308) }
+        /// When true, a read that may prompt succeeds even though failReads is set.
+        var promptSucceeds = false
+        func readKey(allowPrompt: Bool) throws -> Data? {
+            if failReads && !(allowPrompt && promptSucceeds) { throw KeychainStatusError(status: -25308) }
             return key
         }
+        func deleteKey() throws { key = nil; failReads = false }
         func addKey(_ key: Data) throws -> Bool {
             if self.key != nil { return false }
             self.key = key
@@ -160,7 +163,7 @@ final class TrustIntegrityTests: XCTestCase {
         let s = store()
         XCTAssertTrue(s.all().isEmpty)
         XCTAssertNil(keys.key, "reading must not make a new key")
-        XCTAssertNil(try keys.readKey())
+        XCTAssertNil(try keys.readKey(allowPrompt: false))
         // And a fresh process still does not trust it.
         XCTAssertTrue(store().all().isEmpty)
         XCTAssertNil(keys.key)
@@ -249,5 +252,84 @@ final class TrustIntegrityTests: XCTestCase {
         XCTAssertFalse(a.setRequireApproval(false))
         XCTAssertTrue(a.requireApproval)
         XCTAssertNil(prefs.value)
+    }
+
+    // MARK: migration window and unreadable key
+
+    func testMigrationClosesAfterTheFirstReadAndReloadAdoptsNothing() throws {
+        let k = newKey()
+        approve(DeviceTrustStore(directory: dir, watch: false), k)
+        let integrity = TrustIntegrity(keys: keys)
+        let s = DeviceTrustStore(directory: dir, watch: false, integrity: integrity)
+        XCTAssertTrue(s.isTrusted(DeviceIdentity.id(ofPublicKey: k)), "migrated at start")
+        XCTAssertTrue(integrity.createdThisRun)
+        // Another process now writes an unsigned list with a device of its own.
+        let intruder = newKey()
+        let plain = dir.appendingPathComponent("plain")
+        let other = DeviceTrustStore(directory: plain, watch: false)
+        approve(other, intruder)
+        try FileManager.default.removeItem(at: listFile)
+        try FileManager.default.copyItem(at: plain.appendingPathComponent(DeviceTrustStore.fileName), to: listFile)
+        s.reload()
+        XCTAssertTrue(s.all().isEmpty)
+        XCTAssertFalse((try String(contentsOf: listFile)).contains("\"mac\""), "not signed by a reload")
+    }
+
+    func testAKeyMadeForAChangeDoesNotReopenMigration() throws {
+        let integrity = TrustIntegrity(keys: keys)
+        XCTAssertNotNil(integrity.keyForWrite())
+        XCTAssertFalse(integrity.createdThisRun)
+        XCTAssertNil(integrity.beginMigration())
+    }
+
+    func testRetryWithPromptReadsAnUnreadableKeyAndApprovalWorksAgain() {
+        let k = newKey()
+        approve(store(), k)
+        keys.failReads = true
+        keys.promptSucceeds = true
+        let integrity = TrustIntegrity(keys: keys)
+        XCTAssertTrue(integrity.isUnavailable)
+        XCTAssertTrue(integrity.retryWithPrompt())
+        XCTAssertFalse(integrity.isUnavailable)
+        let s = DeviceTrustStore(directory: dir, watch: false, integrity: integrity)
+        XCTAssertTrue(s.isTrusted(DeviceIdentity.id(ofPublicKey: k)))
+    }
+
+    func testRetryThatStillFailsChangesNothing() {
+        keys.failReads = true
+        let integrity = TrustIntegrity(keys: keys)
+        XCTAssertFalse(integrity.retryWithPrompt())
+        XCTAssertTrue(integrity.isUnavailable)
+    }
+
+    func testResetNeedsConfirmationThenApprovalWorksAgain() {
+        let k = newKey()
+        approve(store(), k)
+        keys.failReads = true
+        let integrity = TrustIntegrity(keys: keys)
+        let s = DeviceTrustStore(directory: dir, watch: false, integrity: integrity)
+        let before = keys.key
+        XCTAssertFalse(integrity.resetKey(userConfirmed: false))
+        XCTAssertEqual(keys.key, before, "nothing happens without a yes")
+        XCTAssertTrue(integrity.resetKey(userConfirmed: true))
+        XCTAssertNotEqual(keys.key, before)
+        XCTAssertFalse(integrity.createdThisRun, "a reset never opens migration")
+        s.reload()
+        XCTAssertTrue(s.all().isEmpty, "old list no longer counts")
+        let k2 = newKey()
+        approve(s, k2)
+        XCTAssertTrue(store().isTrusted(DeviceIdentity.id(ofPublicKey: k2)))
+    }
+
+    func testApprovalSettingIsOnAfterAReset() {
+        let prefs = Prefs()
+        let integrity = TrustIntegrity(keys: keys)
+        let a = auth(prefs, integrity: integrity)
+        XCTAssertTrue(a.setRequireApproval(false))
+        XCTAssertFalse(a.requireApproval)
+        XCTAssertTrue(a.resetIntegrityKey(userConfirmed: true))
+        XCTAssertTrue(a.requireApproval, "the old off MAC no longer counts")
+        XCTAssertTrue(a.setRequireApproval(false))
+        XCTAssertFalse(a.requireApproval)
     }
 }

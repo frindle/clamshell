@@ -16,7 +16,11 @@ import Security
 protocol IntegrityKeyStore {
     /// The key, or nil when there is none. Throws when the keychain cannot be
     /// asked right now (locked, access refused, no user interaction possible).
-    func readKey() throws -> Data?
+    /// `allowPrompt` lets the system ask the user (only for a retry the user
+    /// started); otherwise it must fail instead of showing anything.
+    func readKey(allowPrompt: Bool) throws -> Data?
+    /// Removes the item. Only for the user-confirmed reset.
+    func deleteKey() throws
     /// Stores `key` unless an item already exists. False means one did.
     func addKey(_ key: Data) throws -> Bool
 }
@@ -44,18 +48,25 @@ struct KeychainIntegrityKeyStore: IntegrityKeyStore {
          kSecAttrAccount as String: account]
     }
 
-    func readKey() throws -> Data? {
+    func readKey(allowPrompt: Bool) throws -> Data? {
         var query = baseQuery
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         // Never show a dialog from a background process: fail instead.
-        query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail
+        if !allowPrompt { query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
         var out: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &out)
         switch status {
         case errSecSuccess: return out as? Data
         case errSecItemNotFound: return nil
         default: throw KeychainStatusError(status: status)
+        }
+    }
+
+    func deleteKey() throws {
+        let status = SecItemDelete(baseQuery as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainStatusError(status: status)
         }
     }
 
@@ -107,10 +118,10 @@ final class TrustIntegrity {
         return lookupLocked()
     }
 
-    private func lookupLocked() -> Lookup {
+    private func lookupLocked(allowPrompt: Bool = false) -> Lookup {
         if let cached { return .key(cached) }
         do {
-            guard let data = try keys.readKey() else { return .missing }
+            guard let data = try keys.readKey(allowPrompt: allowPrompt) else { return .missing }
             guard data.count == 32 else {
                 clog("INTEGRITY: the keychain item has an unexpected size — treating it as unavailable")
                 return .unavailable
@@ -125,13 +136,15 @@ final class TrustIntegrity {
     }
 
     /// Makes the key. Only for callers that decided a new key is right.
-    private func createLocked() -> SymmetricKey? {
+    /// `opensMigration` is true only for the first-run path: a key made for a
+    /// later change (or a reset) must never let an unsigned list be adopted.
+    private func createLocked(opensMigration: Bool) -> SymmetricKey? {
         let key = SymmetricKey(size: .bits256)
         let data = key.withUnsafeBytes { Data($0) }
         do {
             if try keys.addKey(data) {
                 cached = key
-                createdThisRun = true
+                if opensMigration { createdThisRun = true }
                 clog("INTEGRITY: created the integrity key in the keychain")
                 return key
             }
@@ -151,7 +164,7 @@ final class TrustIntegrity {
         lock.lock()
         defer { lock.unlock() }
         switch lookupLocked() {
-        case .missing: return createLocked()
+        case .missing: return createLocked(opensMigration: true)
         case .key(let k): return createdThisRun ? k : nil
         case .unavailable: return nil
         }
@@ -166,9 +179,46 @@ final class TrustIntegrity {
         case .key(let k): return k
         case .missing:
             clog("INTEGRITY: the integrity key is missing — making a new one; devices have to be approved again")
-            return createLocked()
+            return createLocked(opensMigration: false)
         case .unavailable: return nil
         }
+    }
+
+    /// True when the keychain key exists but cannot be read without asking.
+    var isUnavailable: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if case .unavailable = lookupLocked() { return true }
+        return false
+    }
+
+    /// The user asked to try again: reads the key with the system allowed to
+    /// ask for a password. True when the key could be read afterwards.
+    func retryWithPrompt() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if case .key = lookupLocked(allowPrompt: true) { return true }
+        return false
+    }
+
+    /// Throws the old key away and makes a new one. Everything signed with the
+    /// old key stops counting: devices have to be approved again, and a
+    /// stored "approval is off" has to be set again. Does nothing unless
+    /// `userConfirmed` (the caller got an explicit yes). Never reopens
+    /// migration. True when a new key is in place.
+    func resetKey(userConfirmed: Bool) -> Bool {
+        guard userConfirmed else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+        cached = nil
+        do {
+            try keys.deleteKey()
+        } catch {
+            clog("INTEGRITY: cannot remove the old integrity key (\(error))")
+            return false
+        }
+        clog("INTEGRITY: the integrity key was reset at the user's request; devices have to be approved again")
+        return createLocked(opensMigration: false) != nil
     }
 
     // MARK: MACs

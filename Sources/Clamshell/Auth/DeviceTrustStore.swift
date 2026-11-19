@@ -218,7 +218,7 @@ final class DeviceTrustStore {
             clog("DEVICES: cannot keep the device list in \(directory.path) (\(error)) — it will last for this run only")
         }
         if canPersist {
-            records = readDisk() ?? []
+            records = readDisk(allowMigration: true) ?? []
             if watch { startWatching() }
         }
     }
@@ -523,7 +523,7 @@ final class DeviceTrustStore {
     /// trusted: it reads as no devices (and is moved aside by the next save).
     /// The one exception is the move from a build without MACs, see
     /// `checkIntegrity`. `holdingLock` says the caller has the file lock.
-    private func readDisk(holdingLock: Bool = false) -> [DeviceRecord]? {
+    private func readDisk(holdingLock: Bool = false, allowMigration: Bool = false) -> [DeviceRecord]? {
         let url = fileURL
         listIsFromNewerVersion = false
         listIsUntrusted = false
@@ -552,7 +552,7 @@ final class DeviceTrustStore {
             setAside(url, why: "is not a version 1 device list")
             return []
         }
-        switch checkIntegrity(file, holdingLock: holdingLock) {
+        switch checkIntegrity(file, holdingLock: holdingLock, allowMigration: allowMigration) {
         case .trusted:
             loggedUntrusted = false
         case .untrusted:
@@ -566,7 +566,7 @@ final class DeviceTrustStore {
 
     private enum IntegrityResult { case trusted, untrusted, undecided }
 
-    private func checkIntegrity(_ file: DeviceFile, holdingLock: Bool) -> IntegrityResult {
+    private func checkIntegrity(_ file: DeviceFile, holdingLock: Bool, allowMigration: Bool) -> IntegrityResult {
         guard let integrity else { return .trusted }
         func untrusted(_ why: String) -> IntegrityResult {
             if !loggedUntrusted {
@@ -585,11 +585,22 @@ final class DeviceTrustStore {
                 // is not a first run.
                 return untrusted("has an integrity check but its key is missing from the keychain")
             case .unavailable:
-                return untrusted("cannot be checked because the keychain key cannot be read")
+                // Not a verdict on the list: leave the file alone until the
+                // user retries or resets the key.
+                if !loggedUntrusted {
+                    loggedUntrusted = true
+                    clog("DEVICES: \(Self.fileName) cannot be checked because the keychain key cannot be read — no device is let in until it can")
+                }
+                return .undecided
             }
         }
-        // No MAC: only a list from a build before MACs, on a host that has no
-        // key yet (or whose key this run just made), is adopted.
+        // No MAC: only a list from a build before MACs, read once when the
+        // store starts, on a host that has no key yet (or whose key this run
+        // just made), is adopted. Never on a later reload or change.
+        guard allowMigration else {
+            return untrusted("has no integrity check and was not there when Clamshell started")
+        }
+        if integrity.isUnavailable { return .undecided }
         guard integrity.beginMigration() != nil else {
             return untrusted("has no integrity check although the host has a key")
         }

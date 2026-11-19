@@ -192,6 +192,30 @@ final class HostAuth {
         return true
     }
 
+    /// True when the integrity key exists but cannot be read, so no device can
+    /// be approved and approval cannot be turned off until the user acts.
+    var integrityKeyUnavailable: Bool { integrity?.isUnavailable ?? false }
+
+    /// User-started: tries the key again, letting the system ask for a password.
+    @discardableResult
+    func retryIntegrityKey() -> Bool {
+        guard let integrity else { return false }
+        let ok = integrity.retryWithPrompt()
+        store.reload()
+        noteApproval()
+        return ok
+    }
+
+    /// User-confirmed: replaces the key. Devices have to be approved again.
+    @discardableResult
+    func resetIntegrityKey(userConfirmed: Bool) -> Bool {
+        guard let integrity else { return false }
+        let ok = integrity.resetKey(userConfirmed: userConfirmed)
+        store.reload()
+        noteApproval()
+        return ok
+    }
+
     /// For selftests: nil goes back to the user's setting.
     func overrideRequireApproval(_ value: Bool?) {
         lock.lock()

@@ -307,6 +307,13 @@ final class DevicesController: NSObject {
             menu.addItem(note("\(Self.sessions(unapproved)) connected without approval"))
         }
 
+        if auth.integrityKeyUnavailable {
+            menu.addItem(.separator())
+            menu.addItem(note("The device protection key cannot be read, so no device can be approved"))
+            menu.addItem(item("Try Again (may ask for your password)", #selector(retryIntegrityKey)))
+            menu.addItem(item("Reset Key…", #selector(resetIntegrityKey)))
+        }
+
         menu.addItem(.separator())
         menu.addItem(note("This Mac’s fingerprint: \(auth.identity.fingerprint)"))
         if !auth.identity.isPersistent {
@@ -463,8 +470,40 @@ final class DevicesController: NSObject {
         setApproval(true)
     }
 
+    @objc private func retryIntegrityKey() {
+        if !auth.retryIntegrityKey() { couldNotUseKey() }
+        refresh()
+    }
+
+    @objc private func resetIntegrityKey() {
+        guard confirm("Reset the device protection key?",
+                      "The key that protects the device list cannot be read. Resetting makes a new one. "
+                          + "Every device has to ask for approval again, and a saved \"approval is off\" "
+                          + "setting is lost. Try Again first if you can.",
+                      action: "Reset Key", destructive: true) else { return }
+        if !auth.resetIntegrityKey(userConfirmed: true) { couldNotUseKey() }
+        refresh()
+    }
+
+    private func couldNotUseKey() {
+        guard !alertIsUp else { return }
+        let alert = NSAlert()
+        alert.messageText = "The device protection key still cannot be used"
+        alert.informativeText = "The reason is in ~/Library/Logs/Clamshell.log."
+        alert.addButton(withTitle: "OK")
+        alertIsUp = true
+        defer { alertIsUp = false }
+        NSApp.activate(ignoringOtherApps: true)
+        alert.runModal()
+    }
+
     private func setApproval(_ on: Bool) {
-        auth.setRequireApproval(on)
+        if !auth.setRequireApproval(on) {
+            // Approval stays on; say why instead of showing a menu that looks changed.
+            couldNotUseKey()
+            refresh()
+            return
+        }
         approvalWasOn = auth.requireApproval
         if approvalWasOn { withdraw([Self.approvalOffNotification]) }
         refresh()
