@@ -28,12 +28,20 @@ struct KeychainStatusError: Error, CustomStringConvertible {
 
 struct KeychainIntegrityKeyStore: IntegrityKeyStore {
     static let service = "com.frindle.clamshell.trust-integrity"
-    static let account = "mac-key"
+    /// One item per state directory, so a host run on a scratch directory (the
+    /// interop test) never shares or replaces the key of the real one.
+    let account: String
+
+    init(directory: URL) {
+        let path = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        let digest = SHA256.hash(data: Data(path.utf8))
+        account = "mac-key-" + Hex.encode(Data(digest).prefix(8))
+    }
 
     private var baseQuery: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: Self.service,
-         kSecAttrAccount as String: Self.account]
+         kSecAttrAccount as String: account]
     }
 
     func readKey() throws -> Data? {
@@ -89,8 +97,8 @@ final class TrustIntegrity {
     }
 
     /// The host's real integrity, backed by the keychain.
-    static func keychain() -> TrustIntegrity {
-        TrustIntegrity(keys: KeychainIntegrityKeyStore())
+    static func keychain(for directory: URL) -> TrustIntegrity {
+        TrustIntegrity(keys: KeychainIntegrityKeyStore(directory: directory))
     }
 
     func lookup() -> Lookup {

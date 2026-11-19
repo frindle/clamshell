@@ -8,7 +8,7 @@ import SystemConfiguration
 
 final class HostAuth {
     /// The host's real state, in the user's state directory.
-    static let shared = HostAuth(directory: HostState.directory, integrity: .keychain())
+    static let shared = HostAuth(directory: HostState.directory, integrity: .keychain(for: HostState.directory))
 
     static let maxUnansweredConnections = 32
     static let maxWaitingConnections = 8
@@ -121,8 +121,10 @@ final class HostAuth {
         identity = HostIdentity.load(in: directory)
         // The setting is looked at first, so that a first run after an upgrade
         // signs it before the device list asks for the key.
-        Self.adoptApprovalSetting(integrity: integrity, stored: self.readStored(), mac: self.readStoredMAC(),
-                                  save: self.saveStored)
+        if requireApproval == nil {
+            Self.adoptApprovalSetting(integrity: integrity, stored: self.readStored(), mac: self.readStoredMAC(),
+                                      save: self.saveStored)
+        }
         store = DeviceTrustStore(directory: directory, watch: watch, integrity: integrity)
         self.directory = HostDirectory(directory: directory)
         approvalOverride = requireApproval
