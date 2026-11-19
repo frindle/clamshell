@@ -20,6 +20,9 @@ internal sealed class AudioPlayer : IDisposable
     private readonly AudioPacing _pacing = new();
     private bool _playing;
     private volatile bool _disposed;
+    // Output calls (Play) and the teardown (Stop, Dispose) are one at a time: Dispose runs on the
+    // UI thread while OnPcm runs on the receive thread. Lock order is the decoder's lock, then this.
+    private readonly OutputGate _gate = new();
     private int _dropped;
 
     /// <summary>A player, or null (after one log line) when sound cannot start.</summary>
@@ -76,17 +79,55 @@ internal sealed class AudioPlayer : IDisposable
         _queue.AddSamples(pcm, 0, pcm.Length);
         if (!_playing && _pacing.ShouldStart(_queue.BufferedDuration.TotalMilliseconds))
         {
-            try { _out.Play(); _playing = true; }
-            catch (Exception e) { Log.Line($"audio: play failed ({e.Message})"); _disposed = true; }
+            // Nothing happens once Dispose has begun, so Play never meets a disposed device.
+            _gate.Run(() =>
+            {
+                try { _out.Play(); _playing = true; }
+                catch (Exception e) { Log.Line($"audio: play failed ({e.Message})"); _disposed = true; }
+            });
         }
     }
 
     public void Dispose()
     {
         _disposed = true;
-        try { _out.Stop(); } catch { }
-        try { _out.Dispose(); } catch { }
+        _gate.Close(() =>
+        {
+            try { _out.Stop(); } catch { }
+            try { _out.Dispose(); } catch { }
+        });
+        // Outside the gate: OnPcm holds the decoder's lock while it waits for the gate.
         _decoder.Dispose();
+    }
+}
+
+/// <summary>Runs output calls one at a time and never after <see cref="Close"/>: an action
+/// that starts is finished before the cleanup runs, and one that has not started is skipped.</summary>
+internal sealed class OutputGate
+{
+    private readonly object _lock = new();
+    private bool _closed;
+
+    /// <summary>Runs the action unless the gate is closed. Returns whether it ran.</summary>
+    public bool Run(Action action)
+    {
+        lock (_lock)
+        {
+            if (_closed) return false;
+            action();
+            return true;
+        }
+    }
+
+    /// <summary>Closes the gate (once) and runs the cleanup after any running action has finished.</summary>
+    public void Close(Action cleanup)
+    {
+        lock (_lock)
+        {
+            if (_closed) return;
+            _closed = true;
+            cleanup();
+        }
     }
 }
 

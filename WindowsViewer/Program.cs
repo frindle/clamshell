@@ -449,6 +449,45 @@ internal static class SelfTest
         Assert(p.Offer(251) == AudioPacing.Verdict.Drop, "pacing: drops past 250 ms");
         Assert(p.Offer(150) == AudioPacing.Verdict.Drop, "pacing: keeps dropping until 100 ms");
         Assert(p.Offer(100) == AudioPacing.Verdict.Queue && p.Offer(200) == AudioPacing.Verdict.Queue, "pacing: queues again at 100 ms");
+
+        // Play against Dispose: no output call may start once the cleanup has begun, and the
+        // cleanup waits for a call in progress.
+        {
+            var gate = new OutputGate();
+            int inside = 0, cleaned = 0, ranAfterClose = 0, overlaps = 0, ran = 0;
+            var workers = new List<Thread>();
+            for (int t = 0; t < 4; t++)
+            {
+                var th = new Thread(() =>
+                {
+                    for (int i = 0; i < 20000; i++)
+                    {
+                        gate.Run(() =>
+                        {
+                            if (Volatile.Read(ref cleaned) != 0) Interlocked.Increment(ref ranAfterClose);
+                            if (Interlocked.Increment(ref inside) != 1) Interlocked.Increment(ref overlaps);
+                            Interlocked.Increment(ref ran);
+                            Interlocked.Decrement(ref inside);
+                        });
+                    }
+                });
+                workers.Add(th); th.Start();
+            }
+            Thread.Sleep(5);
+            gate.Close(() =>
+            {
+                if (Volatile.Read(ref inside) != 0) Interlocked.Increment(ref overlaps);
+                Volatile.Write(ref cleaned, 1);
+            });
+            foreach (var th in workers) th.Join();
+            Assert(ranAfterClose == 0, "output gate: nothing runs after the cleanup");
+            Assert(overlaps == 0, "output gate: calls and cleanup never overlap");
+            int ranBefore = Volatile.Read(ref ran);
+            Assert(!gate.Run(() => Interlocked.Increment(ref ran)) && Volatile.Read(ref ran) == ranBefore, "output gate: a closed gate skips the call");
+            int again = 0;
+            gate.Close(() => again++);
+            Assert(again == 0, "output gate: closing twice cleans up once");
+        }
     }
 
     // Builds an AVCC blob for the round-trip test without depending on the
