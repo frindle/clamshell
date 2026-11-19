@@ -346,6 +346,44 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(FileTransfer.numberedNameFitting(plain, 2).utf8.count, FileTransfer.maxNameBytes)
     }
 
+    func testNumberedNameWithAnExtensionTooLongToKeep() {
+        // "a." plus 253 bytes: the extension alone leaves no room for " 2".
+        let name = "a." + String(repeating: "x", count: 253)
+        XCTAssertEqual(name.utf8.count, 255)
+        for n in [2, 3, 12] {
+            let numbered = FileTransfer.numberedNameFitting(name, n)
+            XCTAssertLessThanOrEqual(numbered.utf8.count, FileTransfer.maxNameBytes, "n=\(n)")
+            XCTAssertTrue(numbered.hasSuffix(" \(n)"), "n=\(n): \(numbered.suffix(8))")
+            XCTAssertTrue(numbered.hasPrefix("a.xxx"), "the name is kept, only shortened")
+            XCTAssertNotEqual(numbered, name)
+        }
+        // An extension that is the whole name apart from one byte.
+        let wide = "." + String(repeating: "y", count: 254)
+        XCTAssertLessThanOrEqual(FileTransfer.numberedNameFitting(wide, 2).utf8.count, FileTransfer.maxNameBytes)
+    }
+
+    func testNumberedNameNeverStartsWithABlank() {
+        // One character (a long ZWJ sequence) that cannot stay next to " 2.txt": the base is cut to nothing and becomes `file`.
+        let cluster = "\u{1F468}" + String(repeating: "\u{200D}\u{1F469}", count: 35) + "\u{200D}\u{1F469}\u{200D}\u{1F469}"
+        let name = cluster + ".txt"
+        XCTAssertEqual(cluster.count, 1)
+        XCTAssertGreaterThan(name.utf8.count + " 2".utf8.count, FileTransfer.maxNameBytes)
+        XCTAssertEqual(FileTransfer.numberedNameFitting(name, 2), "file 2.txt")
+        XCTAssertEqual(FileTransfer.numberedNameFitting(String(repeating: "z", count: 255), 2).first, "z")
+    }
+
+    func testNumberedNameDoesNotSplitACharacter() {
+        // Thumbs up with a skin tone is two scalars (8 bytes); 31 of them plus ".txt" is 252 bytes.
+        let thumb = "\u{1F44D}\u{1F3FD}"
+        let name = String(repeating: thumb, count: 31) + ".txt"
+        let numbered = FileTransfer.numberedNameFitting(name, 2)
+        XCTAssertLessThanOrEqual(numbered.utf8.count, FileTransfer.maxNameBytes)
+        XCTAssertTrue(numbered.hasSuffix(" 2.txt"))
+        let base = numbered.dropLast(" 2.txt".count)
+        XCTAssertTrue(base.allSatisfy { $0 == Character(thumb) }, "every remaining character is a whole thumbs up")
+        XCTAssertEqual(base.count, 30)
+    }
+
     func testSecondNearLimitNameGetsANumber() throws {
         let name = String(repeating: "\u{00E9}", count: 125) + ".txt"
         let s = sink()
