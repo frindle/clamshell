@@ -373,15 +373,17 @@ final class DiskFileSinkTests: XCTestCase {
     }
 
     func testNumberedNameDoesNotSplitACharacter() {
-        // Thumbs up with a skin tone is two scalars (8 bytes); 31 of them plus ".txt" is 252 bytes.
+        // Thumbs up with a skin tone is two scalars (8 bytes). 32 of them is 256 bytes; with " 2" the
+        // limit leaves room for 31 whole ones (248) plus 5 spare bytes, enough for the first scalar
+        // of a 32nd, which a cut by scalar would keep.
         let thumb = "\u{1F44D}\u{1F3FD}"
-        let name = String(repeating: thumb, count: 31) + ".txt"
+        let name = String(repeating: thumb, count: 32)
         let numbered = FileTransfer.numberedNameFitting(name, 2)
         XCTAssertLessThanOrEqual(numbered.utf8.count, FileTransfer.maxNameBytes)
-        XCTAssertTrue(numbered.hasSuffix(" 2.txt"))
-        let base = numbered.dropLast(" 2.txt".count)
+        XCTAssertTrue(numbered.hasSuffix(" 2"))
+        let base = numbered.dropLast(2)
         XCTAssertTrue(base.allSatisfy { $0 == Character(thumb) }, "every remaining character is a whole thumbs up")
-        XCTAssertEqual(base.count, 30)
+        XCTAssertEqual(base.count, 31)
     }
 
     func testSecondNearLimitNameGetsANumber() throws {
