@@ -353,7 +353,8 @@ final class DiskFileSinkTests: XCTestCase {
         receive(s, id: 2, name: name, bytes: Data([2]))
         let found = names(in: folder)
         XCTAssertEqual(found.count, 2, "\(found)")
-        XCTAssertTrue(found.allSatisfy { $0.utf8.count <= FileTransfer.maxNameBytes })
+        // The file system may list names decomposed; the limit is on what was written.
+        XCTAssertTrue(found.allSatisfy { $0.precomposedStringWithCanonicalMapping.utf8.count <= FileTransfer.maxNameBytes })
     }
 
     func testRealFreeSpaceCheckWorks() {
