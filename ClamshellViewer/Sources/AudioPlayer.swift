@@ -17,7 +17,10 @@ final class AudioPlayer {
     private var converter: AVAudioConverter?
     private let aacFormat: AVAudioFormat
     private let pcmFormat: AVAudioFormat
-    private var started = false
+    /// Guards `gate`, the engine and the player node: play runs on the network queue,
+    /// stop and open on others, and a start racing a stop is undefined for AVAudioEngine.
+    private let engineLock = NSLock()
+    private var gate = AudioStartGate()
     /// Each buffer is 1024 frames at 48 kHz, about 21 ms: 9 of them is about 192 ms.
     private static let maxQueued = 9
     private let queueLock = NSLock()
@@ -49,24 +52,50 @@ final class AudioPlayer {
         engine.connect(player, to: engine.mainMixerNode, format: pcm)
     }
 
-    private func startIfNeeded() {
-        if started, !engine.isRunning {
+    /// Called with `engineLock` held. Returns false when the packet should not be played.
+    private func startIfNeededLocked() -> Bool {
+        let now = ProcessInfo.processInfo.systemUptime
+        if gate.started, !engine.isRunning {
             // Stopped under us (an interruption, a route change): start again.
-            started = false
+            gate.recordEngineStopped()
             resetQueue()
         }
-        guard !started else { return }
-        started = true
+        switch gate.decide(now: now) {
+        case .skip: return false
+        case .running: return true
+        case .tryStart: break
+        }
         try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
         try? AVAudioSession.sharedInstance().setActive(true)
-        do { try engine.start(); player.play(); clogViewer("audio: engine started (AAC-LC 48kHz stereo -> PCM)") }
-        catch { started = false; clogViewer("audio: engine start FAILED: \(error.localizedDescription)") }
+        do {
+            try engine.start()
+            player.play()
+            gate.recordStarted()
+            clogViewer("audio: engine started (AAC-LC 48kHz stereo -> PCM)")
+            return true
+        } catch {
+            if let held = gate.recordFailure(now: now) {
+                clogViewer("audio: engine start FAILED: \(error.localizedDescription)" +
+                           (held > 0 ? " (\(held) more failures not logged)" : "") + " — retrying with back-off")
+            }
+            return false
+        }
+    }
+
+    /// A new session begins (HELLO_ACK): audio may start again.
+    func open() {
+        engineLock.lock()
+        gate.open()
+        engineLock.unlock()
     }
 
     /// Decodes and schedules one AAC packet. Called on the network queue.
     func play(aac: Data) {
         guard let converter, !aac.isEmpty else { return } // empty AUDIO_FRAME: nothing to decode
-        startIfNeeded()
+        engineLock.lock()
+        let ok = startIfNeededLocked()
+        engineLock.unlock()
+        guard ok else { return }
 
         let compressed = AVAudioCompressedBuffer(
             format: aacFormat, packetCapacity: 1, maximumPacketSize: aac.count)
@@ -97,6 +126,12 @@ final class AudioPlayer {
             }
             return
         }
+        // Scheduling happens under the engine lock and only while the engine is started: a
+        // buffer decoded for a session that has since closed must not wait in the player
+        // and be heard at the start of the next one.
+        engineLock.lock()
+        defer { engineLock.unlock() }
+        guard gate.isOpen, gate.started else { return }
         queueLock.lock()
         if queued >= Self.maxQueued {
             dropped += 1
@@ -124,10 +159,14 @@ final class AudioPlayer {
     }
     private var decodeErrors = 0
 
+    /// The session ended. Shuts the gate first, under the lock, so a packet already on its
+    /// way cannot start the engine again; `open()` reopens it for the next session.
     func stop() {
+        engineLock.lock()
+        gate.close()
         player.stop()
         engine.stop()
-        started = false
         resetQueue()
+        engineLock.unlock()
     }
 }

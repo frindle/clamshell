@@ -19,6 +19,7 @@
 		BB0000000000000000000060 /* SecureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000060 /* SecureSession.swift */; };
 		BB0000000000000000000061 /* KnownHosts.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000061 /* KnownHosts.swift */; };
 		BB0000000000000000000062 /* ClientAuthFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000062 /* ClientAuthFlow.swift */; };
+		BB0000000000000000A5D001 /* AudioStartGate.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000A5D001 /* AudioStartGate.swift */; };
 		BB0000000000000000000070 /* FileTransferCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000070 /* FileTransferCore.swift */; };
 		BB0000000000000000000071 /* PeripheralCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000071 /* PeripheralCore.swift */; };
 		BB0000000000000000000072 /* FileSendQueue.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000072 /* FileSendQueue.swift */; };
@@ -65,6 +66,7 @@
 		FF0000000000000000000060 /* SecureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = SecureSession.swift; path = ../Sources/Clamshell/Streaming/SecureSession.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000061 /* KnownHosts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = KnownHosts.swift; path = ../Sources/Clamshell/Streaming/KnownHosts.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000062 /* ClientAuthFlow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ClientAuthFlow.swift; path = ../Sources/Clamshell/Streaming/ClientAuthFlow.swift; sourceTree = SOURCE_ROOT; };
+		FF0000000000000000A5D001 /* AudioStartGate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AudioStartGate.swift; path = ../Sources/Clamshell/Streaming/AudioStartGate.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000070 /* FileTransferCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FileTransferCore.swift; path = ../Sources/Clamshell/Streaming/FileTransferCore.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000071 /* PeripheralCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = PeripheralCore.swift; path = ../Sources/Clamshell/Streaming/PeripheralCore.swift; sourceTree = SOURCE_ROOT; };
 		FF0000000000000000000072 /* FileSendQueue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = FileSendQueue.swift; path = ../Sources/Clamshell/Streaming/FileSendQueue.swift; sourceTree = SOURCE_ROOT; };
@@ -151,6 +153,7 @@
 				FF0000000000000000000060 /* SecureSession.swift */,
 				FF0000000000000000000061 /* KnownHosts.swift */,
 				FF0000000000000000000062 /* ClientAuthFlow.swift */,
+				FF0000000000000000A5D001 /* AudioStartGate.swift */,
 				FF0000000000000000000070 /* FileTransferCore.swift */,
 				FF0000000000000000000071 /* PeripheralCore.swift */,
 				FF0000000000000000000072 /* FileSendQueue.swift */,
@@ -266,6 +269,7 @@
 				BB0000000000000000000060 /* SecureSession.swift in Sources */,
 				BB0000000000000000000061 /* KnownHosts.swift in Sources */,
 				BB0000000000000000000062 /* ClientAuthFlow.swift in Sources */,
+				BB0000000000000000A5D001 /* AudioStartGate.swift in Sources */,
 				BB0000000000000000000054 /* PointerLock.swift in Sources */,
 				BB0000000000000000000070 /* FileTransferCore.swift in Sources */,
 				BB0000000000000000000071 /* PeripheralCore.swift in Sources */,
