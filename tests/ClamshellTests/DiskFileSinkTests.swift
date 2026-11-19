@@ -327,6 +327,35 @@ final class DiskFileSinkTests: XCTestCase {
         XCTAssertEqual(s.removeLeftovers(), 1)
     }
 
+    func testNumberedNameStaysWithinByteLimit() {
+        // Multi-byte base filling the limit, so "name 2.ext" would overflow.
+        let ext = ".txt"
+        let base = String(repeating: "\u{00E9}", count: (FileTransfer.maxNameBytes - ext.utf8.count) / 2)
+        let name = base + ext
+        XCTAssertLessThanOrEqual(name.utf8.count, FileTransfer.maxNameBytes)
+        for n in [2, 3, 10, 100] {
+            let numbered = FileTransfer.numberedNameFitting(name, n)
+            XCTAssertLessThanOrEqual(numbered.utf8.count, FileTransfer.maxNameBytes, "n=\(n)")
+            XCTAssertTrue(numbered.hasSuffix(" \(n)\(ext)"), "n=\(n)")
+            XCTAssertNotEqual(numbered, name)
+        }
+        XCTAssertEqual(FileTransfer.numberedNameFitting("scan.pdf", 2), "scan 2.pdf")
+        XCTAssertEqual(FileTransfer.numberedNameFitting(name, 1), name)
+        // No extension, near the limit.
+        let plain = String(repeating: "a", count: FileTransfer.maxNameBytes)
+        XCTAssertEqual(FileTransfer.numberedNameFitting(plain, 2).utf8.count, FileTransfer.maxNameBytes)
+    }
+
+    func testSecondNearLimitNameGetsANumber() throws {
+        let name = String(repeating: "\u{00E9}", count: 125) + ".txt"
+        let s = sink()
+        receive(s, id: 1, name: name, bytes: Data([1]))
+        receive(s, id: 2, name: name, bytes: Data([2]))
+        let found = names(in: folder)
+        XCTAssertEqual(found.count, 2, "\(found)")
+        XCTAssertTrue(found.allSatisfy { $0.utf8.count <= FileTransfer.maxNameBytes })
+    }
+
     func testRealFreeSpaceCheckWorks() {
         let s = DiskFileSink(folder: folder)
         _ = s.hasRoom(forBytes: 0) // the folder does not exist yet: the check walks up to a folder that does
