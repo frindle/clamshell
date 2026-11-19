@@ -220,29 +220,42 @@ enum FileTransfer {
     }
 
     /// Like `numberedName`, but the result never exceeds `maxNameBytes` of
-    /// UTF-8: the base name (before the extension) is shortened a character at
-    /// a time until the numbered name fits.
+    /// UTF-8: the base name (before the extension) is shortened a whole
+    /// character (grapheme cluster, so an emoji with a skin tone stays whole)
+    /// at a time until the numbered name fits. An extension too long to leave
+    /// room for a base is not treated as one: the whole name is shortened and
+    /// the number goes at its end. A base that is cut to nothing becomes `file`.
     static func numberedNameFitting(_ name: String, _ n: Int) -> String {
-        var result = numberedName(name, n)
-        guard n > 1, result.utf8.count > maxNameBytes else { return result }
+        let plain = numberedName(name, n)
+        guard n > 1, plain.utf8.count > maxNameBytes else { return plain }
         var units = Array(name.unicodeScalars)
         var ext = String.UnicodeScalarView()
         if let dot = units.lastIndex(of: "."), dot != 0, dot != units.count - 1 {
             ext.append(contentsOf: units[dot...])
             units = Array(units[..<dot])
         }
+        // Keep room for at least a few bytes of base next to " n" and the extension.
+        if " \(n)".utf8.count + String(ext).utf8.count + minBaseBytes > maxNameBytes {
+            ext = String.UnicodeScalarView()
+            units = Array(name.unicodeScalars)
+        }
         let suffix = " \(n)" + String(ext)
-        var base = String.UnicodeScalarView()
+        var baseView = String.UnicodeScalarView()
+        baseView.append(contentsOf: units)
+        var base = ""
         var used = suffix.utf8.count
-        for u in units {
-            let w = String(u).utf8.count
+        for ch in String(baseView) {
+            let w = String(ch).utf8.count
             if used + w > maxNameBytes { break }
-            base.append(u)
+            base.append(ch)
             used += w
         }
-        result = String(base) + suffix
-        return result
+        if base.isEmpty { base = "file" }
+        return base + suffix
     }
+
+    /// Room kept for the base name when deciding whether an extension is one.
+    private static let minBaseBytes = 8
 
     /// The first of `name`, `name 2`, `name 3`, ... that `isTaken` does not
     /// report. Used for the decision only; a store must still claim the final
