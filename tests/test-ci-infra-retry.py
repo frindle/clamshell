@@ -32,6 +32,12 @@ class Decide(unittest.TestCase):
     def test_cancelled_by_newer_push_is_not_rerun(self):
         self.assertTrue(run("infra-cancelled", 1, "--superseded").startswith("no:"))
 
+    def test_superseded_run_cancelled_before_a_step_is_not_rerun(self):
+        # A queued run cancelled by a newer push never ran a step; re-running it
+        # would cancel the newer run through the shared concurrency group.
+        self.assertTrue(run("infra-no-runner", 1, "--superseded").startswith("no:"))
+        self.assertTrue(run("infra-lost-runner", 1, "--superseded").startswith("no:"))
+
     def test_test_failure_is_never_rerun(self):
         out = run("real-test-failure")
         self.assertTrue(out.startswith("no:") and "Unit tests" in out, out)

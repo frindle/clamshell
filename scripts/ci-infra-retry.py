@@ -11,8 +11,10 @@ A job counts as an infrastructure failure when it did not fail on its own accoun
     or GitHub failed the job before it started);
   * it ended "failure" but none of its steps failed (the runner was lost or shut down
     while a step was running);
-  * it was cancelled (and the run is still for the newest commit of its branch, so the
-    cancel was not our own concurrency group replacing it).
+  * it was cancelled.
+A run for a commit its branch has moved past is never re-run, whatever the cause: the
+newer commit has its own run, and a re-run would join the same concurrency group and
+cancel that newer run (which would then be re-run in turn).
 A job with a failed step is a real failure: tests or the build said so, and a re-run
 would only repeat it. Any real failure means no re-run, because `gh run rerun --failed`
 would run those jobs again too.
@@ -51,6 +53,8 @@ def classify(job):
 def decide(jobs_doc, attempt, max_attempts, superseded):
     if attempt >= max_attempts:
         return False, f"attempt {attempt} of {max_attempts} already used"
+    if superseded:
+        return False, "a newer commit replaced this run"
     jobs = jobs_doc.get("jobs") or []
     if not jobs:
         return False, "no jobs in the run"
@@ -65,8 +69,6 @@ def decide(jobs_doc, attempt, max_attempts, superseded):
             real.append(why)
     if real:
         return False, "real failure: " + "; ".join(real)
-    if superseded and cancelled and not infra:
-        return False, "a newer commit replaced this run"
     if not infra and not cancelled:
         return False, "no failed job found"
     return True, "; ".join(infra + cancelled)
