@@ -93,12 +93,17 @@ sys.exit(bad)
 PY
 }
 
+step_ci_retry() {
+  python3 -I tests/test-ci-infra-retry.py
+}
+
 run_step "Web client hello test" step_hello
 run_step "Web client input and audio tests" step_input
 run_step "Web client auth tests" step_auth
 run_step "Web client syntax check" step_syntax
 run_step "Lint login-window agent scripts" step_loginwindow_scripts
 run_step "Lint probe plists" step_plists
+run_step "CI infrastructure auto-retry decision" step_ci_retry
 
 echo "$passed of $total steps passed"
 [ "$passed" -eq "$total" ]

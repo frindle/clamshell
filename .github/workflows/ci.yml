@@ -4,6 +4,13 @@ on:
     branches: [main]
   pull_request:
 
+# Pushes to main queue behind each other; a new push to a pull request
+# replaces its still-running older run. GitHub-hosted macOS jobs wait for a
+# free runner rather than fail. ci-auto-retry.yml re-runs infrastructure failures.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: macos-15

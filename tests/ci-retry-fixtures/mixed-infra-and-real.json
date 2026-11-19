@@ -1,0 +1,40 @@
+{
+  "total_count": 2,
+  "jobs": [
+    {
+      "id": 1,
+      "name": "build",
+      "status": "completed",
+      "conclusion": "failure",
+      "runner_id": null,
+      "steps": []
+    },
+    {
+      "id": 1,
+      "name": "ios",
+      "status": "completed",
+      "conclusion": "failure",
+      "runner_id": 1,
+      "steps": [
+        {
+          "number": 1,
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 2,
+          "name": "Checkout",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "number": 3,
+          "name": "Build iOS",
+          "status": "completed",
+          "conclusion": "failure"
+        }
+      ]
+    }
+  ]
+}
