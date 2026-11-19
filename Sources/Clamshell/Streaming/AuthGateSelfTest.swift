@@ -778,5 +778,21 @@ enum AuthGateSelfTest {
         try expect(status != FileTransfer.Answer.accept, "the host did not accept an offer larger than any disk (status \(status))")
         try z1.expectPing()
         print("PASS a waiting device's file offer is not answered; after approval an offer is answered (the first, sent while waiting, never was; the host closed the waiting connection: \(closedWhileWaiting))")
+
+        // 16. The files and game-controller bits are advertised by the primary
+        //     display's listener only, so a client never offers a file on a
+        //     connection that has no session to take it.
+        let primary = bench.connect(port0, "primary challenge")
+        try primary.readChallenge()
+        try expect(primary.hostCapabilities.contains(.fileTransfer) && primary.hostCapabilities.contains(.peripherals),
+                   "the primary display's listener advertises files and controllers")
+        primary.close()
+        let secondary = bench.connect(port1, "secondary challenge")
+        try secondary.readChallenge()
+        try expect(!secondary.hostCapabilities.contains(.fileTransfer) && !secondary.hostCapabilities.contains(.peripherals),
+                   "a secondary display's listener advertises neither files nor controllers")
+        try expect(secondary.hostCapabilities.contains(.deviceApproval), "it still advertises device approval")
+        secondary.close()
+        print("PASS only the primary display's listener advertises file transfer and game controllers")
     }
 }

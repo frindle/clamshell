@@ -188,6 +188,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         gate = StreamGate(auth: auth, queue: queue, label: "port \(port)")
         super.init()
         gate.displayIndex = displayIndex
+        gate.advertisesDeviceFeatures = isPrimary
         gate.onAdmit = { [weak self] link in self?.admitted(link) }
         gate.onMessage = { [weak self] link, type, payload in
             guard let self, link === self.liveLink else { return }
