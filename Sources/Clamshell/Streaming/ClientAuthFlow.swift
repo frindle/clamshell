@@ -562,11 +562,13 @@ enum DialPlanFlow {
         // An address this client chose that opened but never got as far as a
         // session (not connected, not waiting for approval) also moves on.
         let failedEarly = opened && !isPicked && !reachedSession
-        // The address the user picked opened and dropped before any session, on
-        // the last address of the plan: a held alarm from an earlier address
+        // The address the user picked opened and dropped before any session. On
+        // the last address of the plan a held alarm from an earlier address
         // must not be lost behind a plain error, and with none held the whole
-        // plan is tried again.
-        let pickedDropped = opened && isPicked && isLast && !reachedSession
+        // plan is tried again. Not on the last address, an alarm that is held
+        // means the remaining addresses must still be tried (and the alarm
+        // shown if none connects) instead of re-dialling the picked one forever.
+        let pickedDropped = opened && isPicked && !reachedSession && (isLast || held != nil)
         guard !opened || wrongMac || failedEarly || pickedDropped else {
             return .showError(restartPlan: false, held: held)
         }
