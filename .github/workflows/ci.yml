@@ -80,10 +80,20 @@ jobs:
           grep -q "nothing to do" /tmp/agent.out
       - name: Package (release build, ad-hoc signed DMG)
         run: ./package.sh 0.0.0
-      - name: Login-window agent plist is not shipped in the app
+      - name: Login-window agent plists are shipped in the app
         run: |
           test -d dist/Clamshell.app
-          if find dist/Clamshell.app -name "*loginwindow-agent*" | grep .; then exit 1; fi
+          dir=dist/Clamshell.app/Contents/Resources/loginwindow-agent
+          for label in loginwindow-agent loginwindow-sync; do
+            plutil -lint "$dir/com.frindle.clamshell.$label.plist"
+          done
+      - name: Login-window install command refuses without root
+        run: |
+          set +e
+          dist/Clamshell.app/Contents/MacOS/Clamshell loginwindow install > /tmp/lw.out
+          code=$?
+          cat /tmp/lw.out
+          [ "$code" -eq 1 ] && grep -q "Run with sudo" /tmp/lw.out
       - name: Pre-login input section survives packaging and signing
         run: |
           # The universal release build, after codesign, must still carry it.

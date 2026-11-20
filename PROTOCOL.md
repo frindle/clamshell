@@ -85,6 +85,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x59 | FILE_ANSWER      | both          | id(4 BE), status(1) |
 | 0x5A | FILE_DATA        | both          | id(4 BE), then the next bytes of the file, at most 64 KB |
 | 0x5B | FILE_END         | both          | id(4 BE), status(1) |
+| 0x5C | LOGIN_CREDENTIALS | client → host | UTF-8 JSON — a saved login for the login window; see "Login window". Only to a host that advertises `loginCredentials` |
 
 Reserved, not specified yet: 0x40–0x49 (Window Handoff v2, below) and
 0x55–0x57 (further peripheral messages).
@@ -768,8 +769,36 @@ that sent no challenge has every bit 0.
 | 4 | `deviceApproval` | host: trusted devices may approve others. Client: can show the approval prompt |
 | 5 | `fileTransfer` | both: can send and receive files — see "File transfer" |
 | 6 | `peripherals` | host: accepts peripherals attached to the client. Client: can send them — see "Peripherals attached to the client" |
+| 7 | `restart` | host: accepts RESTART_REQUEST. Client: can send one |
+| 8 | `loginCredentials` | host: this host is the login-window agent and types a saved login for a client. Client: can send one — see "Login window" |
 
 Unassigned bits are sent as 0 and ignored on receipt.
+
+## Login window (LOGIN_CREDENTIALS)
+
+While nobody is logged in, the host is the login-window agent
+(`clamshell loginwindow install`). It sets capability bit 8 in AUTH_CHALLENGE,
+which is how a client knows the host is at the login window; the normal app
+never sets it. The agent always requires device approval.
+
+A client that holds a saved login for this Mac and sets bit 8 itself may send
+one LOGIN_CREDENTIALS message, as a SECURE inner message:
+
+```
+{"v":1,"kind":"login","user":"<account name>","password":"<password>"}
+```
+
+The host types the name, Tab, the password and Return into the login window,
+the same way as INPUT_TEXT. Rules:
+
+- Accepted only from a trusted device on its encrypted session (phase
+  accepted). A session in the clear never types a password.
+- `user` and `password` are 1 to 512 bytes of UTF-8 each, with no control
+  characters (a tab or line break would be typed as a key press); the payload
+  is at most 2048 bytes. Anything else is ignored.
+- At most one message every 3 seconds per listener; extra messages are ignored.
+- The host never logs, stores or echoes the contents.
+- No reply. The client sees the result in the video.
 
 ## Host and client info (HOST_INFO / CLIENT_INFO)
 

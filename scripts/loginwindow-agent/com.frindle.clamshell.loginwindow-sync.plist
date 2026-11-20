@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template, shipped in Clamshell.app/Contents/Resources/loginwindow-agent/.
+  `sudo clamshell loginwindow install` fills the placeholders and copies
+  the result to /Library/LaunchDaemons.
+
+  A root daemon that runs `Clamshell loginwindow sync` whenever the user's
+  Clamshell folder changes (a device approved or revoked) and once at boot.
+  It copies the host key and device list into the login-window agent's
+  root-only folder. It opens no port and runs for a moment each time.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.frindle.clamshell.loginwindow-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__APP_BINARY__</string>
+        <string>loginwindow</string>
+        <string>sync</string>
+    </array>
+    <key>WatchPaths</key>
+    <array>
+        <string>__WATCH_PATH__</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>ThrottleInterval</key><integer>5</integer>
+    <key>StandardOutPath</key><string>__LOG__</string>
+    <key>StandardErrorPath</key><string>__LOG__</string>
+</dict>
+</plist>

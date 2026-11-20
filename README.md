@@ -596,6 +596,23 @@ form.
   changes (a flat wallpaper no longer looks like success), records the
   permissions it holds, and prints one summary line per run. The binary also
   carries the `__CGPreLoginApp` section WindowServer needs before login.
+- **Clamshell at the login window can now be installed.** `sudo clamshell
+  loginwindow install` (run from `/Applications/Clamshell.app/Contents/MacOS/Clamshell`)
+  copies the app to a root-owned folder under `/Library/Application Support/Clamshell/LoginWindow`,
+  gives the login-window agent a root-only copy of your host key and trusted
+  devices (kept current by a small launchd daemon, so approving or revoking a
+  device in the app carries over), and installs two launchd plists from the
+  app bundle. `clamshell loginwindow status` shows the state;
+  `sudo clamshell loginwindow uninstall` removes everything. The agent is
+  headless, always asks for device approval, and exits when someone logs in.
+  The loose install and uninstall scripts are gone. Screen Sharing is not
+  touched. Whether input works at the login window is still decided by the
+  probe results.
+- **Saved login for the login window (host side).** The agent accepts a new
+  message, LOGIN_CREDENTIALS, from a trusted device on its encrypted session
+  and types the name, Tab, password and Return into the login window. Not in
+  the clients yet: they need the saved-credential store from the unlock-relay
+  work.
 - **Updates can no longer strand the Mac, and everything is fixable over SSH.**
   `clamshell status` shows the version, process, which ports answer and the
   last update's result; `clamshell update [--version X]` runs the same verified

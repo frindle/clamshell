@@ -1,18 +1,25 @@
 import Foundation
 import SystemConfiguration
+import CryptoKit
 
 /// `Clamshell loginwindow-agent`: serve the stream at the login window, then
 /// get out of the way.
 ///
-/// EXPERIMENTAL AND NOT INSTALLED. Nothing in the app registers, installs or
-/// starts this; it only runs if someone loads the plist in
-/// `scripts/loginwindow-agent/` by hand. It exists so the "Clamshell at the
-/// login window" plan can be tried once the `loginwindow-probe` results are in.
+/// Installed by `sudo clamshell loginwindow install` (see `LoginWindowInstall`):
+/// launchd starts it in the login-window session only, as root, from a
+/// root-owned copy of the app. It is headless: no NSApplication, no menu bar,
+/// no windows.
 ///
 /// It is the same web server and stream servers the menu-bar app runs, on the
-/// same ports, so the tunnel and the web client need no changes. The only new
-/// logic is when to serve:
+/// same ports, so the tunnel and the web client need no changes. The new
+/// logic is when to serve and whose identity to serve with:
 /// - Serve only while nobody is logged in at the console.
+/// - Use the host key and trusted-device list the installer mirrored into the
+///   agent's own root-only state folder (never a fresh key: clients would
+///   report a changed identity). Without a mirrored key, do not serve.
+/// - Always require device approval, whatever the user's setting says.
+/// - Accept a saved login from a trusted client (LOGIN_CREDENTIALS) and type
+///   it into the login window.
 /// - The moment someone logs in, exit. Exiting closes every listening socket
 ///   at once, so the user's own Clamshell (a login item) can bind the same
 ///   ports without racing a slow listener shutdown.
@@ -49,21 +56,44 @@ enum LoginWindowAgent {
         }
         clog("LOGINWINDOW-AGENT: nobody logged in — serving (uid \(getuid()))")
 
-        // Device approval is not solved here yet. At the login window this
-        // process is not the user who approved the devices, so `HostAuth.shared`
-        // reads a different state directory: a host key of its own and an
-        // empty device list. With approval on, that lets nobody in, and a
-        // client that saved the user's host key refuses this one as a changed
-        // identity. Both fail closed. Giving the agent the user's host key
-        // and trusted list (read-only, root-owned copy) is part of the
-        // login-window work and has to land before this agent is installed.
-        let web = WebServer()
-        web.start()
-        // The login window is this agent's whole job, so it never tells the
-        // client the host is "locked" (which makes the client fall back to VNC).
-        let fleet = StreamFleet(basePort: streamDefaultPort, reportLockState: false)
-        fleet.rebuild()
+        // The agent's state folder is CLAMSHELL_STATE_DIR (set by its plist).
+        // The mirrored host key must be there already: never invent one.
+        let directory = HostState.directory
+        guard let reason = hostStateProblem(in: directory) else {
+            let auth = HostAuth(directory: directory, requireApproval: true)
+            let web = WebServer()
+            web.start()
+            // The login window is this agent's whole job, so it never tells the
+            // client the host is "locked" (which makes the client fall back to VNC).
+            let fleet = StreamFleet(basePort: streamDefaultPort, reportLockState: false, auth: auth)
+            fleet.acceptsLoginCredentials = true
+            fleet.rebuild()
+            return serve(web: web, fleet: fleet)
+        }
+        clog("LOGINWINDOW-AGENT: \(reason) — not serving")
+        print("loginwindow-agent: \(reason)")
+        return 1
+    }
 
+    /// Why the agent cannot serve with this state folder, or nil. The folder
+    /// must exist, be this user's and private, and hold a valid host key.
+    static func hostStateProblem(in directory: URL) -> String? {
+        var st = stat()
+        guard lstat(directory.path, &st) == 0, (st.st_mode & S_IFMT) == S_IFDIR else {
+            return "no state folder at \(directory.path); run: sudo clamshell loginwindow install"
+        }
+        guard st.st_uid == geteuid(), st.st_mode & 0o077 == 0 else {
+            return "the state folder is not private to this user"
+        }
+        let key = directory.appendingPathComponent(HostIdentity.fileName)
+        guard let raw = try? SecureFile.read(key, maxBytes: 64),
+              (try? P256.Signing.PrivateKey(rawRepresentation: raw)) != nil else {
+            return "the user's host key has not been copied yet; run: sudo clamshell loginwindow sync"
+        }
+        return nil
+    }
+
+    private static func serve(web: WebServer, fleet: StreamFleet) -> Int32 {
         let yield: (String) -> Void = { reason in
             clog("LOGINWINDOW-AGENT: \(reason) — exiting so the user's Clamshell can take the ports")
             exit(0)

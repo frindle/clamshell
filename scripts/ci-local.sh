@@ -62,16 +62,6 @@ step_syntax() {
   [ "$found" -eq 1 ] || { echo "no web client files found"; return 1; }
 }
 
-step_loginwindow_scripts() {
-  local f found=0
-  for f in scripts/loginwindow-agent/*.sh; do
-    [ -e "$f" ] || continue
-    found=1
-    bash -n "$f" || { echo "syntax error in $f"; return 1; }
-  done
-  [ "$found" -eq 1 ] || { echo "no login-window scripts found"; return 1; }
-}
-
 step_plists() {
   # plutil is a Mac tool; plistlib parses the same XML and binary files.
   python3 - scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist scripts/launchagent/*.plist <<'PY'
@@ -101,7 +91,6 @@ run_step "Web client hello test" step_hello
 run_step "Web client input and audio tests" step_input
 run_step "Web client auth tests" step_auth
 run_step "Web client syntax check" step_syntax
-run_step "Lint login-window agent scripts" step_loginwindow_scripts
 run_step "Lint probe plists" step_plists
 run_step "CI infrastructure auto-retry decision" step_ci_retry
 
