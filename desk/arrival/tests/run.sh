@@ -105,7 +105,7 @@ rm -rf "$T"
 out=$(printf 'id 0x1234567890abcdef0 and 1234567890ABCDEF and host.corp x.ts.net\n' | desk_scrub)
 lacks "$out" "1234567890" "scrub removes 16-digit and 0x ids"; lacks "$out" "host.corp" "scrub removes .corp host"
 # Darkbloom detection by command line, with the pattern override
-T=$(mktemp -d); cp /bin/sleep "$T/xq-fake-service"
+T=$(mktemp -d); printf '#!/bin/sh\nsleep "$1"\n' > "$T/xq-fake-service"; chmod +x "$T/xq-fake-service"
 "$T/xq-fake-service" 30 & FP=$!
 out=$(DESK_DARKBLOOM_PATTERN=xq-fake-service desk_darkbloom_running); eq "$?" 0 "Darkbloom check finds a matching process"; has "$out" process "evidence names the process"
 if DESK_DARKBLOOM_PATTERN=zz-no-such-thing-zz desk_darkbloom_running >/dev/null; then bad "false positive on an absent name"; else ok; fi
