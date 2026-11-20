@@ -22,6 +22,7 @@ import {
   encodeMouseMove, encodeMouseButton, encodeKey, encodeScroll, encodeMouseRelative, encodeButtonAtCursor,
 } from '/client/input.js';
 import { AudioPlayer, audioSupported } from '/client/audio.js';
+import { buildCredentialForm, loginPayload, loginProblem, LoginLimiter } from '/client/login.js';
 import {
   AuthFlow, KnownHosts, WEB_CAPS, hasWebCrypto, idbStore, memoryStore, loadDeviceKey, loadKnownHosts,
   saveKnownHosts, webDeviceName, normalizeAddress,
@@ -47,7 +48,7 @@ const BRIDGE_PORT = { a: 5906, b: 5907, c: 5908 }[display];
 const T = {
   HELLO: 0x01, HELLO_ACK: 0x02, CLIENT_DISPLAYS: 0x03, STREAM_STATUS: 0x04, HOST_LOCK_STATE: 0x05,
   PING: 0x07, VIDEO_FRAME: 0x10, KEYFRAME_REQUEST: 0x11, AUDIO_FRAME: 0x13,
-  RESTART_REQUEST: 0x60, RESTART_RESULT: 0x61,
+  RESTART_REQUEST: 0x60, RESTART_RESULT: 0x61, LOGIN_CREDENTIALS: 0x5C,
   MOUSE_MOVE: 0x20, MOUSE_BUTTON: 0x21, KEY: 0x22, SCROLL: 0x23, CLIPBOARD: 0x30,
 };
 
@@ -332,7 +333,7 @@ function onFlowAction(conn, a) {
     case 'state': renderAuthState(conn, a.state); break;
     case 'deliver': handle(a.type, a.payload); break;
     case 'change': applyKnownChange(conn, a.change); break;
-    case 'hostCapabilities': setHostCapabilities(a.bits); break;
+    case 'hostCapabilities': setHostCapabilities(a.bits); updateLoginButton(); break;
     case 'close': try { conn.sock.close(); } catch (e) { /* ignore */ } break;
     case 'end': onFlowEnd(conn, a.end, a.reason); break;
     default: break;
@@ -410,7 +411,9 @@ function scheduleReconnect({ delay = null, quiet = false } = {}) {
 
   reconnectTimer = setTimeout(() => { reconnectTimer = null; if (wantConnection) connect(); }, left * 1000);
   if (delay === null && reconnectAttempt >= 2) {
-    showStatus('Not answering. If the Mac restarted: Unlock from the iPad/Windows app.');
+    showStatus(offlineShell
+      ? 'Not answering. If the Mac restarted, its disk may be waiting to be unlocked.'
+      : 'Not answering. If the Mac restarted: Unlock from the iPad/Windows app.');
     showUnlockLink();
   }
 }
@@ -539,6 +542,7 @@ function userDisconnect() {
     try { conn.sock.close(); } catch (e) { /* ignore */ }
   }
   setHostCapabilities(0);
+  updateLoginButton();
   resetSessionState();
   hideCard();
   showStatus('Disconnected. Reload this page to connect again.');
@@ -712,7 +716,15 @@ async function handle(type, payload) {
       // the canvas on its own once a later HOST_LOCK_STATE reports
       // unlocked; the native stream is never torn down underneath it.
       if (locked && ls.native) {
-        // nativeLockScreen: keep the native stream, banner only.
+        // nativeLockScreen: keep the native stream, banner only. If the
+        // fallback page was up (an earlier non-native lock, or a failed
+        // connection), take it down: the native stream carries the lock screen.
+        vncFallback.classList.remove('show');
+        vncFallback.src = 'about:blank';
+        fallbackDueToFailure = false;
+        hideStatus();
+        canvas.focus();
+        requestKeyframe();
       } else if (locked) {
         vncFallback.src = vncFallbackURL;
         vncFallback.classList.add('show');
@@ -1276,24 +1288,69 @@ setInterval(() => {
 // Decide the codec before the first HELLO (isConfigSupported is async).
 pickCodec(globalThis.VideoDecoder, h264Only).then((c) => { wantCodec = c; }, () => {}).finally(() => connect());
 
-// MARK: - Restart (skips the disk unlock once: fdesetup authrestart on the Mac)
+// MARK: - Password forms (Restart, Log in)
+// Real <form>s with autocomplete="username" / "current-password", so a password manager fills them.
+// The password is only in the field until the form is sent; then the whole form is removed.
+function showCredentialCard({ title, text, formId, submitLabel, onSubmit }) {
+  const f = buildCredentialForm(document, {
+    id: formId, submitLabel,
+    onSubmit: (u, p, parts) => {
+      const done = onSubmit(u, p);
+      if (done === false) return; // not sent (bad input or too soon): keep what was typed
+      parts.pass.value = '';
+      parts.user.value = '';
+      authRows.replaceChildren(); // the fields leave the page with the password
+    },
+  });
+  showCard({ title, text, rows: [], buttons: [['Cancel', true, hideCard]] });
+  authRows.replaceChildren(f.form);
+  f.user.focus();
+}
+
 const restartBtn = document.getElementById('restartBtn');
 restartBtn.addEventListener('click', () => {
-  const user = document.createElement('input');
-  user.placeholder = 'Mac user name'; user.autocomplete = 'off'; user.spellcheck = false;
-  const pass = document.createElement('input');
-  pass.type = 'password'; pass.placeholder = 'Password'; pass.autocomplete = 'off';
-  const go = () => {
-    const body = new TextEncoder().encode(JSON.stringify({ username: user.value, password: pass.value }));
-    pass.value = '';
-    send(frameMsg(T.RESTART_REQUEST, body)); // inside the encrypted session; never stored
-    authText.textContent = 'Sent. Waiting for the Mac to answer…';
-  };
-  showCard({
+  showCredentialCard({
     title: 'Restart the Mac',
     text: 'Restarts now and skips the disk unlock screen once. Nothing is saved.',
-    buttons: [['Restart', false, go], ['Cancel', true, hideCard]],
+    formId: 'restartForm', submitLabel: 'Restart',
+    onSubmit: (user, password) => {
+      send(frameMsg(T.RESTART_REQUEST, new TextEncoder().encode(JSON.stringify({ username: user, password })))); // inside the encrypted session; never stored
+      authText.textContent = 'Sent. Waiting for the Mac to answer…';
+    },
   });
-  authRows.replaceChildren(user, pass);
-  user.focus();
 });
+
+// Login window: shown only when the host says it is at the login window (capability bit 8).
+const loginBtn = document.getElementById('loginBtn');
+const loginLimiter = new LoginLimiter();
+function updateLoginButton() { loginBtn.hidden = !hostHas(CAP.loginCredentials); }
+loginBtn.addEventListener('click', () => {
+  if (!hostHas(CAP.loginCredentials)) return;
+  showCredentialCard({
+    title: 'Log in to the Mac',
+    text: 'Types this account name and password into the Mac\'s login window. Nothing is saved.',
+    formId: 'loginForm', submitLabel: 'Log in',
+    onSubmit: (user, password) => {
+      const problem = loginProblem(user, password, loginLimiter);
+      if (problem) { authText.textContent = problem; return false; }
+      const body = loginPayload(user, password);
+      loginLimiter.tryTake();
+      send(frameMsg(T.LOGIN_CREDENTIALS, body));
+      authText.textContent = 'Sent. Watch the Mac\'s screen for the result.';
+      setTimeout(hideCard, 2500);
+    },
+  });
+});
+
+// MARK: - Offline shell (service worker)
+// Keeps the last good page so it still opens while the Mac restarts. Needs https or localhost.
+let offlineShell = false;
+(function setupOfflineShell() {
+  if (!('serviceWorker' in navigator)) return;
+  if (params.get('nosw') === '1') { // kill switch from the page side
+    navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister())).catch(() => {});
+    if (window.caches) caches.keys().then((ks) => ks.filter((k) => k.startsWith('clamshell-shell-')).forEach((k) => caches.delete(k))).catch(() => {});
+    return;
+  }
+  navigator.serviceWorker.register('/client/sw.js', { scope: '/client' }).then(() => { offlineShell = true; }, () => {});
+})();

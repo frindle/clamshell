@@ -104,6 +104,8 @@ export const CAP = {
   deviceApproval: 1 << 4,
   fileTransfer: 1 << 5,
   peripherals: 1 << 6,
+  restart: 1 << 7,
+  loginCredentials: 1 << 8,
 };
 
 let hostCaps = 0;

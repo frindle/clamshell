@@ -114,6 +114,28 @@ final class WebServer {
         return out
     }
 
+    /// The app build, so a new version replaces the worker's cache.
+    static var serviceWorkerBuild: String {
+        let info = Bundle.main.infoDictionary
+        let v = (info?["CFBundleShortVersionString"] as? String) ?? "dev"
+        let b = (info?["CFBundleVersion"] as? String) ?? "0"
+        let raw = "\(v)-\(b)"
+        return String(raw.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) || $0 == "." || $0 == "-" }.map(Character.init))
+    }
+
+    /// Kill switch: `defaults write com.frindle.clamshell webClientOfflineShell -bool NO`.
+    static var offlineShellEnabled: Bool {
+        UserDefaults.standard.object(forKey: "webClientOfflineShell") as? Bool ?? true
+    }
+
+    /// sw.js with its two placeholders filled in. A disabled shell makes the worker remove itself.
+    static func serviceWorkerScript(_ js: Data, build: String, enabled: Bool) -> Data {
+        var text = String(decoding: js, as: UTF8.self)
+        text = text.replacingOccurrences(of: "'__BUILD__'", with: "'\(build)'")
+        text = text.replacingOccurrences(of: "'__KILL__'", with: "'\(enabled ? "false" : "true")'")
+        return Data(text.utf8)
+    }
+
     static let unlockTerminalMetaName = "clamshell-unlock-terminal-url"
 
     /// The https address of the browser SSH terminal that unlocks the disk after a power cut
@@ -410,6 +432,19 @@ final class WebServer {
                  body: Self.withUnlockTerminalURL(Self.withClipboardToken(html, token: clipboardToken), url: Self.unlockTerminalURL))
             return
         }
+        if path == "/client/sw.js" {
+            // The offline-shell worker: build and kill switch filled in here, and allowed to
+            // control /client (a worker under /client/ may not claim the page at /client otherwise).
+            guard let root = Self.webclientRoot,
+                  let js = try? Data(contentsOf: root.appendingPathComponent("sw.js")) else {
+                send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
+                return
+            }
+            send(conn, status: "200 OK", contentType: "application/javascript",
+                 body: Self.serviceWorkerScript(js, build: Self.serviceWorkerBuild, enabled: Self.offlineShellEnabled),
+                 extraHeaders: ["Service-Worker-Allowed: /client"])
+            return
+        }
         if path.hasPrefix("/client/") {
             guard let root = Self.webclientRoot,
                   let fileURL = Self.resolveSafely(root: root, relativePath: String(path.dropFirst("/client/".count))),
@@ -551,9 +586,10 @@ final class WebServer {
     """
     }
 
-    private func send(_ conn: NWConnection, status: String, contentType: String, body: Data) {
+    private func send(_ conn: NWConnection, status: String, contentType: String, body: Data, extraHeaders: [String] = []) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(contentType)\r\n"
+        for h in extraHeaders { head += "\(h)\r\n" }
         head += "Content-Length: \(body.count)\r\n"
         head += "Cache-Control: no-cache\r\nConnection: close\r\n\r\n"
         var payload = Data(head.utf8)
