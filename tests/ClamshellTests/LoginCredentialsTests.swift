@@ -12,7 +12,7 @@ final class LoginCredentialsTests: XCTestCase {
         XCTAssertEqual(String(decoding: LoginCredentials(user: "u", password: "pw").encode(), as: UTF8.self), json)
         XCTAssertEqual(LoginCredentials.decode(Data(json.utf8)), LoginCredentials(user: "u", password: "pw"))
         XCTAssertEqual(StreamMessageType.loginCredentials.rawValue, 0x5C)
-        XCTAssertEqual(StreamCapabilities.loginCredentials.rawValue, 1 << 7)
+        XCTAssertEqual(StreamCapabilities.loginCredentials.rawValue, 1 << 8)
     }
 
     func testRejectsWhatAClientMaySendNoMore() {

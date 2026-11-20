@@ -267,7 +267,7 @@ test('webDeviceName is plain ASCII and at most 64 bytes', () => {
 });
 
 test('the web client offers only what it does', () => {
-  assert.strictEqual(A.WEB_CAPS, 0b1010);
+  assert.strictEqual(A.WEB_CAPS, 0b10001010);
   assert.strictEqual(A.WEB_CAPS & (1 << 2), 0, 'no text input');
   assert.strictEqual(A.WEB_CAPS & ((1 << 4) | (1 << 5) | (1 << 6)), 0);
 });

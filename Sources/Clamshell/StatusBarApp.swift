@@ -71,6 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // be a few hundred MB of files).
         DispatchQueue.global(qos: .utility).async { UpdateInstaller.removeOldCopies() }
 
+        // Start-at-login used to be a login item; it is a KeepAlive launch
+        // agent now. Move anyone who had it on, once.
+        if Bundle.main.bundleIdentifier != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { LaunchAgentSetup.migrateFromLoginItem() }
+        }
+
         // Request notification authorization for collapse failure alerts
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound]
@@ -559,11 +565,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // when running the bare SwiftPM binary during development.
         if Bundle.main.bundleIdentifier != nil {
             let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
-            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            login.state = LaunchAgentSetup.isEnabled ? .on : .off
             login.target = self
             systemMenu.addItem(login)
 
             systemMenu.addItem(withTitle: "Check Reboot Readiness…", action: #selector(checkRebootReadiness), keyEquivalent: "")
+            systemMenu.addItem(withTitle: "Restart (skip disk unlock)…", action: #selector(restartSkippingUnlock), keyEquivalent: "")
                 .target = self
         }
 
@@ -889,14 +896,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleLogin() {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
-            }
-        } catch {
-            clog("start-at-login toggle failed: \(error)")
+        if LaunchAgentSetup.isEnabled {
+            LaunchAgentSetup.disable()
+        } else if LaunchAgentSetup.enable() != nil {
+            // The agent starts its own copy; hand this instance over to it.
+            LaunchAgentSetup.handOff()
+        } else {
+            clog("start-at-login: could not install the launch agent")
         }
         rebuildMenu()
     }
@@ -914,6 +920,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if alert.runModal() == .alertSecondButtonReturn {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(RebootReadiness.autorestartCommand, forType: .string)
+        }
+    }
+
+    /// Planned restart with `fdesetup authrestart`. The credentials live in these two fields
+    /// for this one call and are handed to RestartService; nothing is stored.
+    @objc private func restartSkippingUnlock() {
+        let alert = NSAlert()
+        alert.messageText = "Restart this Mac"
+        alert.informativeText = "Restarts now and skips the disk unlock screen once. Enter an account that can unlock the disk. Nothing is saved."
+        let user = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
+        user.stringValue = NSUserName()
+        let pass = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 56))
+        box.addSubview(user); box.addSubview(pass)
+        alert.accessoryView = box
+        alert.addButton(withTitle: "Restart")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = user.stringValue, secret = pass.stringValue
+        pass.stringValue = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = RestartService.restart(username: name, password: secret)
+            guard outcome != .restarting else { return }
+            DispatchQueue.main.async {
+                let done = NSAlert()
+                done.messageText = "Restart"
+                done.informativeText = RestartService.message(outcome)
+                done.runModal()
+            }
         }
     }
 

@@ -43,6 +43,11 @@ cp scripts/loginwindow-probe/*.plist "${APP}/Contents/Resources/loginwindow-prob
 # `sudo clamshell loginwindow install` fills them in and copies them out.
 mkdir -p "${APP}/Contents/Resources/loginwindow-agent"
 cp scripts/loginwindow-agent/*.plist "${APP}/Contents/Resources/loginwindow-agent/"
+# Login launch agent (restarts the app after a crash, not after a clean quit).
+# SMAppService.agent(plistName:) reads it from here; it must be in the bundle
+# before signing so the signature seals it.
+mkdir -p "${APP}/Contents/Library/LaunchAgents"
+cp scripts/launchagent/com.frindle.clamshell.agent.plist "${APP}/Contents/Library/LaunchAgents/"
 
 cat > "${APP}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

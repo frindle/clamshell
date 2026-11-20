@@ -98,6 +98,16 @@ jobs:
         run: |
           # The universal release build, after codesign, must still carry it.
           otool -l dist/Clamshell.app/Contents/MacOS/Clamshell | grep -q "sectname __cgpreloginapp"
+      - name: Login launch agent is in the app bundle
+        run: |
+          f=dist/Clamshell.app/Contents/Library/LaunchAgents/com.frindle.clamshell.agent.plist
+          test -f "$f"
+          plutil -lint "$f"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :Label' "$f")" = "com.frindle.clamshell.agent"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :BundleProgram' "$f")" = "Contents/MacOS/Clamshell"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive:SuccessfulExit' "$f")" = "false"
+          # Still intact after signing.
+          codesign --verify --deep --strict dist/Clamshell.app
       - name: Build iOS app (universal iPad+iPhone, simulator, compile check only)
         run: |
           cd ClamshellViewer

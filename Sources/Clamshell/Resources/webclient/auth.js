@@ -22,8 +22,9 @@ export const AUTH = {
   maxNameBytes: 64, tagBytes: 16, counterLimit: 2 ** 48,
 };
 // What the web client really does today: relative mouse (pointer lock) and
-// the extra mouse buttons. It never sends text input. Bits 4 to 6 stay 0.
-export const WEB_CAPS = (1 << 1) | (1 << 3);
+// the extra mouse buttons, and the Restart button (bit 7). It never sends text
+// input. Bits 4 to 6 stay 0.
+export const WEB_CAPS = (1 << 1) | (1 << 3) | (1 << 7);
 // A choice of this client: the page is served by the host, so there is no
 // separate release number to report.
 export const WEB_CLIENT_VERSION = '1';

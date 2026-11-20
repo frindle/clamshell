@@ -196,7 +196,7 @@ final class StreamGate {
             countUnanswered(link)
         }
         var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval]
-        if advertisesDeviceFeatures { capabilities.formUnion([.fileTransfer, .peripherals]) }
+        if advertisesDeviceFeatures { capabilities.formUnion([.fileTransfer, .peripherals, .restart]) }
         if advertisesLoginCredentials { capabilities.insert(.loginCredentials) }
         if auth.requireApproval { capabilities.insert(.approvalRequired) }
         do {

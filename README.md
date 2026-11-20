@@ -290,6 +290,17 @@ disk); only you can make it.
 | **macOS update reboot** | ✅ recovers to login window (authenticated restart) | ✅ recovers (auto-login optional) |
 | **Power outage** | ❌ stuck at pre-boot unlock — needs a person | ✅ if `pmset autorestart 1` is set |
 
+**Unlock disk after a power cut (FileVault on).** With Remote Login on, macOS 26 and later
+unlocks the disk over SSH before it boots. The iPad and Windows apps do that directly: "Unlock
+disk" SSHes to the Mac (port 22, over the LAN or a tunnel/WARP), signs in with the FileVault
+user and password (saved on the device if you choose; Face ID or Windows Credential Manager),
+pins the host key the first time (you confirm the fingerprint once; a different key later is
+refused), then waits for the Mac and reconnects. "Restart" uses `fdesetup authrestart` so a
+planned restart skips the unlock. There is no relay. The web unlock is a link: set
+`defaults write com.frindle.clamshell unlockTerminalURL <https-url>` to a Cloudflare browser SSH
+terminal on your tunnel hostname (Cloudflare browser rendering, which still has to be enabled)
+and an already-open web page shows "Unlock disk" with that link while the Mac is down.
+
 Make sure "Start at Login" is on so Clamshell comes back the moment you're
 logged in either way. Everything above (autorestart, FileVault, Screen Sharing,
 auto-login) is a setting only you can decide — the readiness check just tells
@@ -600,6 +611,16 @@ form.
   and types the name, Tab, password and Return into the login window. Not in
   the clients yet: they need the saved-credential store from the unlock-relay
   work.
+- **Updates can no longer strand the Mac, and everything is fixable over SSH.**
+  `clamshell status` shows the version, process, which ports answer and the
+  last update's result; `clamshell update [--version X]` runs the same verified
+  update without the menu; `clamshell rollback` swaps the kept previous version
+  back. An update now keeps the old app in
+  `~/Library/Application Support/Clamshell/previous/`, and a watcher started
+  from it rolls back automatically if the new build is not serving (web port
+  5901 answering and a stream port bound) within 90 seconds.
+- **Start at Login is a launch agent that restarts the app after a crash**
+  (not after a quit). Anyone who had it on is moved over once.
 
 ### 0.9.25 — 2026-11-13
 - **Quieter on the Mac: fewer background processes, fewer keyframes, cheaper logging.**

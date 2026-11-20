@@ -33,6 +33,7 @@ public static class Caps
     public const uint DeviceApproval = 1u << 4;
     public const uint FileTransfer = 1u << 5;
     public const uint Peripherals = 1u << 6;
+    public const uint Restart = 1u << 7;
 }
 
 public static class Wire
