@@ -527,6 +527,48 @@ are stored in the Keychain, never in `UserDefaults`. Self-signed/untrusted
 certificates prompt a trust dialog rather than failing silently or accepting
 blindly.
 
+## Login-window and lock-screen probe
+
+A read-only check of whether screen capture and input work with nobody logged
+in (login window) and on the lock screen. It writes numbers only (no pixels) to
+`/var/tmp/clamshell-probe/probe.log` and changes nothing else. Run it once at
+each place, then read the log. The five steps, from an SSH session:
+
+1. Install the build to test in `/Applications` (a packaged `Clamshell.app`), then
+   install the two launchd agents and the log folder:
+   ```
+   sudo mkdir -p /var/tmp/clamshell-probe && sudo chmod 777 /var/tmp/clamshell-probe
+   sudo cp /Applications/Clamshell.app/Contents/Resources/loginwindow-probe/com.frindle.clamshell.probe-aqua.plist /Library/LaunchAgents/
+   sudo cp /Applications/Clamshell.app/Contents/Resources/loginwindow-probe/com.frindle.clamshell.probe-loginwindow.plist /Library/LaunchAgents/
+   sudo chown root:wheel /Library/LaunchAgents/com.frindle.clamshell.probe-*.plist
+   sudo chmod 644 /Library/LaunchAgents/com.frindle.clamshell.probe-*.plist
+   ```
+2. Log out and leave the Mac at the login window for 2 minutes.
+3. Log back in.
+4. Lock the screen (Control-Command-Q) and wait 2 minutes, then unlock.
+5. Read the log: `cat /var/tmp/clamshell-probe/probe.log`
+
+Each run writes one line, for example
+`ts loginwindow 0 loginwindow locked=false capture_ok=true luma_stddev=31.26 frame_changed=4 pointer_moved=true key_seen=true sr=true ax=true post=true key_posted=true listen=true tcc=unreadable`.
+Read it like this:
+
+- `capture_ok=true` with `luma_stddev` well above 0 and `frame_changed` above 0:
+  capture works and the picture is live. `luma_stddev` near 0 is a flat
+  wallpaper or a black screen, even when `capture_ok=true`.
+- `pointer_moved=true` and `key_seen=true`: synthetic mouse and keyboard input
+  reach the session. The keystroke is Shift only.
+- `sr`, `ax`, `post`, `listen`: the permissions the process holds. `tcc` lists
+  the system permission database rows for the app (`Service=2` is allowed,
+  `0` is denied) or `unreadable` when the probe is not allowed to read it.
+
+Look at the lines labelled `loginwindow` (the first two minutes) and `aqua`
+with `locked=true` (the lock screen). To remove it:
+`sudo rm /Library/LaunchAgents/com.frindle.clamshell.probe-*.plist`, then log out and in.
+
+The binary carries an empty `__CGPreLoginApp,__cgpreloginapp` section (added at
+link time in `Package.swift`), which WindowServer requires before it accepts
+input from a program while nobody is logged in. CI checks for it with `otool -l`.
+
 ## Caveats
 
 Uses one private API (`CGVirtualDisplay`) — behavior should be re-verified
@@ -536,6 +578,11 @@ form.
 ## Changelog
 
 ### Unreleased
+- **The login-window probe can now settle the question.** It posts a Shift
+  keystroke and reads it back, records brightness spread and whether the frame
+  changes (a flat wallpaper no longer looks like success), records the
+  permissions it holds, and prints one summary line per run. The binary also
+  carries the `__CGPreLoginApp` section WindowServer needs before login.
 
 ### 0.9.25 — 2026-11-13
 - **Quieter on the Mac: fewer background processes, fewer keyframes, cheaper logging.**

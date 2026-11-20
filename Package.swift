@@ -26,7 +26,18 @@ let package = Package(
                 "AXPrivateShim",
                 .product(name: "ImmurokKit", package: "immurok-yk"),
             ],
-            resources: [.copy("Resources/novnc"), .copy("Resources/webclient")]
+            resources: [.copy("Resources/novnc"), .copy("Resources/webclient")],
+            // Empty __CGPreLoginApp section: WindowServer drops synthetic input
+            // from binaries that lack it while no user is logged in (login
+            // window). /dev/null gives an empty section without a stray file.
+            // unsafeFlags is fine here: this is the root package, and the flags
+            // apply to this target's link only, not to the immurok-yk dependency.
+            linkerSettings: [.unsafeFlags([
+                "-Xlinker", "-sectcreate",
+                "-Xlinker", "__CGPreLoginApp",
+                "-Xlinker", "__cgpreloginapp",
+                "-Xlinker", "/dev/null",
+            ])]
         ),
         // Unit tests for the pure logic (wire format, parsers, guards). Run
         // with `swift test`; anything needing capture, input or hardware

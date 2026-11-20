@@ -6,8 +6,8 @@ import SystemConfiguration
 import ScreenCaptureKit
 
 /// Read-only probe: can this process capture the screen and move the pointer
-/// at the login window / lock screen? Runs once, writes counts and brightness
-/// only (never pixels) to /var/tmp/clamshell-probe, and always returns 0 so a
+/// at the login window / lock screen, and does a Shift keystroke arrive? Runs
+/// once, writes counts and brightness spread only (never pixels) to /var/tmp/clamshell-probe, and always returns 0 so a
 /// launchd job is never throttled. Failures are recorded in the JSON.
 enum LoginWindowProbe {
     static let dir = "/var/tmp/clamshell-probe"
@@ -59,35 +59,88 @@ enum LoginWindowProbe {
             out["cg_session"] = NSNull()
         }
 
-        out["screen_recording"] = CGPreflightScreenCaptureAccess()
-        out["accessibility"] = AXIsProcessTrusted()
+        let sr = CGPreflightScreenCaptureAccess()
+        let ax = AXIsProcessTrusted()
+        let post = CGPreflightPostEventAccess()
+        let listen = CGPreflightListenEventAccess()
+        out["screen_recording"] = sr
+        out["accessibility"] = ax
+        out["post_event"] = post
+        out["listen_event"] = listen
 
-        // Capture one frame; record only size and brightness.
-        let cap = capture()
-        if let img = cap.image {
+        // TCC rows for this bundle id; readable only as root or with Full
+        // Disk Access. Never fails the probe.
+        let tcc = tccRows()
+        out["tcc"] = tcc ?? "unreadable"
+
+        // Capture with the cursor shown, nudge the pointer, capture again.
+        // Records size, brightness spread and a diff count; never pixels.
+        let before = capture()
+        let ptr = pointerTest()
+        let after = ptr.moved ? capture() : before
+        ptr.restore()
+        var summary = ProbeMath.Summary()
+        if let img = before.image {
             out["capture_ok"] = true
             out["width"] = img.width
             out["height"] = img.height
-            out["mean_luma"] = meanLuma(img).map { ($0 * 100).rounded() / 100 } ?? NSNull()
+            if let px = rgba(img), let st = ProbeMath.lumaStats(rgba: px.data, pixelCount: px.width * px.height) {
+                out["luma_mean"] = (st.mean * 100).rounded() / 100
+                out["luma_stddev"] = (st.stddev * 100).rounded() / 100
+                summary.lumaStddev = st.stddev
+                if let img2 = after.image, ptr.moved, let px2 = rgba(img2),
+                   px2.width == px.width, px2.height == px.height,
+                   let d = ProbeMath.gridDiff(px.data, px2.data, width: px.width, height: px.height) {
+                    out["frame_changed"] = d
+                    summary.frameChanged = d
+                } else {
+                    out["frame_changed"] = NSNull()
+                }
+            } else {
+                out["luma_mean"] = NSNull()
+                out["luma_stddev"] = NSNull()
+                out["frame_changed"] = NSNull()
+            }
             out["capture_error"] = NSNull()
         } else {
             out["capture_ok"] = false
             out["width"] = NSNull()
             out["height"] = NSNull()
-            out["mean_luma"] = NSNull()
-            out["capture_error"] = cap.error ?? "unknown"
+            out["luma_mean"] = NSNull()
+            out["luma_stddev"] = NSNull()
+            out["frame_changed"] = NSNull()
+            out["capture_error"] = before.error ?? "unknown"
         }
-        out["capture_api"] = cap.api.isEmpty ? NSNull() : cap.api
-        if cap.image != nil, let e = cap.error { out["capture_note"] = e }
+        out["capture_api"] = before.api.isEmpty ? NSNull() : before.api
+        if before.image != nil, let e = before.error { out["capture_note"] = e }
 
-        // Pointer nudge (display coordinates).
-        let ptr = pointerTest()
         out["pointer_before"] = ptr.before ?? NSNull()
         out["pointer_after"] = ptr.after ?? NSNull()
         out["pointer_moved"] = ptr.moved
         if let e = ptr.error { out["pointer_error"] = e }
 
-        writeOutputs(out)
+        // Keystroke: Shift down, read the modifier state back, Shift up.
+        let key = keyTest()
+        out["key_posted"] = key.posted
+        out["key_seen"] = key.seen
+        if let e = key.error { out["key_error"] = e }
+
+        summary.ts = ts
+        summary.label = label
+        summary.uid = "\(getuid())"
+        summary.consoleUser = (out["console_user"] as? String) ?? "-"
+        if let cg = out["cg_session"] as? [String: Any], let l = cg["CGSSessionScreenIsLocked"] { summary.locked = "\(l)" }
+        summary.captureOK = before.image != nil
+        summary.pointerMoved = ptr.moved
+        summary.keyPosted = key.posted
+        summary.keySeen = key.seen
+        summary.screenRecording = sr
+        summary.accessibility = ax
+        summary.postEvent = post
+        summary.listenEvent = listen
+        summary.tcc = tcc.map { $0.isEmpty ? "none" : $0.joined(separator: ",") } ?? "unreadable"
+
+        writeOutputs(out, summary: summary)
         return 0
     }
 
@@ -112,6 +165,7 @@ enum LoginWindowProbe {
                     let h = max(1, Int((Double(display.height) / Double(max(display.width, 1)) * Double(w)).rounded()))
                     cfg.width = w
                     cfg.height = h
+                    cfg.showsCursor = true
                     let img = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
                     box.image = img
                     box.api = "sck"
@@ -138,7 +192,8 @@ enum LoginWindowProbe {
         return box
     }
 
-    private static func meanLuma(_ img: CGImage) -> Double? {
+    /// Renders the image into an RGBA8 buffer for the pure statistics.
+    private static func rgba(_ img: CGImage) -> (data: [UInt8], width: Int, height: Int)? {
         let w = img.width, h = img.height
         guard w > 0, h > 0 else { return nil }
         let bytesPerRow = w * 4
@@ -151,43 +206,95 @@ enum LoginWindowProbe {
             ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
             return true
         }
-        guard ok else { return nil }
-        var sum = 0.0
-        var i = 0
-        let n = w * h
-        while i < buf.count {
-            sum += 0.2126 * Double(buf[i]) + 0.7152 * Double(buf[i + 1]) + 0.0722 * Double(buf[i + 2])
-            i += 4
-        }
-        return sum / Double(n)
+        return ok ? (buf, w, h) : nil
     }
 
     // MARK: pointer
 
-    private static func pointerTest() -> (before: [Int]?, after: [Int]?, moved: Bool, error: String?) {
-        guard let start = CGEvent(source: nil)?.location else {
-            return (nil, nil, false, "cannot read pointer location")
+    /// Moves the pointer 24 points right and down (enough to change a coarse
+    /// grid cell in a downscaled capture) and reads it back. The pointer stays
+    /// moved until `restore()` so the caller can capture a frame in between.
+    private struct PointerResult {
+        var before: [Int]?
+        var after: [Int]?
+        var moved: Bool
+        var error: String?
+        var start: CGPoint?
+        func restore() {
+            guard let start else { return }
+            CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
+                    mouseCursorPosition: start, mouseButton: .left)?.post(tap: .cghidEventTap)
         }
-        let target = CGPoint(x: start.x + 1, y: start.y + 1)
+    }
+
+    private static func pointerTest() -> PointerResult {
+        guard let start = CGEvent(source: nil)?.location else {
+            return PointerResult(before: nil, after: nil, moved: false, error: "cannot read pointer location", start: nil)
+        }
+        let before = [Int(start.x.rounded()), Int(start.y.rounded())]
+        let target = CGPoint(x: start.x + 24, y: start.y + 24)
         guard let move = CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
                                  mouseCursorPosition: target, mouseButton: .left) else {
-            return ([Int(start.x.rounded()), Int(start.y.rounded())], nil, false, "cannot create mouse event")
+            return PointerResult(before: before, after: nil, moved: false, error: "cannot create mouse event", start: start)
         }
         move.post(tap: .cghidEventTap)
-        Thread.sleep(forTimeInterval: 0.1)
-        let end = CGEvent(source: nil)?.location
-        // Put it back.
-        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved,
-                mouseCursorPosition: start, mouseButton: .left)?.post(tap: .cghidEventTap)
-        let before = [Int(start.x.rounded()), Int(start.y.rounded())]
-        guard let end else { return (before, nil, false, "cannot read pointer after move") }
+        Thread.sleep(forTimeInterval: 0.2)
+        guard let end = CGEvent(source: nil)?.location else {
+            return PointerResult(before: before, after: nil, moved: false, error: "cannot read pointer after move", start: start)
+        }
         let after = [Int(end.x.rounded()), Int(end.y.rounded())]
-        return (before, after, abs(end.x - start.x) >= 0.5, nil)
+        return PointerResult(before: before, after: after, moved: abs(end.x - start.x) >= 0.5, error: nil, start: start)
+    }
+
+    // MARK: keystroke
+
+    /// Posts Shift down, polls the session modifier state for it, then always
+    /// posts Shift up. Shift only: never a character key, never Return.
+    private static func keyTest() -> (posted: Bool, seen: Bool, error: String?) {
+        let shift: CGKeyCode = 56
+        guard let down = CGEvent(keyboardEventSource: nil, virtualKey: shift, keyDown: true),
+              let up = CGEvent(keyboardEventSource: nil, virtualKey: shift, keyDown: false) else {
+            return (false, false, "cannot create key event")
+        }
+        down.flags = .maskShift
+        up.flags = []
+        down.post(tap: .cghidEventTap)
+        var seen = false
+        for _ in 0..<10 {
+            Thread.sleep(forTimeInterval: 0.05)
+            if CGEventSource.flagsState(.combinedSessionState).contains(.maskShift) { seen = true; break }
+        }
+        up.post(tap: .cghidEventTap)
+        return (true, seen, nil)
+    }
+
+    // MARK: TCC
+
+    /// Reads this bundle id's rows from the system TCC database with sqlite3.
+    /// nil when the database cannot be read (no root / Full Disk Access).
+    private static func tccRows() -> [String]? {
+        let id = Bundle.main.bundleIdentifier ?? "com.frindle.clamshell"
+        guard id.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" }) else { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
+        p.arguments = ["-readonly", "/Library/Application Support/com.apple.TCC/TCC.db",
+                       "select service, auth_value from access where client='\(id)';"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do { try p.run() } catch { return nil }
+        let deadline = Date().addingTimeInterval(5)
+        while p.isRunning && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        if p.isRunning { p.terminate(); return nil }
+        guard p.terminationStatus == 0 else { return nil }
+        let text = String(decoding: pipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        // A readable database with no rows for us is a real answer: empty list.
+        return ProbeMath.parseTCCRows(text) ?? []
     }
 
     // MARK: output
 
-    private static func writeOutputs(_ out: [String: Any]) {
+    private static func writeOutputs(_ out: [String: Any], summary: ProbeMath.Summary) {
         let fm = FileManager.default
         do {
             if !fm.fileExists(atPath: dir) {
@@ -215,16 +322,7 @@ enum LoginWindowProbe {
             FileHandle.standardError.write(Data("probe: write json failed: \(error)\n".utf8))
         }
 
-        func s(_ k: String) -> String {
-            if let v = out[k], !(v is NSNull) { return "\(v)" }
-            return "-"
-        }
-        var locked = "-"
-        if let cg = out["cg_session"] as? [String: Any], let l = cg["CGSSessionScreenIsLocked"] { locked = "\(l)" }
-        let line = "\(s("ts")) \(s("label")) \(s("uid")) \(s("console_user")) locked=\(locked) " +
-                   "capture_ok=\(s("capture_ok")) luma=\(s("mean_luma")) pointer_moved=\(s("pointer_moved")) " +
-                   "sr=\(s("screen_recording")) ax=\(s("accessibility"))\n"
-        appendLog(line)
+        appendLog(ProbeMath.summaryLine(summary) + "\n")
     }
 
     private static func appendLog(_ line: String) {

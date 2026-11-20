@@ -65,6 +65,12 @@ jobs:
       - name: Windows viewer client flow against the real host
         timeout-minutes: 5
         run: dotnet run --project tests/WindowsViewerInterop/WindowsViewerInterop.csproj -c Release -- "$PWD/.build/debug/Clamshell" 5995
+      - name: Pre-login input section is in the binary
+        run: |
+          # WindowServer drops input from binaries without an (empty)
+          # __CGPreLoginApp,__cgpreloginapp section before anyone is logged in.
+          otool -l .build/debug/Clamshell | grep -q "sectname __cgpreloginapp"
+          otool -l .build/debug/Clamshell | grep -q "segname __CGPreLoginApp"
       - name: Login-window agent stays off when a user is logged in
         run: |
           # In a logged-in session (the CI runner is one) the agent must exit
@@ -78,6 +84,10 @@ jobs:
         run: |
           test -d dist/Clamshell.app
           if find dist/Clamshell.app -name "*loginwindow-agent*" | grep .; then exit 1; fi
+      - name: Pre-login input section survives packaging and signing
+        run: |
+          # The universal release build, after codesign, must still carry it.
+          otool -l dist/Clamshell.app/Contents/MacOS/Clamshell | grep -q "sectname __cgpreloginapp"
       - name: Build iOS app (universal iPad+iPhone, simulator, compile check only)
         run: |
           cd ClamshellViewer
