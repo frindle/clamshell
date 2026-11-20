@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Template, shipped in Clamshell.app/Contents/Resources/loginwindow-agent/.
-  `sudo clamshell loginwindow install` fills the __PLACEHOLDERS__ and copies
+  `sudo clamshell loginwindow install` fills the placeholders and copies
   the result to /Library/LaunchAgents. Do not load this file by hand.
 
   Runs `Clamshell loginwindow-agent` in the login-window session only, from
