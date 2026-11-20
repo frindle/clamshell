@@ -1,5 +1,6 @@
-/// Message type bytes. 0x40-0x4C are the v2 proposal, adopted; 0x60-0x74 are new in v3.
-/// 0x01-0x5B are v1 and are not repeated here.
+/// Message type bytes. 0x40-0x4C are the v2 proposal, adopted; 0x70-0x85 are new in v3.
+/// 0x01-0x5C and 0x60-0x61 are v1 (StreamProtocol.swift) and are not repeated here.
+/// Tests compare every value below against the real v1 enum.
 public enum DeskType: UInt8 {
     // Window handoff (v2 proposal, adopted)
     case windowListRequest = 0x40
@@ -16,27 +17,28 @@ public enum DeskType: UInt8 {
     case windowInputKey = 0x4B
     case windowInputScroll = 0x4C
     // App host (v3)
-    case appLaunch = 0x60
-    case appList = 0x61
-    case windowAdded = 0x62
-    case windowMoved = 0x63
-    case windowResized = 0x64
-    case windowTitle = 0x65
-    case windowResizeRequest = 0x66
-    case childWindow = 0x67
-    case menuTree = 0x68
-    case menuInvoke = 0x69
-    case cursorShape = 0x6A
-    case pasteboardOffer = 0x6B
-    case pasteboardFetch = 0x6C
-    case filePush = 0x6D
-    case filePull = 0x6E
-    case audioFrame = 0x6F
-    case badge = 0x70
-    case notify = 0x71
-    case appListRequest = 0x72
-    case pasteboardData = 0x73
-    case appLaunchResult = 0x74
+    case appLaunch = 0x70
+    case appList = 0x71
+    case windowAdded = 0x72
+    case windowMoved = 0x73
+    case windowResized = 0x74
+    case windowTitle = 0x75
+    case windowResizeRequest = 0x76
+    case childWindow = 0x77
+    case menuTree = 0x78
+    case menuInvoke = 0x79
+    case cursorShape = 0x7A
+    case pasteboardOffer = 0x7B
+    case pasteboardFetch = 0x7C
+    case filePush = 0x7D
+    case filePull = 0x7E
+    case audioFrame = 0x7F
+    case badge = 0x80
+    case notify = 0x81
+    case appListRequest = 0x82
+    case pasteboardData = 0x83
+    case appLaunchResult = 0x84
+    case filePromise = 0x85
 }
 
 public enum WindowKind: UInt8, Equatable {
@@ -111,9 +113,25 @@ public struct PasteboardEntry: Equatable {
     public init(uti: String, size: UInt64) { self.uti = uti; self.size = size }
 }
 
-public enum FilePushKind: UInt8, Equatable {
-    /// `path` is on shared storage; the receiver uses it directly.
-    case sharedPath = 0
-    /// `path` is the name the file will have in the host inbox; bytes follow as v1 FILE_OFFER/DATA/END.
-    case inboxCopy = 1
+public struct FilePromiseEntry: Equatable {
+    public var fileId: UInt32
+    public var name: String
+    public var size: UInt64
+    public init(fileId: UInt32, name: String, size: UInt64) { self.fileId = fileId; self.name = name; self.size = size }
+}
+
+/// Capability bits (PROTOCOL.md "Capabilities"). Bits 0-8 are v1; the tests check this one against them.
+public enum DeskCapability {
+    public static let appHost: UInt32 = 1 << 9
+}
+
+public enum FileName {
+    public static let maxBytes = 255
+    /// A bare file name: not empty, no `/`, `\`, control characters (NUL included), no leading dot, at most 255 UTF-8 bytes.
+    public static func isSafe(_ s: String) -> Bool {
+        let u = Array(s.utf8)
+        guard !u.isEmpty, u.count <= maxBytes, u[0] != 0x2E else { return false }
+        for b in u where b < 0x20 || b == 0x7F || b == 0x2F || b == 0x5C { return false }
+        return true
+    }
 }

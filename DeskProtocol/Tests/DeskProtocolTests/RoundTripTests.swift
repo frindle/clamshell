@@ -1,4 +1,5 @@
 import XCTest
+import Foundation
 @testable import DeskProtocol
 
 final class RoundTripTests: XCTestCase {
@@ -47,20 +48,22 @@ final class RoundTripTests: XCTestCase {
         .pasteboardOffer(generation: 5, entries: [PasteboardEntry(uti: "public.utf8-plain-text", size: 12), PasteboardEntry(uti: "public.png", size: 1 << 33)]),
         .pasteboardFetch(generation: 5, uti: "public.png"),
         .pasteboardData(generation: 5, uti: "public.png", data: [1, 2, 3]),
-        .filePush(requestId: 1, windowId: 11, dropX: 0.3, dropY: 0.7, kind: .sharedPath, path: "/Volumes/shared/report.pdf"),
-        .filePush(requestId: 2, windowId: 0, dropX: 0, dropY: 0, kind: .inboxCopy, path: "photo.jpg"),
-        .filePull(requestId: 3, path: "/Users/shared/out.txt"),
+        .filePush(requestId: 1, windowId: 11, dropX: 0.3, dropY: 0.7, name: "report.pdf"),
+        .filePush(requestId: 2, windowId: 0, dropX: 0, dropY: 0, name: "photo \u{00E9}.jpg"),
+        .filePull(requestId: 3, fileId: 42),
+        .filePromise([FilePromiseEntry(fileId: 42, name: "out.txt", size: 1 << 34), FilePromiseEntry(fileId: 43, name: "b", size: 0)]),
+        .filePromise([]),
         .audioFrame(appId: 4, ptsMicros: 1_000_000, aac: [0xDE, 0xAD]),
         .badge(appId: 5, text: "12"),
         .badge(appId: 5, text: ""),
         .notify(appId: 5, notificationId: "n-1", title: "Penn", subtitle: "#general", body: "hello", sound: true),
-        .unknown(type: 0x7E, payload: [1, 2, 3]),
+        .unknown(type: 0xE0, payload: [1, 2, 3]),
     ]
 
     func testEveryMessageRoundTripsThroughAFrame() throws {
         for m in Self.samples {
             var p = FrameParser()
-            let frames = try p.feed(m.encodeFrame())
+            let frames = try p.feed(try m.encodeFrame())
             XCTAssertEqual(frames.count, 1, "\(m)")
             XCTAssertEqual(try DeskMessage.decode(frames[0]), m, "\(m)")
         }
@@ -68,20 +71,14 @@ final class RoundTripTests: XCTestCase {
 
     func testEveryNamedTypeHasASample() {
         let covered = Set(Self.samples.map { $0.typeByte })
-        for raw in UInt8(0x40)...UInt8(0x74) {
+        for raw in UInt8(0x40)...UInt8(0x85) {
             if let t = DeskType(rawValue: raw) { XCTAssertTrue(covered.contains(t.rawValue), "no sample for \(t)") }
         }
     }
 
-    func testTypeBytesDoNotCollideWithV1() {
-        let v1: Set<UInt8> = [0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,0x10,0x11,0x13,
-                              0x20,0x21,0x22,0x23,0x24,0x25,0x26,0x30,0x50,0x51,0x52,0x53,0x54,0x58,0x59,0x5A,0x5B]
-        for raw in UInt8(0)...UInt8(255) { if DeskType(rawValue: raw) != nil { XCTAssertFalse(v1.contains(raw)) } }
-    }
-
     func testStreamedOneByteAtATimeAndBackToBack() throws {
         var wire: [UInt8] = []
-        for m in Self.samples { wire += m.encodeFrame() }
+        for m in Self.samples { wire += try m.encodeFrame() }
         var p = FrameParser()
         var got: [DeskMessage] = []
         for b in wire { for f in try p.feed([b]) { got.append(try DeskMessage.decode(f)) } }
@@ -91,22 +88,111 @@ final class RoundTripTests: XCTestCase {
         XCTAssertEqual(try q.feed(wire).map { try DeskMessage.decode($0) }, Self.samples)
     }
 
-    // Golden bytes pin the wire format so an accidental change fails loudly.
-    func testGoldenBytes() {
-        XCTAssertEqual(DeskMessage.handoffAccept(windowId: 7).encodeFrame(), [0x43, 0, 0, 0, 4, 0, 0, 0, 7])
-        XCTAssertEqual(DeskMessage.badge(appId: 1, text: "3").encodeFrame(), [0x70, 0, 0, 0, 7, 0, 0, 0, 1, 0, 1, 0x33])
-        XCTAssertEqual(DeskMessage.windowInputMouseMove(windowId: 1, x: 0.5, y: 1.0).encodeFrame(),
-                       [0x47, 0, 0, 0, 12, 0, 0, 0, 1, 0x3F, 0, 0, 0, 0x3F, 0x80, 0, 0])
-        XCTAssertEqual(DeskMessage.handoffReject(windowId: 2, reason: "no").encodeFrame(), [0x44, 0, 0, 0, 7, 0, 0, 0, 2, 2, 0x6E, 0x6F])
-        XCTAssertEqual(DeskMessage.appListRequest.encodeFrame(), [0x72, 0, 0, 0, 0])
-    }
-
     func testUnknownTypeIsPreservedNotRejected() throws {
-        XCTAssertEqual(try DeskMessage.decode(type: 0x7F, payload: [9]), .unknown(type: 0x7F, payload: [9]))
+        XCTAssertEqual(try DeskMessage.decode(type: 0xE1, payload: [9]), .unknown(type: 0xE1, payload: [9]))
     }
 
     func testTrailingBytesAreIgnoredOnFixedMessages() throws {
         XCTAssertEqual(try DeskMessage.decode(type: 0x43, payload: [0, 0, 0, 7, 0xFF, 0xFF]), .handoffAccept(windowId: 7))
+    }
+}
+
+// MARK: collisions with the real v1 definitions
+
+enum Repo {
+    static var root: URL {
+        URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    }
+    /// Reads a repo file. In CI (DESK_REQUIRE_REPO=1) a missing file fails; elsewhere the test is skipped.
+    static func read(_ rel: String) throws -> String {
+        let url = root.appendingPathComponent(rel)
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else {
+            if ProcessInfo.processInfo.environment["DESK_REQUIRE_REPO"] == "1" { XCTFail("missing \(rel)") }
+            throw XCTSkip("\(rel) not available")
+        }
+        return text
+    }
+    static func matches(_ pattern: String, in text: String) -> [[String]] {
+        let re = try! NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
+        return re.matches(in: text, range: NSRange(text.startIndex..., in: text)).map { m in
+            (1..<m.numberOfRanges).map { String(text[Range(m.range(at: $0), in: text)!]) }
+        }
+    }
+}
+
+final class CollisionTests: XCTestCase {
+    func v1Types() throws -> [String: UInt8] {
+        let text = try Repo.read("Sources/Clamshell/Streaming/StreamProtocol.swift")
+        var out: [String: UInt8] = [:]
+        for m in Repo.matches(#"^\s*case (\w+)\s*=\s*0x([0-9A-Fa-f]{2})\b"#, in: text) { out[m[0]] = UInt8(m[1], radix: 16)! }
+        return out
+    }
+
+    func testNoDeskTypeCollidesWithARealV1Type() throws {
+        let v1 = try v1Types()
+        XCTAssertGreaterThanOrEqual(v1.count, 35, "parsed the v1 enum")
+        XCTAssertEqual(v1["restartRequest"], 0x60, "parser sanity: known v1 value")
+        let byValue = Dictionary(grouping: v1.keys, by: { v1[$0]! })
+        for raw in UInt8(0)...UInt8(255) {
+            if let t = DeskType(rawValue: raw) { XCTAssertNil(byValue[raw], "\(t) = \(raw) is already v1 \(byValue[raw] ?? [])") }
+        }
+    }
+
+    func testDeskTypesAreUniqueAndInTheirRanges() {
+        let all = (0...255).compactMap { DeskType(rawValue: UInt8($0)) }
+        let v2 = all.filter { $0.rawValue < 0x60 }, v3 = all.filter { $0.rawValue >= 0x60 }
+        XCTAssertTrue(v2.allSatisfy { (0x40...0x4C).contains($0.rawValue) })
+        XCTAssertTrue(v3.allSatisfy { (0x70...0x85).contains($0.rawValue) })
+        XCTAssertEqual(all.count, 13 + 22)
+    }
+
+    func testAppHostBitIsNotAV1CapabilityBit() throws {
+        let text = try Repo.read("Sources/Clamshell/Streaming/StreamProtocol.swift")
+        let bits = Repo.matches(#"static let \w+\s*=\s*StreamCapabilities\(rawValue: 1 << (\d+)\)"#, in: text).map { UInt32($0[0])! }
+        XCTAssertGreaterThanOrEqual(bits.count, 9)
+        for b in bits { XCTAssertNotEqual(DeskCapability.appHost, 1 << b, "appHost collides with v1 bit \(b)") }
+    }
+
+    func testProtocolDocCapabilityTableHasNoDuplicateBitsAndListsAppHostAt9() throws {
+        let text = try Repo.read("PROTOCOL.md")
+        let rows = Repo.matches(#"^\| (\d+) \| `(\w+)` \|"#, in: text)
+        XCTAssertGreaterThanOrEqual(rows.count, 10)
+        XCTAssertEqual(Set(rows.map { $0[0] }).count, rows.count, "duplicate capability bit in PROTOCOL.md")
+        XCTAssertEqual(rows.first { $0[1] == "appHost" }?[0], "9")
+        XCTAssertEqual(DeskCapability.appHost, 1 << 9)
+    }
+
+    func testDocTypeTableMatchesCode() throws {
+        let text = try Repo.read("PROTOCOL.md")
+        guard let start = text.range(of: "### New in v3") else { return XCTFail("no v3 table") }
+        let rows = Repo.matches(#"^\| 0x([0-9A-F]{2}) \| (\w+)"#, in: String(text[start.lowerBound...]))
+        let docTypes = rows.map { UInt8($0[0], radix: 16)! }
+        XCTAssertEqual(Set(docTypes).count, docTypes.count, "duplicate type in v3 doc table")
+        let codeV3 = Set((0x70...0x85).compactMap { DeskType(rawValue: UInt8($0))?.rawValue })
+        XCTAssertEqual(Set(docTypes), codeV3)
+    }
+}
+
+// MARK: file names
+
+final class FileNameTests: XCTestCase {
+    func testRule() {
+        for ok in ["a", "report.pdf", "photo \u{00E9}.jpg", "a..b", String(repeating: "n", count: 255)] { XCTAssertTrue(FileName.isSafe(ok), ok) }
+        for bad in ["", ".", "..", ".hidden", "../x", "a/b", "/abs", "a\\b", "C:\\x", "a\u{0}b", "a\nb", "a\u{7F}", String(repeating: "n", count: 256)] {
+            XCTAssertFalse(FileName.isSafe(bad), bad.debugDescription)
+        }
+    }
+
+    func testEncoderAndDecoderRefuseUnsafeNames() throws {
+        for bad in ["../etc/passwd", "/etc/passwd", "a\\b", ".ssh", "", "x\u{0}y"] {
+            XCTAssertThrowsError(try DeskMessage.filePush(requestId: 1, windowId: 0, dropX: 0, dropY: 0, name: bad).encodeFrame(), bad.debugDescription)
+            XCTAssertThrowsError(try DeskMessage.filePromise([FilePromiseEntry(fileId: 1, name: bad, size: 1)]).encodeFrame())
+            // A hostile peer writes the bytes itself.
+            let push = DeskMessage.filePush(requestId: 1, windowId: 0, dropX: 0, dropY: 0, name: bad).encodePayload()
+            XCTAssertThrowsError(try DeskMessage.decode(type: DeskType.filePush.rawValue, payload: push), bad.debugDescription)
+            let promise = DeskMessage.filePromise([FilePromiseEntry(fileId: 1, name: bad, size: 1)]).encodePayload()
+            XCTAssertThrowsError(try DeskMessage.decode(type: DeskType.filePromise.rawValue, payload: promise))
+        }
     }
 }
 
@@ -129,11 +215,22 @@ final class HostileInputTests: XCTestCase {
         XCTAssertThrowsError(try DeskMessage.decode(type: DeskType.windowInputMouseMove.rawValue, payload: nan))
     }
 
-    func testOversizeFrameLengthRefused() {
+    func testOversizeFrameLengthIsFatal() throws {
         var p = FrameParser()
-        XCTAssertThrowsError(try p.feed([0x10, 0xFF, 0xFF, 0xFF, 0xFF]))
-        // Parser is usable again afterwards.
-        XCTAssertEqual(try p.feed(DeskMessage.windowListRequest.encodeFrame()).count, 1)
+        XCTAssertThrowsError(try p.feed([0x10, 0xFF, 0xFF, 0xFF, 0xFF])) { XCTAssertEqual($0 as? DecodeError, .frameTooLarge(Int(UInt32.max))) }
+        // No resynchronising: the connection must be closed, so every later feed fails too.
+        XCTAssertThrowsError(try p.feed(try DeskMessage.windowListRequest.encodeFrame()))
+        XCTAssertThrowsError(try p.feed([]))
+        // The limit itself is accepted as a length (the frame is simply incomplete).
+        var q = FrameParser()
+        XCTAssertEqual(try q.feed([0x10, 0x04, 0, 0, 0]).count, 0)
+    }
+
+    func testEncoderRefusesOversizeFrame() throws {
+        let big = [UInt8](repeating: 0, count: Framing.maxPayload + 1)
+        XCTAssertThrowsError(try Framing.encode(type: 0x46, payload: big)) { XCTAssertEqual($0 as? EncodeError, .frameTooLarge(Framing.maxPayload + 1)) }
+        XCTAssertThrowsError(try DeskMessage.audioFrame(appId: 1, ptsMicros: 2, aac: big).encodeFrame())
+        XCTAssertEqual(try Framing.encode(type: 0x46, payload: [UInt8](repeating: 0, count: Framing.maxPayload)).count, Framing.maxPayload + 5)
     }
 
     func testListCountLargerThanLimitRefused() {

@@ -2,9 +2,9 @@ name: DeskProtocol
 on:
   push:
     branches: [main]
-    paths: ['DeskProtocol/**', '.github/workflows/desk-protocol.yml']
+    paths: ['DeskProtocol/**', 'PROTOCOL.md', 'Sources/Clamshell/Streaming/StreamProtocol.swift', '.github/workflows/desk-protocol.yml']
   pull_request:
-    paths: ['DeskProtocol/**', '.github/workflows/desk-protocol.yml']
+    paths: ['DeskProtocol/**', 'PROTOCOL.md', 'Sources/Clamshell/Streaming/StreamProtocol.swift', '.github/workflows/desk-protocol.yml']
 
 jobs:
   # Pure logic, no Apple frameworks: runs on Linux, off the macOS runners.
@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test
         working-directory: DeskProtocol
+        env:
+          DESK_REQUIRE_REPO: '1'
         run: swift test
   # Same package on the Apple toolchain, so a stdlib difference cannot hide.
   macos:
@@ -25,4 +27,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Test
         working-directory: DeskProtocol
+        env:
+          DESK_REQUIRE_REPO: '1'
         run: swift test

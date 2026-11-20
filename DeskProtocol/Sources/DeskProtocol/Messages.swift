@@ -31,8 +31,9 @@ public enum DeskMessage: Equatable {
     case pasteboardOffer(generation: UInt32, entries: [PasteboardEntry])
     case pasteboardFetch(generation: UInt32, uti: String)
     case pasteboardData(generation: UInt32, uti: String, data: [UInt8])
-    case filePush(requestId: UInt32, windowId: UInt32, dropX: Float, dropY: Float, kind: FilePushKind, path: String)
-    case filePull(requestId: UInt32, path: String)
+    case filePush(requestId: UInt32, windowId: UInt32, dropX: Float, dropY: Float, name: String)
+    case filePull(requestId: UInt32, fileId: UInt32)
+    case filePromise([FilePromiseEntry])
     case audioFrame(appId: UInt32, ptsMicros: UInt64, aac: [UInt8])
     case badge(appId: UInt32, text: String)
     case notify(appId: UInt32, notificationId: String, title: String, subtitle: String, body: String, sound: Bool)
@@ -80,6 +81,7 @@ extension DeskMessage {
         case .pasteboardData: return DeskType.pasteboardData.rawValue
         case .filePush: return DeskType.filePush.rawValue
         case .filePull: return DeskType.filePull.rawValue
+        case .filePromise: return DeskType.filePromise.rawValue
         case .audioFrame: return DeskType.audioFrame.rawValue
         case .badge: return DeskType.badge.rawValue
         case .notify: return DeskType.notify.rawValue
@@ -139,9 +141,12 @@ extension DeskMessage {
             w.u32(gen); w.u8(UInt8(e.count)); for x in e { w.str16(x.uti); w.u64(x.size) }
         case .pasteboardFetch(let gen, let uti): w.u32(gen); w.str16(uti)
         case .pasteboardData(let gen, let uti, let data): w.u32(gen); w.str16(uti); w.raw(data)
-        case .filePush(let req, let win, let dx, let dy, let kind, let path):
-            w.u32(req); w.u32(win); w.f32(dx); w.f32(dy); w.u8(kind.rawValue); w.str16(path)
-        case .filePull(let req, let path): w.u32(req); w.str16(path)
+        case .filePush(let req, let win, let dx, let dy, let name):
+            w.u32(req); w.u32(win); w.f32(dx); w.f32(dy); w.str16(name)
+        case .filePull(let req, let id): w.u32(req); w.u32(id)
+        case .filePromise(let files):
+            let f = files.prefix(Limits.maxListEntries)
+            w.u16(UInt16(f.count)); for x in f { w.u32(x.fileId); w.str16(x.name); w.u64(x.size) }
         case .audioFrame(let app, let pts, let aac): w.u32(app); w.u64(pts); w.raw(aac)
         case .badge(let app, let text): w.u32(app); w.str16(text)
         case .notify(let app, let nid, let title, let sub, let body, let sound):
@@ -151,8 +156,16 @@ extension DeskMessage {
         return w.bytes
     }
 
-    /// Type byte, length and payload.
-    public func encodeFrame() -> [UInt8] { Framing.encode(type: typeByte, payload: encodePayload()) }
+    /// Type byte, length and payload. Throws for a frame over the size limit or a file name that breaks the rule.
+    public func encodeFrame() throws -> [UInt8] {
+        switch self {
+        case .filePush(_, _, _, _, let name) where !FileName.isSafe(name): throw EncodeError.unsafeFileName(name)
+        case .filePromise(let files):
+            for f in files.prefix(Limits.maxListEntries) where !FileName.isSafe(f.name) { throw EncodeError.unsafeFileName(f.name) }
+        default: break
+        }
+        return try Framing.encode(type: typeByte, payload: encodePayload())
+    }
 
     private static func writeMenu(_ items: [MenuItem], depth: Int, budget: inout Int, into w: inout ByteWriter) {
         // Encoder side of the limits: drop what would not decode, so we never emit an unreadable tree.
@@ -238,10 +251,19 @@ extension DeskMessage {
         case .pasteboardFetch: return .pasteboardFetch(generation: try r.u32(), uti: try r.str16())
         case .pasteboardData: return .pasteboardData(generation: try r.u32(), uti: try r.str16(), data: r.rest())
         case .filePush:
-            let req = try r.u32(), win = try r.u32(), dx = try r.f32(), dy = try r.f32(), raw = try r.u8()
-            guard let kind = FilePushKind(rawValue: raw) else { throw DecodeError.badValue("file push kind \(raw)") }
-            return .filePush(requestId: req, windowId: win, dropX: dx, dropY: dy, kind: kind, path: try r.str16())
-        case .filePull: return .filePull(requestId: try r.u32(), path: try r.str16())
+            let req = try r.u32(), win = try r.u32(), dx = try r.f32(), dy = try r.f32(), name = try r.str16()
+            guard FileName.isSafe(name) else { throw DecodeError.badValue("unsafe file name") }
+            return .filePush(requestId: req, windowId: win, dropX: dx, dropY: dy, name: name)
+        case .filePull: return .filePull(requestId: try r.u32(), fileId: try r.u32())
+        case .filePromise:
+            let n = Int(try r.u16()); guard n <= Limits.maxListEntries else { throw DecodeError.tooManyItems }
+            var out: [FilePromiseEntry] = []
+            for _ in 0..<n {
+                let id = try r.u32(), name = try r.str16(), size = try r.u64()
+                guard FileName.isSafe(name) else { throw DecodeError.badValue("unsafe file name") }
+                out.append(FilePromiseEntry(fileId: id, name: name, size: size))
+            }
+            return .filePromise(out)
         case .audioFrame: return .audioFrame(appId: try r.u32(), ptsMicros: try r.u64(), aac: r.rest())
         case .badge: return .badge(appId: try r.u32(), text: try r.str16())
         case .notify:

@@ -8,6 +8,12 @@ public enum DecodeError: Error, Equatable {
     case frameTooLarge(Int)
 }
 
+/// Errors raised while building a frame.
+public enum EncodeError: Error, Equatable {
+    case frameTooLarge(Int)
+    case unsafeFileName(String)
+}
+
 /// Big-endian writer, matching v1 ("BE" in PROTOCOL.md).
 public struct ByteWriter {
     public private(set) var bytes: [UInt8] = []

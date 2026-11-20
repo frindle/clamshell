@@ -88,7 +88,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x5C | LOGIN_CREDENTIALS | client → host | UTF-8 JSON — a saved login for the login window; see "Login window". Only to a host that advertises `loginCredentials` |
 
 Reserved, not specified yet: 0x55–0x57 (further peripheral messages).
-0x40–0x4C (Window Handoff v2, adopted by v3) and 0x60–0x74 (v3, app-host) are
+0x40–0x4C (Window Handoff v2, adopted by v3) and 0x70–0x85 (v3, app-host) are
 specified in "Window Handoff v3" at the end of this file.
 
 Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
@@ -770,9 +770,9 @@ that sent no challenge has every bit 0.
 | 4 | `deviceApproval` | host: trusted devices may approve others. Client: can show the approval prompt |
 | 5 | `fileTransfer` | both: can send and receive files — see "File transfer" |
 | 6 | `peripherals` | host: accepts peripherals attached to the client. Client: can send them — see "Peripherals attached to the client" |
-| 7 | `appHost` | both: speaks Window Handoff v3 (app-host) on the control connection — see "Window Handoff v3" |
 | 7 | `restart` | host: accepts RESTART_REQUEST. Client: can send one |
 | 8 | `loginCredentials` | host: this host is the login-window agent and types a saved login for a client. Client: can send one — see "Login window" |
+| 9 | `appHost` | both: speaks Window Handoff v3 (app-host) on the control connection — see "Window Handoff v3" |
 
 Unassigned bits are sent as 0 and ignored on receipt.
 
@@ -1484,7 +1484,7 @@ pin the layouts below.
 the same device authentication and `SECURE` envelope as v1 (so the open v2
 question about control-connection auth is answered: it is authenticated and
 encrypted exactly like a stream connection). A side sends v3 messages only
-after the other set the `appHost` capability bit (bit 7). Video, audio and
+after the other set the `appHost` capability bit (bit 9). Video, audio and
 input for a window ride the same connection, tagged by window id. Every Mac
 runs both roles (host service and viewer), so either side may send any
 message whose direction below says "both".
@@ -1527,30 +1527,33 @@ byte: 0x47 is the move, 0x4A–0x4C the other three.
 
 | Type | Name | Direction | Payload |
 |------|------|-----------|---------|
-| 0x60 | APP_LAUNCH | operator → host | requestId(4), bundleId(str16), activate(1), count(2), then per target: str16 (a URL or a path on shared storage) |
-| 0x74 | APP_LAUNCH_RESULT | host → operator | requestId(4), status(1: 0 started or already running, 1 not installed, 2 refused, 3 failed), appId(4) |
-| 0x72 | APP_LIST_REQUEST | both | empty |
-| 0x61 | APP_LIST | both | count(2), then per app: appId(4), bundleId(str16), name(str16), pid(4, signed, −1 if not running), windowCount(2), residentMB(4), running(1). Sent on request and whenever the set changes |
-| 0x62 | WINDOW_ADDED | host → operator | windowId(4), appId(4), kind(1: 0 main, 1 sheet, 2 popover, 3 menu, 4 tooltip, 255 other; unknown values read as other), parentId(4, 0 none), title(str16), x, y, width, height, scale (F32 ×5) |
-| 0x63 | WINDOW_MOVED | host → operator | windowId(4), x(F32), y(F32) |
-| 0x64 | WINDOW_RESIZED | host → operator | windowId(4), width(F32), height(F32), scale(F32) |
-| 0x65 | WINDOW_TITLE | host → operator | windowId(4), title(str16) |
-| 0x66 | WINDOW_RESIZE_REQUEST | operator → host | windowId(4), width(F32), height(F32) |
-| 0x67 | CHILD_WINDOW | host → operator | windowId(4), parentId(4), offsetX(F32), offsetY(F32), kind(1) — a sheet, popover, menu or tooltip, positioned relative to its parent |
-| 0x68 | MENU_TREE | host → operator | appId(4), generation(4), then a list: count(2), per item: itemId(4), title(str16), flags(1: bit 0 enabled, bit 1 checked, bit 2 separator), keyCode(2, 0xFFFF none), modifiers(4, low CGEventFlags), then the item's child list in the same form |
-| 0x69 | MENU_INVOKE | operator → host | appId(4), generation(4), itemId(4). The host ignores it if its generation is older than the menu it last sent |
-| 0x6A | CURSOR_SHAPE | host → operator | windowId(4), shape(1: 0 arrow, 1 I-beam, 2 pointing hand, 3 crosshair, 4 resize left-right, 5 resize up-down, 6 open hand, 7 closed hand, 8 not allowed, 255 custom); for custom only: hotspotX(2), hotspotY(2), PNG bytes (at most 64 KB) |
-| 0x6B | PASTEBOARD_OFFER | both | generation(4), count(1), per entry: uti(str16), size(8). The pasteboard changed; nothing is copied yet |
-| 0x6C | PASTEBOARD_FETCH | both | generation(4), uti(str16) — the receiving side pastes and asks for the bytes |
-| 0x73 | PASTEBOARD_DATA | both | generation(4), uti(str16), bytes (the answer to a fetch) |
-| 0x6D | FILE_PUSH | operator → host | requestId(4), windowId(4, drop target or 0), dropX(F32), dropY(F32), kind(1: 0 shared path, 1 inbox copy), path(str16). Kind 0: the path is on shared storage and is used as is. Kind 1: the path is the file's name in the host inbox; its bytes follow as v1 FILE_OFFER / FILE_DATA / FILE_END |
-| 0x6E | FILE_PULL | operator → host | requestId(4), path(str16) — fulfil a file promise; the host answers with a v1 FILE_OFFER |
-| 0x6F | AUDIO_FRAME (per app) | host → operator | appId(4), ptsMicros(8), one AAC-LC access unit as v1 AUDIO_FRAME |
-| 0x70 | BADGE | host → operator | appId(4), text(str16); empty text clears the badge |
-| 0x71 | NOTIFY | host → operator | appId(4), notificationId(str16), title(str16), subtitle(str16), body(str16), sound(1) |
+| 0x70 | APP_LAUNCH | operator → host | requestId(4), bundleId(str16), activate(1), count(2), then per target: str16 (a URL or a path on shared storage) |
+| 0x84 | APP_LAUNCH_RESULT | host → operator | requestId(4), status(1: 0 started or already running, 1 not installed, 2 refused, 3 failed), appId(4) |
+| 0x82 | APP_LIST_REQUEST | both | empty |
+| 0x71 | APP_LIST | both | count(2), then per app: appId(4), bundleId(str16), name(str16), pid(4, signed, −1 if not running), windowCount(2), residentMB(4), running(1). Sent on request and whenever the set changes |
+| 0x72 | WINDOW_ADDED | host → operator | windowId(4), appId(4), kind(1: 0 main, 1 sheet, 2 popover, 3 menu, 4 tooltip, 255 other; unknown values read as other), parentId(4, 0 none), title(str16), x, y, width, height, scale (F32 ×5) |
+| 0x73 | WINDOW_MOVED | host → operator | windowId(4), x(F32), y(F32) |
+| 0x74 | WINDOW_RESIZED | host → operator | windowId(4), width(F32), height(F32), scale(F32) |
+| 0x75 | WINDOW_TITLE | host → operator | windowId(4), title(str16) |
+| 0x76 | WINDOW_RESIZE_REQUEST | operator → host | windowId(4), width(F32), height(F32) |
+| 0x77 | CHILD_WINDOW | host → operator | windowId(4), parentId(4), offsetX(F32), offsetY(F32), kind(1) — a sheet, popover, menu or tooltip, positioned relative to its parent |
+| 0x78 | MENU_TREE | host → operator | appId(4), generation(4), then a list: count(2), per item: itemId(4), title(str16), flags(1: bit 0 enabled, bit 1 checked, bit 2 separator), keyCode(2, 0xFFFF none), modifiers(4, low CGEventFlags), then the item's child list in the same form |
+| 0x79 | MENU_INVOKE | operator → host | appId(4), generation(4), itemId(4). The host ignores it if its generation is older than the menu it last sent |
+| 0x7A | CURSOR_SHAPE | host → operator | windowId(4), shape(1: 0 arrow, 1 I-beam, 2 pointing hand, 3 crosshair, 4 resize left-right, 5 resize up-down, 6 open hand, 7 closed hand, 8 not allowed, 255 custom); for custom only: hotspotX(2), hotspotY(2), PNG bytes (at most 64 KB) |
+| 0x7B | PASTEBOARD_OFFER | both | generation(4), count(1), per entry: uti(str16), size(8). The pasteboard changed; nothing is copied yet |
+| 0x7C | PASTEBOARD_FETCH | both | generation(4), uti(str16) — the receiving side pastes and asks for the bytes |
+| 0x83 | PASTEBOARD_DATA | both | generation(4), uti(str16), bytes (the answer to a fetch) |
+| 0x7D | FILE_PUSH | operator → host | requestId(4), windowId(4, drop target or 0), dropX(F32), dropY(F32), name(str16). `name` is the file's name in the host inbox, a bare file name and never a path: it is not empty, at most 255 bytes, has no `/`, `\` or control characters (so no NUL), and does not start with `.`. A receiver drops a message that breaks the rule. The bytes follow as v1 FILE_OFFER / FILE_DATA / FILE_END |
+| 0x7E | FILE_PULL | operator → host | requestId(4), fileId(4) — fetch a file the host promised in FILE_PROMISE; the host answers with a v1 FILE_OFFER. The host looks the id up in its own table and ignores an id it did not issue; no path ever crosses the wire in this direction |
+| 0x85 | FILE_PROMISE | host → operator | count(2), then per file: fileId(4), name(str16, same rule as FILE_PUSH), size(8). The host issues a fresh opaque fileId for each file it offers and keeps the real location to itself |
+| 0x7F | AUDIO_FRAME (per app) | host → operator | appId(4), ptsMicros(8), one AAC-LC access unit as v1 AUDIO_FRAME |
+| 0x80 | BADGE | host → operator | appId(4), text(str16); empty text clears the badge |
+| 0x81 | NOTIFY | host → operator | appId(4), notificationId(str16), title(str16), subtitle(str16), body(str16), sound(1) |
 
 Rules:
 
+- A frame whose length field is over 64 MiB is a protocol error: the receiver closes the connection and does not try to resynchronise. A sender never builds such a frame.
+- A type byte is never reused across versions. The v3 types sit in 0x70–0x85 because 0x60 and 0x61 are already RESTART_REQUEST and RESTART_RESULT in v1. The test suite compares them against the real v1 enum in `StreamProtocol.swift`.
 - A window's lifecycle is WINDOW_ADDED, any number of MOVED / RESIZED / TITLE,
   then WINDOW_CLOSED. A CHILD_WINDOW follows the WINDOW_ADDED of the same id.
 - The operator draws a window only between those messages. A resize request is
