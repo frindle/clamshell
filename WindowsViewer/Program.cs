@@ -162,7 +162,8 @@ internal static class Program
         {
             frameCount++;
             if (w <= 0 || h <= 0 || bgra.Length < w * h * 4) return;
-            if (frameCount < 3) return; // let a couple of frames warm up past the first keyframe
+            // Any frame counts once its pixels are real. The host only sends a new
+            // frame when the screen changes, so a still screen may give one or two.
             if (!IsDegenerate(bgra))
             {
                 Log.Line($"verify: decoded real frame #{frameCount}, {w}x{h}, non-uniform pixel content");
