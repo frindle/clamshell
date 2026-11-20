@@ -1,0 +1,28 @@
+name: DeskProtocol
+on:
+  push:
+    branches: [main]
+    paths: ['DeskProtocol/**', '.github/workflows/desk-protocol.yml']
+  pull_request:
+    paths: ['DeskProtocol/**', '.github/workflows/desk-protocol.yml']
+
+jobs:
+  # Pure logic, no Apple frameworks: runs on Linux, off the macOS runners.
+  linux:
+    name: DeskProtocol (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        working-directory: DeskProtocol
+        run: swift test
+  # Same package on the Apple toolchain, so a stdlib difference cannot hide.
+  macos:
+    name: DeskProtocol (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        working-directory: DeskProtocol
+        run: swift test
