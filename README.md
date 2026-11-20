@@ -583,6 +583,16 @@ form.
   changes (a flat wallpaper no longer looks like success), records the
   permissions it holds, and prints one summary line per run. The binary also
   carries the `__CGPreLoginApp` section WindowServer needs before login.
+- **Updates can no longer strand the Mac, and everything is fixable over SSH.**
+  `clamshell status` shows the version, process, which ports answer and the
+  last update's result; `clamshell update [--version X]` runs the same verified
+  update without the menu; `clamshell rollback` swaps the kept previous version
+  back. An update now keeps the old app in
+  `~/Library/Application Support/Clamshell/previous/`, and a watcher started
+  from it rolls back automatically if the new build is not serving (web port
+  5901 answering and a stream port bound) within 90 seconds.
+- **Start at Login is a launch agent that restarts the app after a crash**
+  (not after a quit). Anyone who had it on is moved over once.
 
 ### 0.9.25 — 2026-11-13
 - **Quieter on the Mac: fewer background processes, fewer keyframes, cheaper logging.**

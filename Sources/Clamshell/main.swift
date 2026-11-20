@@ -9,6 +9,12 @@ import AppKit
 //   clamshell devices                 this Mac's fingerprint and every known device
 //   clamshell approve <fingerprint>   also: deny, revoke, forget
 
+// Update, rollback and status, usable over SSH (see SafeUpdateOps):
+//   clamshell status | update [--version X] | rollback
+if CommandLine.arguments.count > 1, SafeUpdate.commandNames.contains(CommandLine.arguments[1]) {
+    exit(SafeUpdateOps.run(Array(CommandLine.arguments.dropFirst())))
+}
+
 // These touch only the state directory, so they run before anything that
 // wants a window server and work in a session that has none.
 if CommandLine.arguments.count > 1, DeviceCommands.names.contains(CommandLine.arguments[1]) {
@@ -259,7 +265,7 @@ if args.count > 1 {
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
               "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | " +
-              "devices | approve | deny | revoke | forget]")
+              "devices | approve | deny | revoke | forget | status | update | rollback]")
         exit(64)
     }
 }
