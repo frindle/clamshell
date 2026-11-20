@@ -44,14 +44,15 @@ jobs:
             {"bundleId": "org.example.local", "name": "Local App", "mode": "local"}
           ]
           JSON
-          .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk" --mac this-mac --desk /usr/local/bin/desk "$RUNNER_TEMP/apps.json"
+          mkdir -p "$RUNNER_TEMP/bin" && printf '%s\n' '#!/bin/sh' 'exit 0' > "$RUNNER_TEMP/bin/desk" && chmod 755 "$RUNNER_TEMP/bin/desk"
+          .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk" --mac this-mac --desk "$RUNNER_TEMP/bin/desk" "$RUNNER_TEMP/apps.json"
           ls "$RUNNER_TEMP/Desk"
           test -d "$RUNNER_TEMP/Desk/Heavy App.app"
           test -d "$RUNNER_TEMP/Desk/Homed App.app"
           test ! -e "$RUNNER_TEMP/Desk/Here App.app"
           test ! -e "$RUNNER_TEMP/Desk/Local App.app"
           # A second run changes nothing.
-          .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk" --mac this-mac --desk /usr/local/bin/desk --dry-run "$RUNNER_TEMP/apps.json" | tee "$RUNNER_TEMP/second.txt"
+          .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk" --mac this-mac --desk "$RUNNER_TEMP/bin/desk" --dry-run "$RUNNER_TEMP/apps.json" | tee "$RUNNER_TEMP/second.txt"
           test ! -s "$RUNNER_TEMP/second.txt"
       - name: Lint plists, sign, verify
         run: |
