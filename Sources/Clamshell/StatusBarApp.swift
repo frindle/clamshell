@@ -71,6 +71,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // be a few hundred MB of files).
         DispatchQueue.global(qos: .utility).async { UpdateInstaller.removeOldCopies() }
 
+        // Start-at-login used to be a login item; it is a KeepAlive launch
+        // agent now. Move anyone who had it on, once.
+        if Bundle.main.bundleIdentifier != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { LaunchAgentSetup.migrateFromLoginItem() }
+        }
+
         // Request notification authorization for collapse failure alerts
         UNUserNotificationCenter.current().requestAuthorization(
             options: [.alert, .sound]
@@ -559,7 +565,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // when running the bare SwiftPM binary during development.
         if Bundle.main.bundleIdentifier != nil {
             let login = NSMenuItem(title: "Start at Login", action: #selector(toggleLogin), keyEquivalent: "")
-            login.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            login.state = LaunchAgentSetup.isEnabled ? .on : .off
             login.target = self
             systemMenu.addItem(login)
 
@@ -889,14 +895,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleLogin() {
-        do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
-            } else {
-                try SMAppService.mainApp.register()
-            }
-        } catch {
-            clog("start-at-login toggle failed: \(error)")
+        if LaunchAgentSetup.isEnabled {
+            LaunchAgentSetup.disable()
+        } else if LaunchAgentSetup.enable() != nil {
+            // The agent starts its own copy; hand this instance over to it.
+            LaunchAgentSetup.handOff()
+        } else {
+            clog("start-at-login: could not install the launch agent")
         }
         rebuildMenu()
     }

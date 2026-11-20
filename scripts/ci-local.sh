@@ -74,7 +74,7 @@ step_loginwindow_scripts() {
 
 step_plists() {
   # plutil is a Mac tool; plistlib parses the same XML and binary files.
-  python3 - scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist <<'PY'
+  python3 - scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist scripts/launchagent/*.plist <<'PY'
 import plistlib, sys
 bad = 0
 files = [f for f in sys.argv[1:] if not f.endswith("*.plist")]
