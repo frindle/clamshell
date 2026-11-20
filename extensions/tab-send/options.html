@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Desk Tab Send</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; margin: 12px; min-width: 280px; }
+    label { display: block; margin: 8px 0 2px; }
+    input { width: 100%; box-sizing: border-box; padding: 4px; }
+    p { color: #666; }
+  </style>
+</head>
+<body>
+  <label for="port">Placer port (on this Mac)</label>
+  <input id="port" type="number" min="1024" max="65535">
+  <label for="token">Token</label>
+  <input id="token" type="password" autocomplete="off">
+  <label for="targetName">Name of the other Mac, shown in the menu</label>
+  <input id="targetName" type="text" maxlength="40">
+  <p id="saved"></p>
+  <script src="src/core.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

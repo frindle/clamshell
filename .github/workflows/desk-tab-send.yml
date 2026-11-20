@@ -1,0 +1,17 @@
+name: Tab send extension
+on:
+  push:
+    branches: [main]
+    paths: ['extensions/tab-send/**', '.github/workflows/desk-tab-send.yml']
+  pull_request:
+    paths: ['extensions/tab-send/**', '.github/workflows/desk-tab-send.yml']
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - name: Test
+        working-directory: extensions/tab-send
+        run: npm test
