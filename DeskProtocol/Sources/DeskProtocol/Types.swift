@@ -127,11 +127,38 @@ public enum DeskCapability {
 
 public enum FileName {
     public static let maxBytes = 255
-    /// A bare file name: not empty, no `/`, `\`, control characters (NUL included), no leading dot, at most 255 UTF-8 bytes.
+
+    /// Characters that never belong in a received name: invisible, bidirectional and line-separator characters, and
+    /// look-alikes for dot and slash. The same set the v1 receiver strips ("File transfer" receiver rules).
+    static func isForbiddenScalar(_ v: UInt32) -> Bool {
+        if v < 0x20 || v == 0x7F || (v >= 0x80 && v <= 0x9F) { return true }          // C0, DEL, C1 controls
+        switch v {
+        case 0x00AD, 0x061C, 0x180E, 0x3164, 0xFEFF: return true                        // soft hyphen, Arabic mark, fillers, BOM
+        case 0x200B...0x200F, 0x2028...0x202E, 0x2060...0x206F, 0xFFF9...0xFFFB: return true // zero-width, bidi, separators, invisible operators
+        case 0xFF0E, 0xFF61, 0x3002, 0x2215, 0x2044, 0xFF0F, 0x29F8, 0xFE52, 0x2024, 0x2CFA: return true // look-alike dots and slashes
+        default: return false
+        }
+    }
+
+    /// A bare file name that is safe to hand to any receiver as is: not empty, at most 255 UTF-8 bytes; no `/`, `\`,
+    /// `:` or Windows-reserved `< > " | ? *`; no control, invisible, bidirectional or look-alike characters; does not
+    /// start with a dot or blank, does not end with a dot or blank; not a Windows device name.
     public static func isSafe(_ s: String) -> Bool {
         let u = Array(s.utf8)
-        guard !u.isEmpty, u.count <= maxBytes, u[0] != 0x2E else { return false }
-        for b in u where b < 0x20 || b == 0x7F || b == 0x2F || b == 0x5C { return false }
+        guard !u.isEmpty, u.count <= maxBytes else { return false }
+        for v in s.unicodeScalars {
+            if isForbiddenScalar(v.value) { return false }
+            switch v {
+            case "/", "\\", ":", "<", ">", "\"", "|", "?", "*": return false
+            default: break
+            }
+        }
+        guard let first = s.unicodeScalars.first, let last = s.unicodeScalars.last else { return false }
+        if first == "." || first == " " || last == "." || last == " " { return false }
+        let stem = String(s.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).first ?? "").uppercased()
+        let devices: Set<String> = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
+        if devices.contains(stem) { return false }
+        if stem.count == 4, stem.hasPrefix("COM") || stem.hasPrefix("LPT"), let d = stem.last, d >= "1" && d <= "9" { return false }
         return true
     }
 }

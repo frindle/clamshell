@@ -46,7 +46,7 @@ final class GoldenTests: XCTestCase {
         (.badge(appId: 1, text: "3"), "80 00000007 00000001 0001 33"),
         (.notify(appId: 1, notificationId: "n", title: "t", subtitle: "s", body: "b", sound: true), "81 00000011 00000001 0001 6E 0001 74 0001 73 0001 62 01"),
         (.appListRequest, "82 00000000"),
-        (.pasteboardData(generation: 1, uti: "u", data: [7, 8]), "83 00000009 00000001 0001 75 07 08"),
+        (.pasteboardData(generation: 1, uti: "u", offset: 0, total: 2, data: [7, 8]), "83 00000019 00000001 0001 75 0000000000000000 0000000000000002 07 08"),
         (.appLaunchResult(requestId: 1, status: 2, appId: 3), "84 00000009 00000001 02 00000003"),
         (.filePromise([FilePromiseEntry(fileId: 1, name: "f", size: 2)]), "85 00000011 0001 00000001 0001 66 0000000000000002"),
         (.unknown(type: 0xE0, payload: [1, 2]), "E0 00000002 0102"),

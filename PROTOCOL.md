@@ -1491,13 +1491,16 @@ message whose direction below says "both".
 
 **Conventions.** Integers and Float32 are big-endian. `str8` is a 1-byte length
 then UTF-8 (v2 messages); `str16` is a 2-byte length then UTF-8 (v3 messages).
-Over-long strings are cut on a character boundary by the encoder. Decoders
-reject non-finite floats, never read past the payload, and cap list sizes
-(4096 entries), menu depth (16) and menu nodes (4096). Bytes after the last
+An encoder refuses an over-long string, a list over its limit and a cursor image
+over 64 KB; it never cuts. Decoders reject non-finite floats and values outside
+the ranges below, never read past the payload, and cap list sizes (4096
+entries), menu depth (16) and menu nodes (4096). Bytes after the last
 defined field of a fixed-layout message are ignored (room for later fields).
 A type byte a side does not know is skipped, never fatal. `appId` is assigned by
 the host and is stable for the life of the connection; `windowId` is the host's
-window number and is not reused while the connection lasts. Coordinates in
+window number, never 0, and is not reused while the connection lasts: a
+WINDOW_ADDED for an id that was added before, even if it has closed, is a
+protocol error. Coordinates in
 v3 geometry messages are points on the host's hosted display with the backing
 `scale` alongside; input coordinates are normalized 0..1 in the window's own
 bounds, as in v2.
@@ -1542,8 +1545,8 @@ byte: 0x47 is the move, 0x4A–0x4C the other three.
 | 0x7A | CURSOR_SHAPE | host → operator | windowId(4), shape(1: 0 arrow, 1 I-beam, 2 pointing hand, 3 crosshair, 4 resize left-right, 5 resize up-down, 6 open hand, 7 closed hand, 8 not allowed, 255 custom); for custom only: hotspotX(2), hotspotY(2), PNG bytes (at most 64 KB) |
 | 0x7B | PASTEBOARD_OFFER | both | generation(4), count(1), per entry: uti(str16), size(8). The pasteboard changed; nothing is copied yet |
 | 0x7C | PASTEBOARD_FETCH | both | generation(4), uti(str16) — the receiving side pastes and asks for the bytes |
-| 0x83 | PASTEBOARD_DATA | both | generation(4), uti(str16), bytes (the answer to a fetch) |
-| 0x7D | FILE_PUSH | operator → host | requestId(4), windowId(4, drop target or 0), dropX(F32), dropY(F32), name(str16). `name` is the file's name in the host inbox, a bare file name and never a path: it is not empty, at most 255 bytes, has no `/`, `\` or control characters (so no NUL), and does not start with `.`. A receiver drops a message that breaks the rule. The bytes follow as v1 FILE_OFFER / FILE_DATA / FILE_END |
+| 0x83 | PASTEBOARD_DATA | both | generation(4), uti(str16), offset(8), total(8), bytes. One chunk of the answer to a fetch: bytes `offset ..< offset+n` of an item of `total` bytes, n at most 65,536. The sender sends the chunks in order, with other traffic allowed between them. An empty item is one chunk with total 0 |
+| 0x7D | FILE_PUSH | operator → host | requestId(4), windowId(4, drop target or 0), dropX(F32), dropY(F32), name(str16). `name` is the file's name in the host inbox, a bare file name and never a path. It is not empty, at most 255 bytes, has no `/`, `\`, `:`, `< > " | ? *`, no control character (C0, DEL or C1, so no NUL), no invisible, bidirectional or line-separator character (U+00AD, U+200B–U+200F, U+2028–U+202E, U+2060–U+206F, U+FEFF, U+3164 and similar), no look-alike dot or slash (U+FF0E, U+3002, U+2215 and similar), does not start with `.` or a blank, does not end with `.` or a blank, and is not a Windows device name (`CON`, `NUL`, `COM1`…). A receiver drops a message that breaks the rule. The bytes follow as v1 FILE_OFFER / FILE_DATA / FILE_END; that offer's `name` must equal this `name` byte for byte (the receiver uses the FILE_PUSH name and answers any other offer with status 1), so the v1 receiver sanitising has nothing to change |
 | 0x7E | FILE_PULL | operator → host | requestId(4), fileId(4) — fetch a file the host promised in FILE_PROMISE; the host answers with a v1 FILE_OFFER. The host looks the id up in its own table and ignores an id it did not issue; no path ever crosses the wire in this direction |
 | 0x85 | FILE_PROMISE | host → operator | count(2), then per file: fileId(4), name(str16, same rule as FILE_PUSH), size(8). The host issues a fresh opaque fileId for each file it offers and keeps the real location to itself |
 | 0x7F | AUDIO_FRAME (per app) | host → operator | appId(4), ptsMicros(8), one AAC-LC access unit as v1 AUDIO_FRAME |
@@ -1552,7 +1555,10 @@ byte: 0x47 is the move, 0x4A–0x4C the other three.
 
 Rules:
 
-- A frame whose length field is over 64 MiB is a protocol error: the receiver closes the connection and does not try to resynchronise. A sender never builds such a frame.
+- A frame whose length field is over 4,000,000 bytes is a protocol error: the receiver closes the connection and does not try to resynchronise. A sender never builds such a frame. The limit sits under the 4,194,304-byte cap on a SECURE payload ("The host reads SECURE payloads of at most 4 MB"), so no v3 frame can close the session by size. Anything bigger is split: clipboard data into PASTEBOARD_DATA chunks, files into the v1 64 KB FILE_DATA pieces. A video frame that would not fit is dropped by the sender and the next keyframe replaces it.
+- Value ranges. Mouse and button coordinates are 0..1 (the sender clamps). Positions, offsets, drop points and scroll deltas are within ±1,000,000. Width and height in points are 0..100,000; in pixels 0..65,536. Scale is 0.1..16. Anything else is a decode error and an encoder refuses to send it.
+- Window ids. Both sides track the ids announced on the connection. The host ignores input, WINDOW_STREAM_START, resize requests and handoff messages for an id it has not announced (a WINDOW_ADDED, or a WINDOW_LIST_RESPONSE it sent) or that has closed, and the viewer ignores geometry, title and child messages for an id it was never told about. `WindowRegistry` in the package implements the check.
+- When a message of a known type fails to decode (short payload, bad value, out-of-range number, unsafe name), the receiver closes the connection: it cannot tell which earlier state the peer thinks is true, and the framing check cannot catch it. An unknown type byte is still skipped. The receiver logs the type and the reason, never the payload.
 - A type byte is never reused across versions. The v3 types sit in 0x70–0x85 because 0x60 and 0x61 are already RESTART_REQUEST and RESTART_RESULT in v1. The test suite compares them against the real v1 enum in `StreamProtocol.swift`.
 - A window's lifecycle is WINDOW_ADDED, any number of MOVED / RESIZED / TITLE,
   then WINDOW_CLOSED. A CHILD_WINDOW follows the WINDOW_ADDED of the same id.
@@ -1562,6 +1568,7 @@ Rules:
   new MENU_TREE. The operator sends only the newest generation's item ids back.
 - Pasteboard and file messages never carry more than one in-flight request id
   per kind that the other side has not answered; a side may refuse by ignoring.
+- A receiver accepts PASTEBOARD_DATA only for a fetch it sent: the generation and uti match, `total` equals the offered size, and each chunk's `offset` is the number of bytes already received. Any other chunk closes the item (and the connection if it repeats). An item over 256 MiB is refused at the offer.
 
 ### What is not yet decided
 

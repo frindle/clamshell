@@ -30,7 +30,8 @@ public enum DeskMessage: Equatable {
     case cursorShape(windowId: UInt32, shape: CursorShape, hotspotX: UInt16, hotspotY: UInt16, png: [UInt8])
     case pasteboardOffer(generation: UInt32, entries: [PasteboardEntry])
     case pasteboardFetch(generation: UInt32, uti: String)
-    case pasteboardData(generation: UInt32, uti: String, data: [UInt8])
+    /// One chunk of a clipboard item: `data` is bytes `offset..<offset+data.count` of `total`. See PasteboardChunker.
+    case pasteboardData(generation: UInt32, uti: String, offset: UInt64, total: UInt64, data: [UInt8])
     case filePush(requestId: UInt32, windowId: UInt32, dropX: Float, dropY: Float, name: String)
     case filePull(requestId: UInt32, fileId: UInt32)
     case filePromise([FilePromiseEntry])
@@ -45,6 +46,17 @@ public enum Limits {
     public static let maxMenuNodes = 4096
     public static let maxMenuDepth = 16
     public static let maxCursorPNG = 64 * 1024
+    /// Clipboard data travels in chunks of at most this many bytes, so no other traffic waits behind one frame.
+    public static let maxPasteboardChunk = 64 * 1024
+    /// Largest clipboard item a receiver accepts.
+    public static let maxPasteboardBytes: UInt64 = 256 * 1024 * 1024
+    /// Point coordinates, offsets and scroll deltas lie within this magnitude; sizes in points within 0...maxPointSize.
+    public static let maxPointMagnitude: Float = 1_000_000
+    public static let maxPointSize: Float = 100_000
+    /// Backing scale factor.
+    public static let scaleRange: ClosedRange<Float> = 0.1...16
+    /// Width or height in pixels.
+    public static let maxPixels: UInt32 = 65_536
 }
 
 extension DeskMessage {
@@ -90,67 +102,77 @@ extension DeskMessage {
     }
 
     /// The payload bytes only (no framing).
-    public func encodePayload() -> [UInt8] {
+    public func encodePayload() throws -> [UInt8] {
+        try validate()
+        return try encodePayloadRaw()
+    }
+
+    /// Layout only, no range check. Internal so tests can build what a hostile peer would send.
+    func encodePayloadRaw() throws -> [UInt8] {
         var w = ByteWriter()
         switch self {
         case .windowListRequest, .appListRequest: break
         case .windowListResponse(let list):
-            let items = list.prefix(Limits.maxListEntries)
+            let items = try DeskMessage.limited(list)
             w.u16(UInt16(items.count))
-            for i in items { w.u32(i.windowId); w.str8(i.title); w.str8(i.appName); w.u32(i.widthPx); w.u32(i.heightPx) }
+            for i in items { w.u32(i.windowId); try w.str8(i.title); try w.str8(i.appName); w.u32(i.widthPx); w.u32(i.heightPx) }
         case .handoffBegin(let id, let cx, let cy, let title, let app, let wpx, let hpx):
-            w.u32(id); w.f32(cx); w.f32(cy); w.str8(title); w.str8(app); w.u32(wpx); w.u32(hpx)
+            w.u32(id); w.f32(cx); w.f32(cy); try w.str8(title); try w.str8(app); w.u32(wpx); w.u32(hpx)
         case .handoffAccept(let id), .windowStreamStart(let id), .handoffReturn(let id), .windowClosed(let id):
             w.u32(id)
-        case .handoffReject(let id, let reason): w.u32(id); w.str8(reason)
+        case .handoffReject(let id, let reason): w.u32(id); try w.str8(reason)
         case .windowStreamFrame(let id, let flags, let pts, let nal): w.u32(id); w.u8(flags); w.u64(pts); w.raw(nal)
         case .windowInputMouseMove(let id, let x, let y): w.u32(id); w.f32(x); w.f32(y)
         case .windowInputMouseButton(let id, let b, let down, let x, let y): w.u32(id); w.u8(b); w.bool(down); w.f32(x); w.f32(y)
         case .windowInputKey(let id, let code, let down, let flags): w.u32(id); w.u16(code); w.bool(down); w.u64(flags)
         case .windowInputScroll(let id, let dx, let dy): w.u32(id); w.f32(dx); w.f32(dy)
         case .appLaunch(let req, let bundle, let activate, let targets):
-            w.u32(req); w.str16(bundle); w.bool(activate)
-            let t = targets.prefix(Limits.maxListEntries)
-            w.u16(UInt16(t.count)); for s in t { w.str16(s) }
+            w.u32(req); try w.str16(bundle); w.bool(activate)
+            let t = try DeskMessage.limited(targets)
+            w.u16(UInt16(t.count)); for s in t { try w.str16(s) }
         case .appLaunchResult(let req, let status, let appId): w.u32(req); w.u8(status); w.u32(appId)
         case .appList(let apps):
-            let a = apps.prefix(Limits.maxListEntries)
+            let a = try DeskMessage.limited(apps)
             w.u16(UInt16(a.count))
             for i in a {
-                w.u32(i.appId); w.str16(i.bundleId); w.str16(i.name); w.u32(UInt32(bitPattern: i.pid))
+                w.u32(i.appId); try w.str16(i.bundleId); try w.str16(i.name); w.u32(UInt32(bitPattern: i.pid))
                 w.u16(i.windowCount); w.u32(i.residentMB); w.bool(i.running)
             }
         case .windowAdded(let id, let app, let kind, let parent, let title, let g):
-            w.u32(id); w.u32(app); w.u8(kind.rawValue); w.u32(parent); w.str16(title)
+            w.u32(id); w.u32(app); w.u8(kind.rawValue); w.u32(parent); try w.str16(title)
             w.f32(g.x); w.f32(g.y); w.f32(g.width); w.f32(g.height); w.f32(g.scale)
         case .windowMoved(let id, let x, let y): w.u32(id); w.f32(x); w.f32(y)
         case .windowResized(let id, let wd, let ht, let scale): w.u32(id); w.f32(wd); w.f32(ht); w.f32(scale)
-        case .windowTitle(let id, let t): w.u32(id); w.str16(t)
+        case .windowTitle(let id, let t): w.u32(id); try w.str16(t)
         case .windowResizeRequest(let id, let wd, let ht): w.u32(id); w.f32(wd); w.f32(ht)
         case .childWindow(let id, let parent, let ox, let oy, let kind): w.u32(id); w.u32(parent); w.f32(ox); w.f32(oy); w.u8(kind.rawValue)
         case .menuTree(let app, let gen, let items):
             w.u32(app); w.u32(gen)
             var budget = Limits.maxMenuNodes
-            DeskMessage.writeMenu(items, depth: 1, budget: &budget, into: &w)
+            try DeskMessage.writeMenu(items, depth: 1, budget: &budget, into: &w)
         case .menuInvoke(let app, let gen, let item): w.u32(app); w.u32(gen); w.u32(item)
         case .cursorShape(let id, let shape, let hx, let hy, let png):
             w.u32(id); w.u8(shape.rawValue)
-            if shape == .custom { w.u16(hx); w.u16(hy); w.raw(Array(png.prefix(Limits.maxCursorPNG))) }
+            if shape == .custom {
+                guard png.count <= Limits.maxCursorPNG else { throw EncodeError.badValue("cursor image over \(Limits.maxCursorPNG) bytes") }
+                w.u16(hx); w.u16(hy); w.raw(png)
+            }
         case .pasteboardOffer(let gen, let entries):
-            let e = entries.prefix(255)
-            w.u32(gen); w.u8(UInt8(e.count)); for x in e { w.str16(x.uti); w.u64(x.size) }
-        case .pasteboardFetch(let gen, let uti): w.u32(gen); w.str16(uti)
-        case .pasteboardData(let gen, let uti, let data): w.u32(gen); w.str16(uti); w.raw(data)
+            guard entries.count <= 255 else { throw EncodeError.tooManyItems(entries.count) }
+            let e = entries
+            w.u32(gen); w.u8(UInt8(e.count)); for x in e { try w.str16(x.uti); w.u64(x.size) }
+        case .pasteboardFetch(let gen, let uti): w.u32(gen); try w.str16(uti)
+        case .pasteboardData(let gen, let uti, let off, let total, let data): w.u32(gen); try w.str16(uti); w.u64(off); w.u64(total); w.raw(data)
         case .filePush(let req, let win, let dx, let dy, let name):
-            w.u32(req); w.u32(win); w.f32(dx); w.f32(dy); w.str16(name)
+            w.u32(req); w.u32(win); w.f32(dx); w.f32(dy); try w.str16(name)
         case .filePull(let req, let id): w.u32(req); w.u32(id)
         case .filePromise(let files):
-            let f = files.prefix(Limits.maxListEntries)
-            w.u16(UInt16(f.count)); for x in f { w.u32(x.fileId); w.str16(x.name); w.u64(x.size) }
+            let f = try DeskMessage.limited(files)
+            w.u16(UInt16(f.count)); for x in f { w.u32(x.fileId); try w.str16(x.name); w.u64(x.size) }
         case .audioFrame(let app, let pts, let aac): w.u32(app); w.u64(pts); w.raw(aac)
-        case .badge(let app, let text): w.u32(app); w.str16(text)
+        case .badge(let app, let text): w.u32(app); try w.str16(text)
         case .notify(let app, let nid, let title, let sub, let body, let sound):
-            w.u32(app); w.str16(nid); w.str16(title); w.str16(sub); w.str16(body); w.bool(sound)
+            w.u32(app); try w.str16(nid); try w.str16(title); try w.str16(sub); try w.str16(body); w.bool(sound)
         case .unknown(_, let payload): w.raw(payload)
         }
         return w.bytes
@@ -164,25 +186,77 @@ extension DeskMessage {
             for f in files.prefix(Limits.maxListEntries) where !FileName.isSafe(f.name) { throw EncodeError.unsafeFileName(f.name) }
         default: break
         }
-        return try Framing.encode(type: typeByte, payload: encodePayload())
+        return try Framing.encode(type: typeByte, payload: try encodePayload())
     }
 
-    private static func writeMenu(_ items: [MenuItem], depth: Int, budget: inout Int, into w: inout ByteWriter) {
-        // Encoder side of the limits: drop what would not decode, so we never emit an unreadable tree.
-        let usable = depth <= Limits.maxMenuDepth ? Array(items.prefix(max(0, min(budget, 65535)))) : []
-        budget -= usable.count
-        w.u16(UInt16(usable.count))
-        for i in usable {
-            w.u32(i.itemId); w.str16(i.title)
+    private static func limited<T>(_ a: [T]) throws -> [T] {
+        guard a.count <= Limits.maxListEntries else { throw EncodeError.tooManyItems(a.count) }
+        return a
+    }
+
+    private static func writeMenu(_ items: [MenuItem], depth: Int, budget: inout Int, into w: inout ByteWriter) throws {
+        // The encoder refuses what a receiver would refuse, so an unreadable tree is never emitted.
+        guard items.isEmpty || depth <= Limits.maxMenuDepth else { throw EncodeError.badValue("menu deeper than \(Limits.maxMenuDepth)") }
+        guard items.count <= budget else { throw EncodeError.tooManyItems(items.count) }
+        budget -= items.count
+        w.u16(UInt16(items.count))
+        for i in items {
+            w.u32(i.itemId); try w.str16(i.title)
             w.u8((i.enabled ? 1 : 0) | (i.checked ? 2 : 0) | (i.separator ? 4 : 0))
             w.u16(i.keyCode); w.u32(i.modifiers)
-            writeMenu(i.children, depth: depth + 1, budget: &budget, into: &w)
+            try writeMenu(i.children, depth: depth + 1, budget: &budget, into: &w)
+        }
+    }
+
+    // MARK: value ranges
+
+    private static func inUnit(_ f: Float, _ what: String) throws { guard f >= 0 && f <= 1 else { throw DecodeError.badValue("\(what) outside 0...1") } }
+    private static func point(_ f: Float, _ what: String) throws { guard f.isFinite, abs(f) <= Limits.maxPointMagnitude else { throw DecodeError.badValue("\(what) out of range") } }
+    private static func size(_ f: Float, _ what: String) throws { guard f.isFinite, f >= 0, f <= Limits.maxPointSize else { throw DecodeError.badValue("\(what) out of range") } }
+    private static func scale(_ f: Float) throws { guard Limits.scaleRange.contains(f) else { throw DecodeError.badValue("scale out of range") } }
+    private static func pixels(_ v: UInt32, _ what: String) throws { guard v <= Limits.maxPixels else { throw DecodeError.badValue("\(what) out of range") } }
+
+    /// Value ranges, checked on both sides: the decoder rejects, the encoder refuses.
+    /// Finite is not enough: a width of 1e30 or a scale of 0 must not reach window code.
+    func validate() throws {
+        do { try checkRanges() } catch let e as DecodeError {
+            if case .badValue(let m) = e { throw EncodeError.badValue(m) }
+            throw e
+        }
+    }
+
+    private func checkRanges() throws {
+        switch self {
+        case .windowListResponse(let l): for i in l { try DeskMessage.pixels(i.widthPx, "width"); try DeskMessage.pixels(i.heightPx, "height") }
+        case .handoffBegin(_, let cx, let cy, _, _, let w, let h):
+            try DeskMessage.point(cx, "crossX"); try DeskMessage.point(cy, "crossY"); try DeskMessage.pixels(w, "width"); try DeskMessage.pixels(h, "height")
+        case .windowInputMouseMove(_, let x, let y), .windowInputMouseButton(_, _, _, let x, let y):
+            try DeskMessage.inUnit(x, "x"); try DeskMessage.inUnit(y, "y")
+        case .windowInputScroll(_, let dx, let dy): try DeskMessage.point(dx, "dx"); try DeskMessage.point(dy, "dy")
+        case .windowAdded(_, _, _, _, _, let g):
+            try DeskMessage.point(g.x, "x"); try DeskMessage.point(g.y, "y"); try DeskMessage.size(g.width, "width"); try DeskMessage.size(g.height, "height"); try DeskMessage.scale(g.scale)
+        case .windowMoved(_, let x, let y): try DeskMessage.point(x, "x"); try DeskMessage.point(y, "y")
+        case .windowResized(_, let w, let h, let s): try DeskMessage.size(w, "width"); try DeskMessage.size(h, "height"); try DeskMessage.scale(s)
+        case .windowResizeRequest(_, let w, let h): try DeskMessage.size(w, "width"); try DeskMessage.size(h, "height")
+        case .childWindow(_, _, let ox, let oy, _): try DeskMessage.point(ox, "offsetX"); try DeskMessage.point(oy, "offsetY")
+        case .filePush(_, _, let dx, let dy, _): try DeskMessage.point(dx, "dropX"); try DeskMessage.point(dy, "dropY")
+        case .pasteboardData(_, _, let off, let total, let data):
+            guard data.count <= Limits.maxPasteboardChunk else { throw DecodeError.badValue("clipboard chunk too large") }
+            guard total <= Limits.maxPasteboardBytes else { throw DecodeError.badValue("clipboard item too large") }
+            guard off <= total, UInt64(data.count) <= total - off else { throw DecodeError.badValue("clipboard chunk outside the item") }
+        default: break
         }
     }
 
     // MARK: decoding
 
     public static func decode(type: UInt8, payload: [UInt8]) throws -> DeskMessage {
+        let m = try decodeUnchecked(type: type, payload: payload)
+        try m.checkRanges()
+        return m
+    }
+
+    private static func decodeUnchecked(type: UInt8, payload: [UInt8]) throws -> DeskMessage {
         guard let t = DeskType(rawValue: type) else { return .unknown(type: type, payload: payload) }
         var r = ByteReader(payload)
         switch t {
@@ -249,7 +323,7 @@ extension DeskMessage {
             for _ in 0..<n { out.append(PasteboardEntry(uti: try r.str16(), size: try r.u64())) }
             return .pasteboardOffer(generation: gen, entries: out)
         case .pasteboardFetch: return .pasteboardFetch(generation: try r.u32(), uti: try r.str16())
-        case .pasteboardData: return .pasteboardData(generation: try r.u32(), uti: try r.str16(), data: r.rest())
+        case .pasteboardData: return .pasteboardData(generation: try r.u32(), uti: try r.str16(), offset: try r.u64(), total: try r.u64(), data: r.rest())
         case .filePush:
             let req = try r.u32(), win = try r.u32(), dx = try r.f32(), dy = try r.f32(), name = try r.str16()
             guard FileName.isSafe(name) else { throw DecodeError.badValue("unsafe file name") }

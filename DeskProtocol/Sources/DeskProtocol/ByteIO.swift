@@ -12,6 +12,10 @@ public enum DecodeError: Error, Equatable {
 public enum EncodeError: Error, Equatable {
     case frameTooLarge(Int)
     case unsafeFileName(String)
+    /// A string over its length prefix, or a list over its limit. The encoder refuses instead of cutting.
+    case stringTooLong(Int)
+    case tooManyItems(Int)
+    case badValue(String)
 }
 
 /// Big-endian writer, matching v1 ("BE" in PROTOCOL.md).
@@ -27,23 +31,17 @@ public struct ByteWriter {
     public mutating func f32(_ v: Float) { u32(v.bitPattern) }
     public mutating func raw(_ b: [UInt8]) { bytes.append(contentsOf: b) }
 
-    /// v2 style string: 1-byte length, at most 255 UTF-8 bytes. Longer input is cut on a character boundary.
-    public mutating func str8(_ s: String) {
-        let b = ByteWriter.clip(Array(s.utf8), max: 255)
+    /// v2 style string: 1-byte length, at most 255 UTF-8 bytes. Longer input is refused, never cut.
+    public mutating func str8(_ s: String) throws {
+        let b = Array(s.utf8)
+        guard b.count <= 255 else { throw EncodeError.stringTooLong(b.count) }
         u8(UInt8(b.count)); raw(b)
     }
-    /// v3 style string: 2-byte length, at most 65535 UTF-8 bytes. Longer input is cut on a character boundary.
-    public mutating func str16(_ s: String) {
-        let b = ByteWriter.clip(Array(s.utf8), max: 65535)
+    /// v3 style string: 2-byte length, at most 65535 UTF-8 bytes. Longer input is refused, never cut.
+    public mutating func str16(_ s: String) throws {
+        let b = Array(s.utf8)
+        guard b.count <= 65535 else { throw EncodeError.stringTooLong(b.count) }
         u16(UInt16(b.count)); raw(b)
-    }
-
-    static func clip(_ b: [UInt8], max: Int) -> [UInt8] {
-        if b.count <= max { return b }
-        var n = max
-        // Back off over UTF-8 continuation bytes (10xxxxxx) so no character is split.
-        while n > 0 && (b[n] & 0xC0) == 0x80 { n -= 1 }
-        return Array(b[0..<n])
     }
 }
 
