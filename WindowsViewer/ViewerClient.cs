@@ -21,6 +21,7 @@ internal sealed class ViewerClient : IDisposable
 {
     public Action<StreamCodec, int, int>? OnHelloAck; // codec, widthPx, heightPx (encoded dims from HELLO_ACK)
     public Action<int, int, byte[]>? OnFrame;          // decoded width, height, BGRA32
+    public Action<bool, bool>? OnLockState;           // locked, host nativeLockScreen (this viewer never switches to the browser fallback)
     public Action<string>? OnDisconnected;
     /// <summary>What the screen should show. Called from a worker thread.</summary>
     public Action<FlowState>? OnState;
@@ -471,7 +472,10 @@ internal sealed class ViewerClient : IDisposable
                     }
                     audioNow?.Play(p);
                     break;
-                // StreamStatus, HostLockState, CursorPos, Clipboard: not
+                case MessageType.HostLockState:
+                    if (HostLock.Parse(p) is { } lk) _owner.OnLockState?.Invoke(lk.Locked, lk.Native);
+                    break;
+                // StreamStatus, CursorPos, Clipboard: not
                 // needed for v1 of this viewer -- see report/README for what's skipped.
                 default:
                     break;

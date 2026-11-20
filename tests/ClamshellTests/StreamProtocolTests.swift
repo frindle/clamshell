@@ -134,6 +134,10 @@ final class StreamProtocolTests: XCTestCase {
 
         XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(true)).messages[0].1), [1])
         XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(false)).messages[0].1), [0])
+        // nativeLockScreen on: a trailing 1 byte; off: the original single byte.
+        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(true, native: true)).messages[0].1), [1, 1])
+        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(false, native: true)).messages[0].1), [0, 1])
+        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(true, native: false)).messages[0].1), [1])
 
         let cursor = parse(StreamMessage.cursorPos(x: 0.5, y: 0.125)).messages[0]
         XCTAssertEqual(cursor.0, .cursorPos)
@@ -280,5 +284,14 @@ final class StreamProtocolTests: XCTestCase {
         XCTAssertEqual(got, [.clipboard])
         parser.feed(StreamMessage.clipboard(text: String(repeating: "a", count: 17)))
         XCTAssertTrue(parser.corrupt)
+    }
+
+    func testNativeLockScreenSettingDefaultsOff() {
+        let suite = "nativeLockScreenTest-\(UUID().uuidString)"
+        let d = UserDefaults(suiteName: suite)!
+        defer { d.removePersistentDomain(forName: suite) }
+        XCTAssertFalse(StreamMessage.nativeLockScreenEnabled(d))
+        d.set(true, forKey: "nativeLockScreen")
+        XCTAssertTrue(StreamMessage.nativeLockScreenEnabled(d))
     }
 }

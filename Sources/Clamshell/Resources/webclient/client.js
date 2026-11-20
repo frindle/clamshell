@@ -14,7 +14,7 @@
 
 import { codeToMacVK } from '/client/keymap.js';
 import {
-  helloPayload, clientDisplaysPayload, attachResizeReporter, loadPrefs, savePrefs, normalizePrefs, parseSize, SIZE_PRESETS, pickCodec,
+  helloPayload, clientDisplaysPayload, attachResizeReporter, loadPrefs, savePrefs, normalizePrefs, parseSize, SIZE_PRESETS, pickCodec, parseLockState,
 } from '/client/hello.js';
 import {
   HeldKeys, reconnectDelay, frameAction, ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue,
@@ -673,7 +673,9 @@ async function handle(type, payload) {
       break;
     }
     case T.HOST_LOCK_STATE: {
-      const locked = payload[0] === 1;
+      const ls = parseLockState(payload);
+      if (!ls) break;
+      const locked = ls.locked;
       // Track whether we're locked by host to avoid conflicts with failure-based fallbacks
       lockedByHost = locked;
       
@@ -682,7 +684,9 @@ async function handle(type, payload) {
       // locked Mac where native Screen Recording capture can't. Reverts to
       // the canvas on its own once a later HOST_LOCK_STATE reports
       // unlocked; the native stream is never torn down underneath it.
-      if (locked) {
+      if (locked && ls.native) {
+        // nativeLockScreen: keep the native stream, banner only.
+      } else if (locked) {
         vncFallback.src = vncFallbackURL;
         vncFallback.classList.add('show');
         hideStatus();
@@ -693,7 +697,7 @@ async function handle(type, payload) {
         // The picture may have frozen while locked; start from a fresh one.
         requestKeyframe();
       }
-      lockBanner.textContent = originalLockBannerText;
+      lockBanner.textContent = (locked && ls.native) ? 'Mac is locked \u2014 type the password to unlock' : originalLockBannerText;
       lockBanner.classList.toggle('show', locked);
       break;
     }

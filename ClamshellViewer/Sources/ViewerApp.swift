@@ -527,7 +527,7 @@ struct ContentView: View {
                 )
             if targetType == .rdp, rdpSession.status != .idle {
                 RDPStreamView(session: rdpSession, onClose: { rdpSession.disconnect() })
-            } else if case .streaming = client.status, client.hostLocked {
+            } else if case .streaming = client.status, client.showsVNCFallback {
                 // Auto-forward into the embedded browser VNC bridge while
                 // locked — was a manual "tap to open Safari" link before;
                 // the Mac being locked isn't a rare edge case worth extra
@@ -542,6 +542,12 @@ struct ContentView: View {
                     .ignoresSafeArea()
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
+                            if client.hostLocked && client.hostNativeLockScreen {
+                                Label("Mac is locked. Type the password to unlock", systemImage: "lock.fill")
+                                    .font(.footnote.weight(.semibold))
+                                    .padding(.horizontal, 10).padding(.vertical, 6)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                            }
                             if client.softwareEncoding { SoftwareEncodingBanner() }
                             if client.videoState != 0 { VideoStalledBanner(gaveUp: client.videoState >= 2) }
                             QualityIndicator(client: client)

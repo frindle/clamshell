@@ -311,7 +311,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         queue.async { [self] in
             hostLocked = locked
             guard connection != nil else { return }
-            send(StreamMessage.hostLockState(locked))
+            send(StreamMessage.hostLockState(locked, native: StreamMessage.nativeLockScreenEnabled()))
         }
     }
 
@@ -708,7 +708,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                                                      width: UInt32(pxWidth), height: UInt32(pxHeight),
                                                      hardwareEncoder: encoder.isHardware))
                     self.sendStreamStatus() // initial bitrate for the quality indicator
-                    self.send(StreamMessage.hostLockState(self.hostLocked)) // so a client joining a locked Mac knows now
+                    self.send(StreamMessage.hostLockState(self.hostLocked, native: StreamMessage.nativeLockScreenEnabled())) // so a client joining a locked Mac knows now
                     // Cursor-follow auto-pan is a display concept (see
                     // PROTOCOL.md) — a remoted window has no "different
                     // display" to report positions relative to.
