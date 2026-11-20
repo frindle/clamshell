@@ -1,6 +1,9 @@
 // Page side. Answers "collect" with the tab's scroll and media state, and applies "restore" after a tab is opened here.
 (function () {
   'use strict';
+  // Injected on demand, possibly more than once into the same page: register one listener only.
+  if (globalThis.__deskTabSendLoaded) return;
+  globalThis.__deskTabSendLoaded = true;
   const ext = typeof browser !== 'undefined' ? browser : chrome;
   const core = globalThis.DeskTabSend;
   ext.runtime.onMessage.addListener(function (msg, _sender, sendResponse) {

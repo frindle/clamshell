@@ -29,18 +29,42 @@ test('settings are normalized', () => {
   assert.equal(core.normalizeSettings({ targetName: '   ' }).targetName, 'the other Mac');
 });
 
-test('requests go to loopback only, with the token as a header', () => {
+test('requests go to loopback only and never carry the token', () => {
   const s = core.normalizeSettings({ port: 6000, token: 'abc' });
-  const r = core.buildSendRequest(s, { url: 'https://a.test/' });
+  const r = core.buildRequest(s, core.sendBody({ url: 'https://a.test/' }), { session: 'ab12', seq: 3, sig: 'ff' });
   assert.equal(r.url, 'http://127.0.0.1:6000/v1/tab-send');
   assert.equal(r.init.method, 'POST');
-  assert.equal(r.init.headers.Authorization, 'Bearer abc');
+  assert.equal(r.init.headers['X-Desk-Sig'], 'ff');
+  assert.equal(r.init.headers['X-Desk-Seq'], '3');
+  assert.ok(!JSON.stringify(r).includes('abc'));
   assert.deepEqual(JSON.parse(r.init.body), { v: 1, kind: 'send', tab: { url: 'https://a.test/' } });
-  assert.equal(core.buildSendRequest(core.normalizeSettings({}), {}).init.headers.Authorization, undefined);
-  assert.deepEqual(JSON.parse(core.buildBringRequest(s).init.body), { v: 1, kind: 'bring' });
+  assert.deepEqual(JSON.parse(core.bringBody()), { v: 1, kind: 'bring' });
   assert.equal(core.wsUrl(s), 'ws://127.0.0.1:6000/v1/tab-events');
   assert.ok(!core.wsUrl(s).includes('abc'), 'token must not be in the url');
-  assert.deepEqual(JSON.parse(core.buildHello(s)), { v: 1, kind: 'hello', token: 'abc' });
+});
+
+test('hello carries a nonce and no secret', () => {
+  const h = JSON.parse(core.buildHello('aa'.repeat(16)));
+  assert.deepEqual(h, { v: 1, kind: 'hello', cnonce: 'aa'.repeat(16) });
+});
+
+test('hmac matches the RFC 4231 test vector, safeEqual is exact', async () => {
+  const { webcrypto } = require('node:crypto');
+  const mac = await core.hmacHex(webcrypto.subtle, 'Jefe', 'what do ya want for nothing?');
+  assert.equal(mac, '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843');
+  assert.equal(core.safeEqual('ab', 'ab'), true);
+  assert.equal(core.safeEqual('ab', 'ac'), false);
+  assert.equal(core.safeEqual('ab', 'abc'), false);
+  assert.equal(core.safeEqual('ab', undefined), false);
+});
+
+test('handshake parsing accepts only challenge and ready', () => {
+  const n = 'cd'.repeat(16);
+  assert.deepEqual(core.parseHandshake(JSON.stringify({ v: 1, kind: 'challenge', snonce: n, proof: 'p' })), { kind: 'challenge', snonce: n, proof: 'p' });
+  assert.deepEqual(core.parseHandshake('{"v":1,"kind":"ready"}'), { kind: 'ready' });
+  assert.equal(core.parseHandshake(JSON.stringify({ v: 1, kind: 'challenge', snonce: 'short', proof: 'p' })), null);
+  assert.equal(core.parseHandshake(JSON.stringify({ v: 1, kind: 'open-tab' })), null);
+  assert.equal(core.parseHandshake('nope'), null);
 });
 
 test('incoming messages: valid, malformed, hostile', () => {

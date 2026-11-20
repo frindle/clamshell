@@ -16,4 +16,14 @@
       ext.storage.local.set(s).then(function () { document.getElementById('saved').textContent = 'Saved.'; });
     });
   });
+  // Permission requests must come from a click.
+  function grant(id, origins) {
+    document.getElementById(id).addEventListener('click', function () {
+      ext.permissions.request({ origins: origins }).then(function (ok) {
+        document.getElementById('saved').textContent = ok ? 'Access allowed.' : 'Access not allowed.';
+      });
+    });
+  }
+  grant('grantLocal', ['http://127.0.0.1/*']);
+  grant('grantPages', ['http://*/*', 'https://*/*']);
 })();

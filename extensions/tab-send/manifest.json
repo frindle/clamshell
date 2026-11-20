@@ -3,19 +3,13 @@
   "name": "Desk Tab Send",
   "version": "0.1.0",
   "description": "Send this tab to the same browser on another Mac, or bring a tab here, through the local Desk placer.",
-  "permissions": ["tabs", "storage", "contextMenus", "alarms"],
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "alarms"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
   "host_permissions": ["http://127.0.0.1/*"],
   "background": {
     "service_worker": "src/background.js",
     "scripts": ["src/core.js", "src/controller.js", "src/background.js"]
   },
-  "content_scripts": [
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["src/core.js", "src/content.js"],
-      "run_at": "document_idle"
-    }
-  ],
   "action": { "default_title": "Send this tab to the other Mac" },
   "options_ui": { "page": "options.html", "open_in_tab": false },
   "browser_specific_settings": {

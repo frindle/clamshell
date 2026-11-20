@@ -9,13 +9,16 @@
     core,
     fetchFn: function (u, i) { return fetch(u, i); },
     WebSocketCtor: WebSocket,
+    hmac: function (token, msg) { return core.hmacHex(crypto.subtle, token, msg); },
+    nonce: function () { return core.randomNonce(crypto); },
     getSettings: function () { return ext.storage.local.get(['port', 'token', 'targetName']); },
     now: function () { return Date.now(); },
     setTimeoutFn: function (fn, ms) { return setTimeout(fn, ms); },
     random: Math.random,
   });
 
-  ext.action.onClicked.addListener(function (tab) { ctl.onActionClicked(tab); });
+  // Toolbar click: also answers a request from the other Mac (badge "?"). Nothing leaves the browser without it.
+ext.action.onClicked.addListener(function (tab) { ctl.onActionClicked(tab); });
   ext.contextMenus.onClicked.addListener(function (info, tab) { ctl.onMenuClicked(info, tab); });
   ext.tabs.onUpdated.addListener(function (id, change) { ctl.onTabUpdated(id, change); });
   ext.tabs.onRemoved.addListener(function (id) { ctl.onTabRemoved(id); });

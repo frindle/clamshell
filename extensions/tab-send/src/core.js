@@ -67,31 +67,68 @@
   function httpUrl(settings, path) { return 'http://127.0.0.1:' + settings.port + path; }
   function wsUrl(settings) { return 'ws://127.0.0.1:' + settings.port + '/v1/tab-events'; }
 
-  function authHeaders(settings) {
-    const h = { 'Content-Type': 'application/json' };
-    if (settings.token) h.Authorization = 'Bearer ' + settings.token;
-    return h;
+  // ---- authentication ----
+  // The token is a shared secret and is never sent. Each side proves it knows the token by an HMAC over fresh
+  // nonces from both sides, so a program that merely listens on the port can neither learn the token nor pass as the placer.
+  //   client -> hello {cnonce}            server -> challenge {snonce, proof = H("server|cnonce|snonce")}
+  //   client -> auth {proof = H("client|cnonce|snonce")}      server -> ready
+  // Later HTTP requests are signed with the session: H("http|snonce|seq|body"), seq strictly increasing.
+
+  function toHex(buf) {
+    return Array.prototype.map.call(new Uint8Array(buf), function (b) { return ('0' + b.toString(16)).slice(-2); }).join('');
   }
 
-  // "Open this tab on the other Mac".
-  function buildSendRequest(settings, payload) {
-    return {
-      url: httpUrl(settings, '/v1/tab-send'),
-      init: { method: 'POST', headers: authHeaders(settings), body: JSON.stringify({ v: PROTOCOL_VERSION, kind: 'send', tab: payload }) },
-    };
+  // HMAC-SHA256 as hex. `subtle` is crypto.subtle (browser) or webcrypto.subtle (Node tests).
+  async function hmacHex(subtle, token, message) {
+    const enc = new TextEncoder();
+    const key = await subtle.importKey('raw', enc.encode(token), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return toHex(await subtle.sign('HMAC', key, enc.encode(message)));
   }
 
-  // "Bring this tab here": asks the placer to have the other copy send its active tab.
-  function buildBringRequest(settings) {
-    return {
-      url: httpUrl(settings, '/v1/tab-send'),
-      init: { method: 'POST', headers: authHeaders(settings), body: JSON.stringify({ v: PROTOCOL_VERSION, kind: 'bring' }) },
-    };
+  function randomNonce(cryptoObj) {
+    return toHex(cryptoObj.getRandomValues(new Uint8Array(16)));
   }
 
-  // First message on the event socket. Browsers cannot set headers on a WebSocket, so the token goes in a message, not the URL.
-  function buildHello(settings) {
-    return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'hello', token: settings.token });
+  // Compares two strings without stopping at the first difference.
+  function safeEqual(a, b) {
+    if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+    let d = 0;
+    for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return d === 0;
+  }
+
+  function isNonce(n) { return typeof n === 'string' && /^[0-9a-f]{16,128}$/.test(n); }
+
+  const serverProofInput = function (cnonce, snonce) { return 'server|' + cnonce + '|' + snonce; };
+  const clientProofInput = function (cnonce, snonce) { return 'client|' + cnonce + '|' + snonce; };
+  const httpProofInput = function (snonce, seq, body) { return 'http|' + snonce + '|' + seq + '|' + body; };
+
+  function signedHeaders(session, seq, sig) {
+    return { 'Content-Type': 'application/json', 'X-Desk-Session': session, 'X-Desk-Seq': String(seq), 'X-Desk-Sig': sig };
+  }
+
+  // Requests are built unsigned-body first so the caller can sign the exact bytes sent.
+  function sendBody(payload) { return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'send', tab: payload }); }
+  function bringBody() { return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'bring' }); }
+  function buildRequest(settings, body, auth) {
+    return { url: httpUrl(settings, '/v1/tab-send'), init: { method: 'POST', headers: signedHeaders(auth.session, auth.seq, auth.sig), body } };
+  }
+
+  // First message on the event socket: a fresh nonce, no secret.
+  function buildHello(cnonce) {
+    return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'hello', cnonce });
+  }
+
+  function buildAuth(proof) { return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'auth', proof }); }
+
+  // Handshake messages from the placer (before the session is trusted). null if malformed.
+  function parseHandshake(raw) {
+    let m;
+    try { m = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (e) { return null; }
+    if (!m || typeof m !== 'object' || m.v !== PROTOCOL_VERSION) return null;
+    if (m.kind === 'challenge' && isNonce(m.snonce) && typeof m.proof === 'string') return { kind: 'challenge', snonce: m.snonce, proof: m.proof };
+    if (m.kind === 'ready') return { kind: 'ready' };
+    return null;
   }
 
   // A message from the placer. Anything malformed or unknown is dropped (returns null), never thrown.
@@ -197,7 +234,8 @@
   return {
     PROTOCOL_VERSION, MAX_URL, MAX_TITLE, DEFAULTS,
     isSendableUrl, clampTitle, sanitizeMedia, buildPayload, normalizeSettings,
-    httpUrl, wsUrl, buildSendRequest, buildBringRequest, buildHello, parseIncoming,
+    httpUrl, wsUrl, hmacHex, randomNonce, safeEqual, serverProofInput, clientProofInput, httpProofInput,
+    sendBody, bringBody, buildRequest, buildHello, buildAuth, parseHandshake, parseIncoming,
     Backoff, Seen, collectPageState, applyPageState,
   };
 });
