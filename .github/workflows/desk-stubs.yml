@@ -6,6 +6,10 @@ on:
   pull_request:
     paths: ['DeskStubs/**', '.github/workflows/desk-stubs.yml']
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The logic and the file writer need no Apple frameworks.
   linux:
