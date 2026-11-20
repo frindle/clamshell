@@ -109,6 +109,12 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var audioEncoder: AudioEncoder?
     private var clipboard: ClipboardBridge?
     private var injector: InputInjector?
+    /// True only in the login-window agent. Then the host tells clients it
+    /// takes LOGIN_CREDENTIALS and types them (see `handleLoginCredentials`).
+    var acceptsLoginCredentials = false {
+        didSet { gate.advertisesLoginCredentials = acceptsLoginCredentials }
+    }
+    private var lastLoginCredentialsAt: TimeInterval?
     /// What the connected device may bring along. Each exists only for a
     /// device that was let in and set the matching capability bit (see
     /// `admitted`), and ends with the connection.
@@ -499,6 +505,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                                        now: ProcessInfo.processInfo.systemUptime) { send(frame) }
         case .fileAnswer:
             break // the host never offers a file, so there is nothing to answer
+        case .loginCredentials:
+            handleLoginCredentials(payload)
         case .peripheralAttach, .peripheralDetach, .peripheralInput:
             // Only a session made for a device that set the bit has one.
             guard let peripherals = peripheralSession else { return }
@@ -507,6 +515,25 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         case .peripheralStatus, .peripheralOutput:
             break // host to client only (rumble is not sent in this version)
         }
+    }
+
+    /// A saved login from the client, typed into the login window. Acts only
+    /// in the login-window agent, on the encrypted session of a device that
+    /// set the capability bit, and at most once every few seconds. Nothing
+    /// about the contents is logged.
+    private func handleLoginCredentials(_ payload: Data) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let link = liveLink,
+              LoginCredentialsPolicy.allowed(serving: acceptsLoginCredentials, phase: link.phase,
+                                             capabilities: link.device?.capabilities),
+              LoginCredentialsPolicy.rateAllows(last: lastLoginCredentialsAt, now: now) else { return }
+        lastLoginCredentialsAt = now
+        guard let credentials = LoginCredentials.decode(payload) else {
+            clog("STREAM: ignored a malformed login from the client")
+            return
+        }
+        clog("STREAM: typing a login from \(link.device?.fingerprint ?? "a device") at the login window")
+        injector?.text(credentials.typingPayload)
     }
 
     // MARK: - Client display info -> host auto-configuration (on `queue`)
@@ -991,6 +1018,8 @@ final class StreamFleet {
     static var shared: StreamFleet?
     
     private let basePort: UInt16
+    /// Set by the login-window agent before the first `rebuild`.
+    var acceptsLoginCredentials = false
     /// The host's key, device list and approval setting, shared by every
     /// listener of this fleet.
     private let auth: HostAuth
@@ -1158,6 +1187,7 @@ final class StreamFleet {
                 let port = basePort + UInt16(i)
                 let server = StreamServer(displayID: id, port: port, isPrimary: i == 0,
                                           auth: auth, displayIndex: i)
+                server.acceptsLoginCredentials = acceptsLoginCredentials
                 do {
                     try server.start()
                     server.setLockState(screenLocked) // inherit current lock state

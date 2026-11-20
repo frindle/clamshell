@@ -39,6 +39,10 @@ cp AppIcon.icns "${APP}/Contents/Resources/"
 # user; not loaded by the app). Kept out of the SwiftPM resource bundle.
 mkdir -p "${APP}/Contents/Resources/loginwindow-probe"
 cp scripts/loginwindow-probe/*.plist "${APP}/Contents/Resources/loginwindow-probe/"
+# launchd plist templates for the login-window agent and its sync daemon.
+# `sudo clamshell loginwindow install` fills them in and copies them out.
+mkdir -p "${APP}/Contents/Resources/loginwindow-agent"
+cp scripts/loginwindow-agent/*.plist "${APP}/Contents/Resources/loginwindow-agent/"
 
 cat > "${APP}/Contents/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>

@@ -45,6 +45,8 @@ enum StreamMessageType: UInt8 {
     case fileAnswer = 0x59
     case fileData = 0x5A
     case fileEnd = 0x5B
+    // 0x5C: saved login for the login window, client -> host (needs loginCredentials).
+    case loginCredentials = 0x5C
 }
 
 /// Feature bits exchanged in the handshake (PROTOCOL.md "Capabilities").
@@ -57,6 +59,7 @@ struct StreamCapabilities: OptionSet {
     static let deviceApproval   = StreamCapabilities(rawValue: 1 << 4)
     static let fileTransfer     = StreamCapabilities(rawValue: 1 << 5)
     static let peripherals      = StreamCapabilities(rawValue: 1 << 6)
+    static let loginCredentials = StreamCapabilities(rawValue: 1 << 7)
 }
 
 enum StreamCodec: UInt8 {

@@ -88,6 +88,9 @@ final class StreamGate {
     /// Only the primary display's listener has sessions for them, so the others
     /// must not advertise the bits (a client would offer a file nobody answers).
     var advertisesDeviceFeatures = true
+    /// True only in the login-window agent: the host is at the login window
+    /// and will type a saved login for a client (PROTOCOL.md "Login window").
+    var advertisesLoginCredentials = false
 
     private let auth: HostAuth
     private let queue: DispatchQueue
@@ -194,6 +197,7 @@ final class StreamGate {
         }
         var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval]
         if advertisesDeviceFeatures { capabilities.formUnion([.fileTransfer, .peripherals]) }
+        if advertisesLoginCredentials { capabilities.insert(.loginCredentials) }
         if auth.requireApproval { capabilities.insert(.approvalRequired) }
         do {
             let handshake = try HostHandshake(identityKey: auth.identity.publicKey,
