@@ -10,6 +10,7 @@ concurrency:
 
 jobs:
   build:
+    name: Windows build
     # Pushes to this repo's own branches run on our own Windows VM (label
     # clamshell-win). The push run already covers PRs from this repo's branches,
     # so those skip. PRs from forks never touch the VM: they run on GitHub's
