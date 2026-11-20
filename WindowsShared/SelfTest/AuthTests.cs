@@ -19,8 +19,19 @@ public static class AuthTests
         t.Group("host refuses bad responses", () => HostRefuses(t));
         t.Group("client refuses bad challenges and results", () => ClientRefuses(t));
         t.Group("secure frames", () => SecureFrames(t));
+        t.Group("host lock state", () => LockState(t));
         FlowTests.Run(t);
         DiskUnlockTests.Run(t);
+    }
+
+    private static void LockState(TestRun t)
+    {
+        t.Check(HostLock.Parse(new byte[] { 1 }) == new HostLock(true, false), "old host: locked, flag off");
+        t.Check(HostLock.Parse(new byte[] { 0 }) == new HostLock(false, false), "old host: unlocked, flag off");
+        t.Check(HostLock.Parse(new byte[] { 1, 1 }) == new HostLock(true, true), "flag on: locked, native");
+        t.Check(HostLock.Parse(new byte[] { 0, 1 }) == new HostLock(false, true), "flag on: unlocked, native");
+        t.Check(HostLock.Parse(new byte[] { 1, 0 }) == new HostLock(true, false), "explicit flag 0 is off");
+        t.Check(HostLock.Parse(Array.Empty<byte>()) is null, "empty payload is ignored");
     }
 
     private static byte[] H(JsonElement e, string name)

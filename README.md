@@ -589,6 +589,8 @@ form.
 ## Changelog
 
 ### Unreleased
+
+- Host setting `nativeLockScreen` (default off): when on, a locked Mac keeps streaming and accepting input, and the clients show a banner instead of switching to the browser VNC fallback. HOST_LOCK_STATE gains an optional second byte. Set with `defaults write <bundle id> nativeLockScreen -bool true`.
 - **The login-window probe can now settle the question.** It posts a Shift
   keystroke and reads it back, records brightness spread and whether the frame
   changes (a flat wallpaper no longer looks like success), records the

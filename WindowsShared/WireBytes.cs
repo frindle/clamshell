@@ -93,3 +93,12 @@ public static class Wire
         return a.AsSpan().SequenceEqual(b);
     }
 }
+
+/// <summary>HOST_LOCK_STATE (0x05): byte 0 is locked, an optional byte 1 of 1 means the
+/// host's nativeLockScreen setting is on (keep the native stream, banner only).
+/// This viewer never switches to the browser fallback either way.</summary>
+public readonly record struct HostLock(bool Locked, bool Native)
+{
+    public static HostLock? Parse(ReadOnlySpan<byte> payload) =>
+        payload.Length < 1 ? null : new HostLock(payload[0] == 1, payload.Length >= 2 && payload[1] == 1);
+}

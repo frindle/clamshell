@@ -222,8 +222,18 @@ enum StreamMessage {
 
     /// Host screen lock state — native capture can't survive the macOS lock
     /// screen, so the client shows the browser-VNC fallback banner when locked.
-    static func hostLockState(_ locked: Bool) -> Data {
-        frame(type: .hostLockState, payload: Data([locked ? 1 : 0]))
+    ///
+    /// `native` is the host's `nativeLockScreen` setting. When on, a second
+    /// payload byte of 1 tells the client to keep showing the native stream
+    /// (banner only, never the browser VNC fallback). When off the payload is
+    /// the original single byte, so older clients and the default are unchanged.
+    static func hostLockState(_ locked: Bool, native: Bool = false) -> Data {
+        frame(type: .hostLockState, payload: native ? Data([locked ? 1 : 0, 1]) : Data([locked ? 1 : 0]))
+    }
+
+    /// The host setting `nativeLockScreen` (UserDefaults, default off).
+    static func nativeLockScreenEnabled(_ defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: "nativeLockScreen")
     }
 
     /// Remote cursor position, normalized 0..1 in this display's source-frame

@@ -137,3 +137,10 @@ export function attachResizeReporter(win, sendPayload, ms = 250, timers = global
   win.addEventListener('resize', handler);
   return handler;
 }
+
+// HOST_LOCK_STATE payload: byte 0 = locked, optional byte 1 = 1 when the host
+// has nativeLockScreen on (keep the native stream; banner only, no noVNC).
+export function parseLockState(payload) {
+  if (!payload || payload.length < 1) return null;
+  return { locked: payload[0] === 1, native: payload.length >= 2 && payload[1] === 1 };
+}

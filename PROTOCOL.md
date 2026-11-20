@@ -51,7 +51,7 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x02 | HELLO_ACK        | host → client | version(1)=1, codec(1), widthPx(4 BE), heightPx(4 BE), flags(1: bit 0 = hardware encoder) |
 | 0x03 | CLIENT_DISPLAYS  | client → host | clientWidthPx(4 BE), clientHeightPx(4 BE), flags(1: bit 0 = second display surface attached, bit 1 = plain 1x display) [, secondWidthPx(4 BE), secondHeightPx(4 BE) — only when bit 0 set] |
 | 0x04 | STREAM_STATUS    | host → client | currentBitrateKbps(2 BE) — see "Connection quality" |
-| 0x05 | HOST_LOCK_STATE  | host → client | locked(1: 0/1) — see "Lock screen fallback" |
+| 0x05 | HOST_LOCK_STATE  | host → client | locked(1: 0/1) [, native(1: 0/1)] — see "Lock screen fallback" |
 | 0x06 | CURSOR_POS       | host → client | x(Float32 BE), y(Float32 BE) — normalized 0..1 in this display's source-frame space; see "Cursor-follow auto-pan" |
 | 0x07 | PING             | both | empty. Keepalive: the browser client sends one after 20 s of sending nothing; the host echoes it. Hosts older than 0.9.23 skip it as an unknown type |
 | 0x08 | AUTH_CHALLENGE   | host → client | first message on every connection — see "Device authentication and encrypted session" |
@@ -310,6 +310,18 @@ the browser fallback. On `locked = 0` the banner clears and the native video
 resumes on its own through the existing reconnect/keyframe flow — no separate
 resume message. Pre-lock-state hosts simply never send it; the client shows no
 banner.
+
+
+### Native lock screen (optional trailing byte)
+
+The host setting `nativeLockScreen` (default off) adds a second payload byte to
+HOST_LOCK_STATE: `native = 1` when it is on. The host then keeps streaming and
+injecting while locked, so the client must keep showing the native stream, show
+a banner only ("Mac is locked, type the password to unlock") and never switch to
+the browser VNC fallback. With the setting off the payload is the original single
+byte, so the default and older clients are unchanged. A missing second byte or a
+value other than 1 means off. Turn it on only after the pre-login probe shows input
+works at the lock screen: `defaults write <bundle id> nativeLockScreen -bool true`.
 
 ## Cursor-follow auto-pan (CURSOR_POS)
 
