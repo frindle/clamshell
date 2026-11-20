@@ -43,6 +43,8 @@ public struct AppProfile: Equatable {
 public enum Blocker: Equatable {
     case inCall
     case transferInProgress
+    /// Kind H: no serialisable form, so it cannot be moved even when nothing else is reported.
+    case noSerialisableState
     case toolCallInFlight
     case localTerminalJob
     case unsavedEdits([String])
@@ -77,7 +79,7 @@ public enum StateCostTable {
             return .free
         case .h:
             // Kind H has no serialisable form. With no live blocker reported it is treated as blocked anyway.
-            return .blocked([.transferInProgress])
+            return .blocked([.noSerialisableState])
         case .a, .b, .c, .d, .e:
             switch app.restore {
             case .passed: return .cheap
@@ -122,7 +124,7 @@ public enum MoveAdvisor {
         for c in candidates {
             let targets = others.filter { $0.name != source.name && Placer.eligible($0, cfg, need: c.profile.residentMB) }
                 .sorted { a, b in
-                    let ha = cfg.headroomMB(a), hb = cfg.headroomMB(b)
+                    let ha = cfg.headroomMB(a) ?? Int.min, hb = cfg.headroomMB(b) ?? Int.min
                     return ha != hb ? ha > hb : a.name < b.name
                 }
             if let t = targets.first {
@@ -159,6 +161,8 @@ public enum AppCatalog {
         AppProfile(key: "com.brave.Browser", name: "Brave", residentMB: 2900, kind: .b, offer: .onRequest),
         AppProfile(key: "com.google.Chrome", name: "Google Chrome", residentMB: 1573, kind: .b, offer: .onRequest),
         AppProfile(key: "com.anthropic.claudefordesktop", name: "Claude", residentMB: 1805, kind: .c),
+        // Plan 2.1 lists it at about 11 GB; offered only when asked, since it holds unsaved work.
+        AppProfile(key: "com.apple.dt.Xcode", name: "Xcode", residentMB: 11264, kind: .d, offer: .onRequest),
         AppProfile(key: "claude-code", name: "Claude Code", residentMB: 939, kind: .g),
         AppProfile(key: "node-tool-servers", name: "Tool servers", residentMB: 353, kind: .service),
         AppProfile(key: "com.tinyspeck.slackmacgap", name: "Slack", residentMB: 1155, kind: .c),

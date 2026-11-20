@@ -45,15 +45,19 @@ public struct PlacementConfig: Equatable {
     public var reserveBufferMB: Int = 8 * 1024
     /// A Mac with at least this much swap in use counts as short of memory for move offers.
     public var swapThresholdMB: Int = 4 * 1024
-    /// Measured Darkbloom footprint per Mac (experiment E2). Absent means 0 (not installed there).
+    /// Measured Darkbloom footprint per Mac (experiment E2). A Mac with no entry is unmeasured and receives nothing
+    /// (plan 2.7: measured, never assumed). Write 0 for a Mac where Darkbloom is known not to be installed.
     public var darkbloomFootprintMB: [String: Int] = [:]
     public var apps: [String: AppRule] = [:]
     public init() {}
 
-    public func reserveMB(on mac: String) -> Int { reserveBufferMB + (darkbloomFootprintMB[mac] ?? 0) }
+    public func isMeasured(_ mac: String) -> Bool { darkbloomFootprintMB[mac] != nil }
 
-    /// Free memory after the reserve. May be negative.
-    public func headroomMB(_ s: HostSample) -> Int { s.freeMB - reserveMB(on: s.name) }
+    /// Buffer plus Darkbloom's footprint; nil when the footprint is not measured.
+    public func reserveMB(on mac: String) -> Int? { darkbloomFootprintMB[mac].map { reserveBufferMB + $0 } }
+
+    /// Free memory after the reserve. May be negative. nil when the Mac's Darkbloom footprint is not measured.
+    public func headroomMB(_ s: HostSample) -> Int? { reserveMB(on: s.name).map { s.freeMB - $0 } }
 
     public func resolve(_ app: String) -> (placement: Placement, needs: Set<Need>) {
         let rule = apps[app]

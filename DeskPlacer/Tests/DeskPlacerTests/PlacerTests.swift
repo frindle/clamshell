@@ -13,8 +13,47 @@ enum Samples {
 
     static func config() -> PlacementConfig {
         var c = PlacementConfig()
-        c.darkbloomFootprintMB = ["op": 1964, "big": 1964, "tight": 1964]
+        c.darkbloomFootprintMB = ["op": 1964, "big": 1964, "tight": 1964, "other": 1964, "a": 1964, "b": 1964]
         return c
+    }
+}
+
+final class PlacerReviewTests: XCTestCase {
+    func input(_ hosts: [HostSample], mb: Int) -> PlacerInput { PlacerInput(seat: "op", hosts: hosts, running: [:], expectedMB: mb) }
+
+    func testMacWithNoMeasuredFootprintReceivesNothing() throws {
+        var cfg = try RulesFile.parse("[app.\"slack\"]\nprefer = \"auto\"\n[app.\"ff\"]\nhome = \"big\"\n")
+        // No [mac] entry at all.
+        XCTAssertEqual(Placer.decide(app: "slack", config: cfg, input: input([Samples.big], mb: 100)), .refused(.footprintUnmeasured(["big"])))
+        XCTAssertEqual(Placer.decide(app: "ff", config: cfg, input: input([Samples.big], mb: 100)), .refused(.footprintUnmeasured(["big"])))
+        // One measured Mac is still used; the unmeasured one is skipped even with more room.
+        cfg.darkbloomFootprintMB = ["tight": 0, "op": 0]
+        let opCalm = Samples.operatorCalm
+        XCTAssertEqual(Placer.decide(app: "slack", config: cfg, input: input([Samples.big, opCalm], mb: 100)), .run(on: "op", reason: .mostHeadroom))
+        // Explicit 0 counts as measured (Darkbloom not installed there).
+        cfg.darkbloomFootprintMB["big"] = 0
+        XCTAssertEqual(Placer.decide(app: "slack", config: cfg, input: input([Samples.big], mb: 100)), .run(on: "big", reason: .mostHeadroom))
+    }
+
+    func testXcodeIsRefusedOnAMacWithOneGigFree() throws {
+        var cfg = try RulesFile.parse("[app.\"com.apple.dt.Xcode\"]\nprefer = \"auto\"\n")
+        cfg.darkbloomFootprintMB = ["small": 1964]
+        let xcode = try XCTUnwrap(AppCatalog.profile("com.apple.dt.Xcode"))
+        XCTAssertGreaterThan(xcode.residentMB, 10_000)
+        let small = HostSample(name: "small", totalMB: 16384, freeMB: 1024)
+        XCTAssertEqual(Placer.decide(app: xcode.key, config: cfg, input: input([small], mb: xcode.residentMB)), .refused(.noHostQualifies))
+        let roomy = HostSample(name: "small", totalMB: 65536, freeMB: 40000)
+        XCTAssertEqual(Placer.decide(app: xcode.key, config: cfg, input: input([roomy], mb: xcode.residentMB)), .run(on: "small", reason: .mostHeadroom))
+    }
+
+    func testDuplicateKeysAndTablesAreLineNumberedErrors() {
+        func err(_ text: String) -> RulesParseError? { do { _ = try RulesFile.parse(text); return nil } catch { return error as? RulesParseError } }
+        XCTAssertEqual(err("[defaults]\nreserve_buffer_mb = 1\nreserve_buffer_mb = 2\n")?.line, 3)
+        XCTAssertEqual(err("[app.\"x\"]\nhome = \"a\"\npin = \"b\"\n")?.line, 3)
+        XCTAssertEqual(err("[app.\"x\"]\nneeds = []\n[app.\"x\"]\n")?.line, 3)
+        XCTAssertEqual(err("[mac.\"m\"]\ndarkbloom_footprint_mb = 1\ndarkbloom_footprint_mb = 1\n")?.line, 3)
+        // The same key in different tables is fine.
+        XCTAssertNil(err("[app.\"x\"]\nhome = \"a\"\n[app.\"y\"]\nhome = \"a\"\n"))
     }
 }
 
@@ -70,11 +109,12 @@ final class PlacerTests: XCTestCase {
     }
 
     func testInputOrderNeverChangesTheAnswer() throws {
-        let cfg = try RulesFile.parse("[app.\"slack\"]\nprefer = \"auto\"\n")
+        var cfg = try RulesFile.parse("[app.\"slack\"]\nprefer = \"auto\"\n")
+        cfg.darkbloomFootprintMB = Samples.config().darkbloomFootprintMB
         let hosts = [Samples.operatorCalm, Samples.big, Samples.tight]
         var seen = Set<String>()
         for perm in [[0, 1, 2], [2, 1, 0], [1, 0, 2], [1, 2, 0]] {
-            let d = Placer.decide(app: "slack", config: cfg, input: PlacerInput(seat: "op", hosts: perm.map { hosts[$0] }))
+            let d = Placer.decide(app: "slack", config: cfg, input: PlacerInput(seat: "op", hosts: perm.map { hosts[$0] }, running: [:], expectedMB: 0))
             if case .run(let on, _) = d { seen.insert(on) }
         }
         XCTAssertEqual(seen, ["big"])
@@ -85,7 +125,8 @@ final class PlacerTests: XCTestCase {
         XCTAssertEqual(cfg.reserveMB(on: "big"), 8192 + 1964)
         XCTAssertEqual(cfg.headroomMB(Samples.big), 71000 - 8192 - 1964)
         XCTAssertEqual(cfg.headroomMB(Samples.tight), 9000 - 8192 - 1964)
-        XCTAssertEqual(cfg.reserveMB(on: "unknown-mac"), 8192)
+        XCTAssertNil(cfg.reserveMB(on: "unknown-mac"))
+        XCTAssertNil(cfg.headroomMB(HostSample(name: "unknown-mac", totalMB: 1, freeMB: 50000)))
     }
 }
 
@@ -178,7 +219,7 @@ final class StateCostTests: XCTestCase {
             ("browser tab media (E) passed: cheap", p(.e, .passed), [], .cheap),
             ("layout-only app (A) passed: cheap", p(.a, .passed), [], .cheap),
             ("download in progress blocks", p(.b, .passed), [.transferInProgress], .blocked([.transferInProgress])),
-            ("kind H is blocked even with nothing reported", p(.h, .passed), [], .blocked([.transferInProgress])),
+            ("kind H is blocked even with nothing reported", p(.h, .passed), [], .blocked([.noSerialisableState])),
             ("never-move app is pinned whatever else", p(.service, .passed, .never), [], .pinned(.neverMoves)),
             ("never-move app with a blocker is still pinned", p(.c, .passed, .never), [.inCall], .pinned(.neverMoves)),
         ]
@@ -233,7 +274,7 @@ final class StateCostTests: XCTestCase {
         // Only a Mac with 1,000 MB of headroom is available; the 1,805 MB app does not fit, the 440 MB one does.
         let small = HostSample(name: "small", totalMB: 16384, freeMB: 8192 + 1000)
         let running = scored(["com.anthropic.claudefordesktop", "de.tutao.tutanota"])
-        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [small], config: Samples.config())
+        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [small], config: { var c = Samples.config(); c.darkbloomFootprintMB["small"] = 0; return c }())
         XCTAssertEqual(prop?.app.key, "de.tutao.tutanota")
     }
 

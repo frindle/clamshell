@@ -29,6 +29,8 @@ public enum RulesFile {
         enum Section { case none, defaults, app(String), mac(String) }
         var section = Section.none
         var lineNo = 0
+        var seenKeys = Set<String>()
+        var seenTables = Set<String>()
         for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
             lineNo += 1
             let line = trim(stripComment(String(rawLine)))
@@ -36,15 +38,20 @@ public enum RulesFile {
             if line.hasPrefix("[") {
                 guard line.hasSuffix("]") else { throw RulesParseError(line: lineNo, message: "unterminated table header") }
                 let inner = trim(String(line.dropFirst().dropLast()))
+                guard seenTables.insert(inner).inserted else { throw RulesParseError(line: lineNo, message: "duplicate table [\(inner)]") }
+                seenKeys = []
                 if inner == "defaults" { section = .defaults; continue }
                 if let key = tableKey(inner, prefix: "app") {
-                    section = .app(key); if cfg.apps[key] == nil { cfg.apps[key] = AppRule() }; continue
+                    section = .app(key); cfg.apps[key] = AppRule(); continue
                 }
                 if let key = tableKey(inner, prefix: "mac") { section = .mac(key); continue }
                 throw RulesParseError(line: lineNo, message: "unknown table [\(inner)]")
             }
             guard let eq = line.firstIndex(of: "=") else { throw RulesParseError(line: lineNo, message: "expected key = value") }
             let key = trim(String(line[line.startIndex..<eq]))
+            // home/pin and mode/prefer set the same thing, so giving both is a duplicate too.
+            let slot = ["home": "placement", "pin": "placement", "mode": "placement", "prefer": "placement"][key] ?? key
+            guard seenKeys.insert(slot).inserted else { throw RulesParseError(line: lineNo, message: "duplicate key \(key)") }
             let value = try parseValue(trim(String(line[line.index(after: eq)...])), line: lineNo)
             switch section {
             case .none: throw RulesParseError(line: lineNo, message: "key outside a table")
