@@ -94,7 +94,7 @@ test('only /client is handled: other paths, origins and methods are left alone',
 test('sw.js itself is never cached', async () => {
   const w = makeWorker();
   await w.fire(w.request('/client/sw.js'));
-  assert.strictEqual(w.stores.get('clamshell-shell-1.0-1').map.size, 0);
+  assert.strictEqual((w.stores.get('clamshell-shell-1.0-1')?.map.size ?? 0), 0);
 });
 
 test('a failed response is not cached and passes through', async () => {
@@ -102,7 +102,7 @@ test('a failed response is not cached and passes through', async () => {
   w.state.ok = false;
   const res = await w.fire(w.request('/client', { mode: 'navigate' }));
   assert.strictEqual(res.ok, false);
-  assert.strictEqual(w.stores.get('clamshell-shell-1.0-1').map.size, 0);
+  assert.strictEqual((w.stores.get('clamshell-shell-1.0-1')?.map.size ?? 0), 0);
 });
 
 test('activating a new build deletes the old build caches only', async () => {

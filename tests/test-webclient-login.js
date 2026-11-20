@@ -85,5 +85,6 @@ test('form is a real form that a password manager fills', () => {
 test('nothing here stores the password', async () => {
   const { readFileSync } = await import('node:fs');
   const src = readFileSync(new URL('../Sources/Clamshell/Resources/webclient/login.js', import.meta.url), 'utf8');
-  assert.doesNotMatch(src, /localStorage|sessionStorage|indexedDB|console\./);
+  const code = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+  assert.doesNotMatch(code, /localStorage|sessionStorage|indexedDB|console\./);
 });

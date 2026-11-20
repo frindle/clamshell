@@ -210,6 +210,6 @@ test('host capabilities are 0 until set, and only through setHostCapabilities', 
 test('capability bit positions match PROTOCOL.md', () => {
   assert.deepStrictEqual(CAP, {
     approvalRequired: 1, relativeMouse: 2, textInput: 4, extraButtons: 8,
-    deviceApproval: 16, fileTransfer: 32, peripherals: 64,
+    deviceApproval: 16, fileTransfer: 32, peripherals: 64, restart: 128, loginCredentials: 256,
   });
 });
