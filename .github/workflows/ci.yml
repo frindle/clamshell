@@ -13,6 +13,7 @@ concurrency:
 
 jobs:
   build:
+    name: macOS build
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
