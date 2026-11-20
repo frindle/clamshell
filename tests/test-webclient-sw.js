@@ -22,8 +22,8 @@ function makeWorker({ build = '1.0-1', kill = false, online = true } = {}) {
     keys: async () => [...stores.keys()],
     delete: async (n) => stores.delete(n),
   };
-  const state = { online, ok: true, fetched: [] };
-  const mkRes = (body) => ({ ok: state.ok, body, clone() { return this; } });
+  const state = { online, ok: true, status: 200, fetched: [] };
+  const mkRes = (body) => ({ ok: state.ok, status: state.status, body, clone() { return this; } });
   const self = {
     registration: { unregister: async () => { unregistered = true; } },
     location: { origin: ORIGIN },
@@ -99,10 +99,33 @@ test('sw.js itself is never cached', async () => {
 
 test('a failed response is not cached and passes through', async () => {
   const w = makeWorker();
-  w.state.ok = false;
+  w.state.ok = false; w.state.status = 404;
   const res = await w.fire(w.request('/client', { mode: 'navigate' }));
   assert.strictEqual(res.ok, false);
   assert.strictEqual((w.stores.get('clamshell-shell-1.0-1')?.map.size ?? 0), 0);
+});
+
+test('a proxy error page (Mac down behind a tunnel) serves the cached copy', async () => {
+  const w = makeWorker();
+  await w.fire(w.request('/client', { mode: 'navigate' }));
+  await w.fire(w.request('/client/client.js'));
+  w.state.ok = false;
+  for (const status of [502, 530]) {
+    w.state.status = status;
+    assert.strictEqual((await w.fire(w.request('/client?x=1', { mode: 'navigate' }))).body, 'live:/client');
+    assert.strictEqual((await w.fire(w.request('/client/client.js'))).body, 'live:/client/client.js');
+  }
+});
+
+test('a proxy error with nothing cached, and any 4xx, pass through', async () => {
+  const w = makeWorker();
+  w.state.ok = false; w.state.status = 530;
+  assert.strictEqual((await w.fire(w.request('/client/never-seen.js'))).status, 530);
+  w.state.ok = true; w.state.status = 200;
+  await w.fire(w.request('/client', { mode: 'navigate' }));
+  w.state.ok = false; w.state.status = 401;
+  const res = await w.fire(w.request('/client', { mode: 'navigate' }));
+  assert.strictEqual(res.status, 401);
 });
 
 test('activating a new build deletes the old build caches only', async () => {

@@ -35,26 +35,37 @@ function cacheable(url) {
   return !u.pathname.endsWith('/sw.js');
 }
 
+// The last good copy for this request: the file itself, or for a page load the cached /client page.
+async function cached(request, cachesApi, cacheName) {
+  const cache = await cachesApi.open(cacheName);
+  const hit = await cache.match(keyFor(request.url));
+  if (hit) return hit;
+  if (request.mode === 'navigate') return cache.match('/client');
+  return undefined;
+}
+
 async function respond(request, deps) {
   const { cachesApi, fetchFn, cacheName } = deps;
+  let res;
   try {
-    const res = await fetchFn(request);
-    if (res && res.ok && cacheable(request.url)) {
-      const cache = await cachesApi.open(cacheName);
-      // The page is requested as /client or /client/ with a query string at times; keep one copy.
-      await cache.put(keyFor(request.url), res.clone());
-    }
-    return res;
+    res = await fetchFn(request);
   } catch (err) {
-    const cache = await cachesApi.open(cacheName);
-    const hit = await cache.match(keyFor(request.url));
+    const hit = await cached(request, cachesApi, cacheName);
     if (hit) return hit;
-    if (request.mode === 'navigate') {
-      const shell = await cache.match('/client');
-      if (shell) return shell;
-    }
     throw err;
   }
+  if (res && res.ok && cacheable(request.url)) {
+    const cache = await cachesApi.open(cacheName);
+    // The page is requested as /client or /client/ with a query string at times; keep one copy.
+    await cache.put(keyFor(request.url), res.clone());
+  } else if (res && res.status >= 500) {
+    // Through a tunnel or proxy a Mac that is down answers with the proxy's error page
+    // (502, 503, 504, 52x, 530) instead of a network error: treat it the same way.
+    // 4xx (a sign-in or a refusal) always passes through.
+    const hit = await cached(request, cachesApi, cacheName);
+    if (hit) return hit;
+  }
+  return res;
 }
 
 function keyFor(url) {
