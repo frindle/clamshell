@@ -16,6 +16,13 @@
       ext.storage.local.set(s).then(function () { document.getElementById('saved').textContent = 'Saved.'; });
     });
   });
+  // A random 64-hex-character token from the browser's own generator.
+  document.getElementById('genToken').addEventListener('click', function () {
+    const el = document.getElementById('token');
+    el.value = core.randomNonce(crypto) + core.randomNonce(crypto);
+    el.type = 'text';
+    el.dispatchEvent(new Event('change'));
+  });
   // Permission requests must come from a click.
   function grant(id, origins) {
     document.getElementById(id).addEventListener('click', function () {

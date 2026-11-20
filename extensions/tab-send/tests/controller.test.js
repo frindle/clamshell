@@ -4,7 +4,7 @@ const core = require('../src/core.js');
 const { createController } = require('../src/controller.js');
 
 const { webcrypto } = require('node:crypto');
-const TOKEN = 'tk';
+const TOKEN = 'k'.repeat(40);
 const settle = () => new Promise((r) => setTimeout(r, 40)); // webcrypto answers on another thread
 const hmac = (token, m) => core.hmacHex(webcrypto.subtle, token, m);
 
@@ -52,6 +52,7 @@ async function handshake(ctl, FakeWS, serverToken) {
   await ctl.connect();
   const ws = FakeWS.last;
   ws.onopen();
+  await settle();
   const cnonce = ws.sentMsgs[0].cnonce;
   const snonce = 'ee'.repeat(16);
   const proof = await hmac(serverToken === undefined ? TOKEN : serverToken, core.serverProofInput(cnonce, snonce));
@@ -199,6 +200,7 @@ test('socket says hello with a nonce, reconnects with backoff after close', asyn
   const ws1 = FakeWS.last;
   assert.equal(ws1.url, 'ws://127.0.0.1:6000/v1/tab-events');
   ws1.onopen();
+  await settle();
   assert.equal(ws1.sentMsgs[0].kind, 'hello');
   assert.match(ws1.sentMsgs[0].cnonce, /^[0-9a-f]{32}$/);
   assert.equal(ws1.sentMsgs[0].token, undefined);
@@ -260,4 +262,86 @@ test('manifest is valid for both browsers', () => {
   const fs = require('node:fs'), path = require('node:path');
   for (const f of [...m.background.scripts, m.background.service_worker, 'src/core.js', 'src/content.js', m.options_ui.page])
     assert.ok(fs.existsSync(path.join(__dirname, '..', f)), f);
+});
+
+test('review round 2: hello carries a proof of the token, the placer is never asked to prove first', async () => {
+  const { ctl, FakeWS } = setup();
+  await ctl.connect();
+  const ws = FakeWS.last;
+  ws.onopen();
+  await settle();
+  const hello = ws.sentMsgs[0];
+  assert.equal(hello.kind, 'hello');
+  assert.equal(hello.proof, await hmac(TOKEN, core.helloProofInput(hello.cnonce)));
+  assert.ok(!JSON.stringify(hello).includes(TOKEN));
+});
+
+test('review round 2: a short token is refused before any socket is opened', async () => {
+  const { ctl, FakeWS } = setup({ token: 'short' });
+  await ctl.connect();
+  assert.equal(FakeWS.last, undefined);
+  assert.match(ctl.status.lastError, /too short/);
+});
+
+test('review round 2: a tab for a local address waits for a click', async () => {
+  const { ctl, calls, FakeWS } = setup();
+  await login(ctl, FakeWS);
+  const msg = (id, url) => JSON.stringify({ v: 1, kind: 'open-tab', id, tab: { url } });
+  assert.equal(await ctl.handleIncoming(msg('a1', 'http://192.168.0.1/admin')), false);
+  assert.equal(calls.created.length, 0, 'nothing opened without a click');
+  assert.equal(calls.badge[calls.badge.length - 1], 'o');
+  assert.equal(await ctl.openPending(), true);
+  assert.equal(calls.created.length, 1);
+  assert.equal(calls.created[0].url, 'http://192.168.0.1/admin');
+  assert.equal(await ctl.openPending(), false, 'only once');
+});
+
+test('review round 2: at most ten tabs a minute open without a click', async () => {
+  const { ctl, calls, FakeWS } = setup();
+  await login(ctl, FakeWS);
+  for (let i = 0; i < 14; i++) await ctl.handleIncoming(JSON.stringify({ v: 1, kind: 'open-tab', id: 'r' + i, tab: { url: 'https://example.com/' + i } }));
+  assert.equal(calls.created.length, 10);
+});
+
+test('review round 2: seen ids and a held tab survive a worker restart', async () => {
+  const a = setup();
+  await login(a.ctl, a.FakeWS);
+  await a.ctl.handleIncoming(JSON.stringify({ v: 1, kind: 'open-tab', id: 'same', tab: { url: 'https://example.com/' } }));
+  const b = setup();
+  Object.assign(b.sess, a.sess);
+  await b.ctl.restoreState();
+  await login(b.ctl, b.FakeWS);
+  assert.equal(await b.ctl.handleIncoming(JSON.stringify({ v: 1, kind: 'open-tab', id: 'same', tab: { url: 'https://example.com/' } })), false);
+  assert.equal(b.calls.created.length, 0, 'a repeat after a restart is dropped');
+});
+
+test('review round 2: restore waits for the page that was sent, not a redirect', async () => {
+  const { ctl, calls, FakeWS } = setup();
+  await login(ctl, FakeWS);
+  await ctl.handleIncoming(JSON.stringify({ v: 1, kind: 'open-tab', id: 'rr', tab: { url: 'https://example.com/a', scrollY: 40 } }));
+  await ctl.onTabUpdated(99, { status: 'complete' }, { url: 'https://login.other.test/' });
+  assert.equal(calls.sent.filter((s) => s[1] === 'desk-restore').length, 0, 'sign-in page does not consume the state');
+  await ctl.onTabUpdated(99, { status: 'complete' }, { url: 'https://example.com/a' });
+  assert.equal(calls.sent.filter((s) => s[1] === 'desk-restore').length, 1);
+});
+
+test('review round 2: the first click after the worker wakes waits for the handshake instead of failing', async () => {
+  const { ctl, calls, FakeWS } = setup();
+  const clicked = ctl.onActionClicked({ id: 7 });
+  await settle();
+  const ws = FakeWS.last;
+  ws.onopen();
+  await settle();
+  const cnonce = ws.sentMsgs[0].cnonce, snonce = 'ee'.repeat(16);
+  ws.onmessage({ data: JSON.stringify({ v: 1, kind: 'challenge', snonce, proof: await hmac(TOKEN, core.serverProofInput(cnonce, snonce)) }) });
+  await settle();
+  ws.onmessage({ data: JSON.stringify({ v: 1, kind: 'ready' }) });
+  assert.equal(await clicked, true);
+  assert.equal(calls.fetch.length, 1);
+});
+
+test('review round 2: the permission request is the first call in a click handler', () => {
+  const { ctl, calls } = setup({ noPerm: true });
+  ctl.onActionClicked({ id: 7 });
+  assert.equal(calls.perms.length, 1, 'request issued synchronously, before any await');
 });

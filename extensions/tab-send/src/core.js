@@ -20,6 +20,28 @@
     return parsed.protocol === 'http:' || parsed.protocol === 'https:';
   }
 
+  // Tokens shorter than this are refused: the handshake is a keyed digest, so a short typed secret could be
+  // guessed offline by any local program that watched one exchange. Options can generate a strong one.
+  const MIN_TOKEN = 32;
+  function tokenIsStrong(t) { return typeof t === 'string' && t.length >= MIN_TOKEN; }
+
+  // Addresses that point at this machine or a private network: router pages, admin consoles, dev servers.
+  // A tab for one of these is never opened without a click (see controller). Any IPv6 literal counts as local.
+  function isLocalHost(u) {
+    let h;
+    try { h = new URL(u).hostname.toLowerCase(); } catch (e) { return true; }
+    if (h.charAt(0) === '[') return true;
+    if (h === 'localhost' || /\.(localhost|local|lan|internal|home|corp|intranet|private|localdomain|home\.arpa)$/.test(h)) return true;
+    if (h.indexOf('.') === -1) return true; // single-label names resolve on the local network (a router called "router")
+    const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
+    if (m) {
+      const a = +m[1], b = +m[2];
+      return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) ||
+        (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || a >= 224;
+    }
+    return false;
+  }
+
   function clampTitle(t) {
     return typeof t === 'string' ? t.slice(0, MAX_TITLE) : '';
   }
@@ -70,7 +92,8 @@
   // ---- authentication ----
   // The token is a shared secret and is never sent. Each side proves it knows the token by an HMAC over fresh
   // nonces from both sides, so a program that merely listens on the port can neither learn the token nor pass as the placer.
-  //   client -> hello {cnonce}            server -> challenge {snonce, proof = H("server|cnonce|snonce")}
+  //   client -> hello {cnonce, proof = H("hello|cnonce")}   (server stays silent unless this verifies)
+  //   server -> challenge {snonce, proof = H("server|cnonce|snonce")}
   //   client -> auth {proof = H("client|cnonce|snonce")}      server -> ready
   // Later HTTP requests are signed with the session: H("http|snonce|seq|body"), seq strictly increasing.
 
@@ -97,9 +120,10 @@
     return d === 0;
   }
 
-  function isNonce(n) { return typeof n === 'string' && /^[0-9a-f]{16,128}$/.test(n); }
+  function isNonce(n) { return typeof n === 'string' && /^[0-9a-f]{32,128}$/.test(n); }
 
   const serverProofInput = function (cnonce, snonce) { return 'server|' + cnonce + '|' + snonce; };
+  const helloProofInput = function (cnonce) { return 'hello|' + cnonce; };
   const clientProofInput = function (cnonce, snonce) { return 'client|' + cnonce + '|' + snonce; };
   const httpProofInput = function (snonce, seq, body) { return 'http|' + snonce + '|' + seq + '|' + body; };
 
@@ -114,9 +138,10 @@
     return { url: httpUrl(settings, '/v1/tab-send'), init: { method: 'POST', headers: signedHeaders(auth.session, auth.seq, auth.sig), body } };
   }
 
-  // First message on the event socket: a fresh nonce, no secret.
-  function buildHello(cnonce) {
-    return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'hello', cnonce });
+  // First message on the event socket: a fresh nonce and a proof that the client knows the token. The placer
+  // answers nothing to a peer that has not proved it first, so it never hands a keyed digest to a stranger.
+  function buildHello(cnonce, proof) {
+    return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'hello', cnonce, proof });
   }
 
   function buildAuth(proof) { return JSON.stringify({ v: PROTOCOL_VERSION, kind: 'auth', proof }); }
@@ -233,7 +258,7 @@
 
   return {
     PROTOCOL_VERSION, MAX_URL, MAX_TITLE, DEFAULTS,
-    isSendableUrl, clampTitle, sanitizeMedia, buildPayload, normalizeSettings,
+    isSendableUrl, isLocalHost, tokenIsStrong, MIN_TOKEN, helloProofInput, clampTitle, sanitizeMedia, buildPayload, normalizeSettings,
     httpUrl, wsUrl, hmacHex, randomNonce, safeEqual, serverProofInput, clientProofInput, httpProofInput,
     sendBody, bringBody, buildRequest, buildHello, buildAuth, parseHandshake, parseIncoming,
     Backoff, Seen, collectPageState, applyPageState,

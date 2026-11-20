@@ -20,12 +20,12 @@
   // Toolbar click: also answers a request from the other Mac (badge "?"). Nothing leaves the browser without it.
 ext.action.onClicked.addListener(function (tab) { ctl.onActionClicked(tab); });
   ext.contextMenus.onClicked.addListener(function (info, tab) { ctl.onMenuClicked(info, tab); });
-  ext.tabs.onUpdated.addListener(function (id, change) { ctl.onTabUpdated(id, change); });
+  ext.tabs.onUpdated.addListener(function (id, change, tab) { ctl.onTabUpdated(id, change, tab); });
   ext.tabs.onRemoved.addListener(function (id) { ctl.onTabRemoved(id); });
   ext.runtime.onInstalled.addListener(function () { ext.storage.local.get(['port', 'token', 'targetName']).then(ctl.setupMenus); });
   ext.storage.onChanged.addListener(function () { ext.storage.local.get(['port', 'token', 'targetName']).then(ctl.setupMenus); });
   // A service worker can be stopped; the alarm brings the event socket back.
   ext.alarms.create('desk-keepalive', { periodInMinutes: 1 });
   ext.alarms.onAlarm.addListener(function () { ctl.connect(); });
-  ctl.connect();
+  ctl.restoreState().then(function () { ctl.connect(); });
 })();

@@ -44,8 +44,8 @@ test('requests go to loopback only and never carry the token', () => {
 });
 
 test('hello carries a nonce and no secret', () => {
-  const h = JSON.parse(core.buildHello('aa'.repeat(16)));
-  assert.deepEqual(h, { v: 1, kind: 'hello', cnonce: 'aa'.repeat(16) });
+  const h = JSON.parse(core.buildHello('aa'.repeat(16), 'p'));
+  assert.deepEqual(h, { v: 1, kind: 'hello', cnonce: 'aa'.repeat(16), proof: 'p' });
 });
 
 test('hmac matches the RFC 4231 test vector, safeEqual is exact', async () => {
@@ -128,4 +128,20 @@ test('applyPageState gives up after the retry budget', async () => {
   const r = await core.applyPageState(win, fakeDoc([]), { scrollX: 0, scrollY: 500, media: null }, (fn) => { n++; setImmediate(fn); }, { tries: 3 });
   assert.equal(r.scrolled, false);
   assert.equal(n, 2);
+});
+
+test('review round 2: nonces under 16 bytes are refused, tokens under 32 characters are weak', () => {
+  assert.equal(core.parseHandshake(JSON.stringify({ v: 1, kind: 'challenge', snonce: 'ab'.repeat(8), proof: 'p' })), null);
+  assert.notEqual(core.parseHandshake(JSON.stringify({ v: 1, kind: 'challenge', snonce: 'ab'.repeat(16), proof: 'p' })), null);
+  assert.equal(core.tokenIsStrong('abc'), false);
+  assert.equal(core.tokenIsStrong('k'.repeat(32)), true);
+  assert.equal(core.tokenIsStrong(undefined), false);
+});
+
+test('review round 2: local and private addresses are recognised, public ones are not', () => {
+  const local = ['http://localhost:8080/', 'http://127.0.0.1/', 'http://192.168.1.1/admin', 'http://10.0.0.5/', 'http://172.20.1.1/',
+    'http://169.254.169.254/', 'http://router/', 'http://nas.local/', 'http://[::1]/', 'http://printer.lan/', 'http://100.64.1.1/', 'http://0.0.0.0/',
+    'http://2130706433/', 'http://0x7f.0.0.1/'];
+  local.forEach((u) => assert.equal(core.isLocalHost(u), true, u));
+  ['https://example.com/', 'http://8.8.8.8/', 'https://a.b.example.org/x', 'http://172.32.0.1/'].forEach((u) => assert.equal(core.isLocalHost(u), false, u));
 });
