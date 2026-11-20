@@ -5,6 +5,10 @@ on:
   push:
     branches: [main]
     paths: ['desk/arrival/**', '.github/workflows/desk-arrival.yml']
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint-and-test:
     strategy:
