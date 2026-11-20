@@ -6,6 +6,10 @@ on:
   pull_request:
     paths: ['DeskPlacer/**', '.github/workflows/desk-placer.yml']
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Pure logic, no Apple frameworks: runs on Linux, off the macOS runners.
   linux:
