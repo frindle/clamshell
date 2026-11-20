@@ -46,7 +46,20 @@ compare() {
   ub=$((tb - $(kv_get "$b" available_mb))); ua=$((ta - $(kv_get "$a" available_mb)))
   sb=$(kv_get "$b" swap_used_mb); sa=$(kv_get "$a" swap_used_mb)
   fp=$((ua - ub))
+  local rss
+  rss=$(kv_get "$a" darkbloom_rss_mb)
   desk_say "used before: ${ub} MB   used after: ${ua} MB   swap before: ${sb:-?} MB   swap after: ${sa:-?} MB"
+  desk_say "system difference (total minus available): ${fp} MB; resident size of the matching processes: ${rss:-not measured} MB"
+  # "Available" counts inactive pages. A file-mapped model can sit there, so the difference can read low,
+  # and a low footprint means a low reserve (the unsafe direction). Use the larger of the two numbers.
+  case "$rss" in ''|*[!0-9]*) rss="" ;; esac
+  if [ -n "$rss" ] && [ "$rss" -gt "$fp" ]; then
+    desk_todo "the processes' own resident size ($rss MB) is larger than the system difference ($fp MB): the model is probably file-mapped. Using the larger number for the reserve."
+    fp=$rss
+  fi
+  if [ "$(kv_get "$b" darkbloom_running)" = "yes" ]; then
+    desk_fail "the 'before' snapshot already saw Darkbloom: it is not a clean baseline"
+  fi
   desk_say "darkbloom_footprint_mb = $fp"
   if [ "$fp" -lt 500 ]; then
     desk_todo "difference is under 500 MB: Darkbloom may not have loaded its model yet, or other apps changed. Repeat the 'after' snapshot once it is serving."
@@ -65,8 +78,16 @@ compare() {
   if [ "$head" -gt 20480 ]; then desk_pass "more than 20 GB of headroom"; else desk_fail "20 GB of headroom not met"; fi
 }
 
+# Sum of resident memory (MB) of the processes matching the Darkbloom pattern. 0 when none.
+darkbloom_rss_mb() {
+  local pids
+  pids=$(desk_darkbloom_pids | paste -sd, -)
+  [ -n "$pids" ] || { echo 0; return; }
+  ps -o rss= -p "$pids" 2>/dev/null | awk '{ s += $1 } END { printf "%d", s / 1024 }'
+}
+
 snapshot() {
-  local phase="$1" ps total pr level swap_line swap_used top
+  local phase="$1" ps total pr level swap_line swap_used top ev=""
   ps=$(desk_capture sysctl -n hw.pagesize); total=$(desk_capture sysctl -n hw.memsize)
   [ -n "$ps" ] && [ -n "$total" ] || { desk_fail "sysctl hw.pagesize / hw.memsize unavailable (is this macOS?)"; return 1; }
   local file=""
@@ -80,10 +101,14 @@ $(desk_capture vm_stat | parse_vm_stat "$ps")"
   swap_used=$(printf '%s' "$swap_line" | sed -n 's/.*used = \([0-9.]*\)M.*/\1/p')
   level=$(desk_capture sysctl -n kern.memorystatus_vm_pressure_level)
   case "$level" in 1) pr=green ;; 2) pr=yellow ;; 4) pr=red ;; *) pr=unknown ;; esac
+  local dbrun=no
+  if ev=$(desk_darkbloom_running); then dbrun=yes; else ev=""; fi
   body="$body
 swap_used_mb=${swap_used%.*}
 pressure=$pr
-darkbloom_running=$(if pgrep -il darkbloom >/dev/null 2>&1; then echo yes; else echo no; fi)"
+darkbloom_running=$dbrun
+darkbloom_evidence=${ev:-none}
+darkbloom_rss_mb=$(darkbloom_rss_mb)"
   printf '%s\n' "$body" | desk_scrub
   desk_info "$(desk_capture memory_pressure | grep -i 'free percentage')"
   if [ -n "$file" ]; then printf '%s\n' "$body" > "$file"; desk_info "snapshot written to $file"; fi
@@ -92,6 +117,12 @@ darkbloom_running=$(if pgrep -il darkbloom >/dev/null 2>&1; then echo yes; else 
   top=$(desk_capture ps -axo rss=,comm= | awk '{ rss=$1; $1=""; n=split($0, p, "/"); name=p[n]; sub(/^ +/, "", name); r[name]+=rss } END { for (k in r) printf "%d %s\n", r[k]/1024, k }' | sort -rn | head -15)
   printf '%s\n' "$top" | desk_scrub
   desk_say ""
+  if [ "$phase" = before ] && ev=$(desk_darkbloom_running); then
+    desk_fail "Darkbloom is already here ($ev): this is not a 'before' baseline. Pattern in use: '$(desk_darkbloom_pattern)'."
+  fi
+  if [ "$phase" = after ] && ! desk_darkbloom_running >/dev/null; then
+    desk_todo "No Darkbloom process, launchd job or app found with pattern '$(desk_darkbloom_pattern)'. If it is running under another name, set DESK_DARKBLOOM_PATTERN and repeat."
+  fi
   if [ "$phase" = before ]; then
     desk_todo "Before: close everything you do not need and make sure Darkbloom is NOT installed or running. Then run again with --phase after once Darkbloom has loaded its model."
   fi
@@ -119,7 +150,9 @@ main() {
       desk_cmd sysctl -n hw.memsize; desk_cmd vm_stat; desk_cmd sysctl -n vm.swapusage
       desk_cmd sysctl -n kern.memorystatus_vm_pressure_level; desk_cmd memory_pressure
       desk_cmd ps -axo rss=,comm=
-      desk_cmd pgrep -il darkbloom
+      desk_cmd pgrep -fi "$(desk_darkbloom_pattern)"
+      desk_cmd launchctl list
+      desk_cmd ps -o rss= -p "<matching pids>"
       exit 0 ;;
   esac
   if [ -n "$CMP_B" ]; then compare "$CMP_B" "$CMP_A"; desk_finish; fi

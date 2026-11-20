@@ -11,16 +11,18 @@
 #                                                writes then reads a test file on a share mounted from the other
 #                                                Mac, reports GB/s, deletes what it made. Writes SIZE GB to disk.
 #   e5-thunderbolt-speed.sh --check | --dry-run | --help
-# The address is read from the command line only and never printed. Do not run on a Mac serving Darkbloom
-# without Penn's go: the load tests use CPU, disk and network.
+# The address is read from the command line only and never printed.
+# Load modes (--run ...) REFUSE to start while Darkbloom is present (process, launchd job or app; see lib.sh).
+# Penn's go is the only reason to pass --allow-darkbloom: the tests use CPU, disk and network. The listener
+# needs --bind ADDRESS (the Thunderbolt Bridge address on this Mac) and never listens on every interface.
 
 DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
 . "$DIR/lib.sh"
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
 
-RUN=""; PEER=""; STREAMS=4; SECONDS_T=20; SMBDIR=""; SIZE_GB=20; SMALL=20000
+ALLOW_DB=0; BIND=""; RUN=""; PEER=""; STREAMS=4; SECONDS_T=20; SMBDIR=""; SIZE_GB=20; SMALL=20000
 
 # GB/s from bytes and seconds.
 rate_gbs() { awk -v b="$1" -v s="$2" 'BEGIN { if (s <= 0) print "0.00"; else printf "%.2f", b / s / 1000000000 }'; }
@@ -54,7 +56,24 @@ inventory() {
   if command -v ibv_devices >/dev/null 2>&1; then desk_cmd ibv_devices; else desk_info "ibv_devices not found: RDMA not enabled or not Thunderbolt 5"; fi
 }
 
+# Refuses load tests beside Darkbloom unless --allow-darkbloom was given (Penn's go).
+guard_darkbloom() {
+  local ev
+  if ev=$(desk_darkbloom_running); then
+    if [ "$ALLOW_DB" -eq 1 ]; then desk_todo "Darkbloom is present ($ev) and --allow-darkbloom was given: the load will share the machine with it."; return 0; fi
+    desk_fail "Darkbloom is present ($ev): refusing to run a load test beside it. Needs Penn's go; then add --allow-darkbloom."
+    return 1
+  fi
+  return 0
+}
+
+# Uncached sequential read (F_NOCACHE) so a read-back is not served from this Mac's file cache.
+read_uncached() {
+  perl -e 'use Fcntl; open(my $f, "<", $ARGV[0]) or exit 1; fcntl($f, 48, 1); my $b; 1 while sysread($f, $b, 1048576); ' "$1"
+}
+
 run_client() {
+  guard_darkbloom || return 1
   [ -n "$PEER" ] || { echo "--peer ADDRESS is required for --run client" >&2; exit 2; }
   desk_need iperf3 "brew install iperf3 (3.x) or https://github.com/esnet/iperf/releases" || return 1
   local out gb_tx gb_rx cpu
@@ -71,6 +90,7 @@ run_client() {
 
 run_smb() {
   [ -d "$SMBDIR" ] || { echo "--dir must be an existing mounted directory" >&2; exit 2; }
+  guard_darkbloom || return 1
   local work big t0 t1 bytes
   work=$(mktemp -d "${TMPDIR:-/tmp}/desk-e5.XXXXXX") || return 1
   trap 'rm -rf "$work" "${SMBDIR:?}/desk-e5-test"' EXIT
@@ -82,9 +102,8 @@ run_smb() {
   t0=$(desk_now); cp "$big" "$SMBDIR/desk-e5-test/big.bin" && sync; t1=$(desk_now)
   judge_copy "$(rate_gbs "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{print b-a}')")" "write to share"
   rm -f "$big"
-  t0=$(desk_now); cp "$SMBDIR/desk-e5-test/big.bin" "$work/back.bin"; t1=$(desk_now)
+  t0=$(desk_now); read_uncached "$SMBDIR/desk-e5-test/big.bin"; t1=$(desk_now)
   judge_copy "$(rate_gbs "$bytes" "$(awk -v a="$t0" -v b="$t1" 'BEGIN{print b-a}')")" "read from share"
-  rm -f "$work/back.bin"
   if [ "$SMALL" -gt 0 ]; then
     mkdir -p "$work/small"
     i=0; while [ "$i" -lt "$SMALL" ]; do head -c 4096 /dev/zero > "$work/small/f$i"; i=$((i + 1)); done
@@ -99,6 +118,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --run)         RUN="${2:-}"; shift 2 ;;
     --peer)        PEER="${2:-}"; shift 2 ;;
+    --bind)        BIND="${2:-}"; shift 2 ;;
+    --allow-darkbloom) ALLOW_DB=1; shift ;;
     --streams)     STREAMS="${2:-4}"; shift 2 ;;
     --seconds)     SECONDS_T="${2:-20}"; shift 2 ;;
     --dir)         SMBDIR="${2:-}"; shift 2 ;;
@@ -120,14 +141,18 @@ main() {
       desk_cmd system_profiler SPThunderboltDataType
       desk_cmd networksetup -listnetworkserviceorder
       desk_cmd smbutil multichannel -a
-      desk_say "with --run server: would run: iperf3 -s -1"
+      desk_say "with --run server: would run: iperf3 -s -1 -B <thunderbolt address>   (refused if Darkbloom is present)"
       desk_say "with --run client: would run: iperf3 -c <peer> -P $STREAMS -t $SECONDS_T, then the same with -R, then ping -c 100 <peer>"
       desk_say "with --run smb: would write and read a ${SIZE_GB} GB file and $SMALL small files under <dir>/desk-e5-test, then delete them"
       exit 0 ;;
   esac
   case "$RUN" in
     "") inventory ;;
-    server) desk_need iperf3 && { desk_say "listening for one test; the other Mac runs --run client"; iperf3 -s -1; } ;;
+    server)
+      guard_darkbloom || desk_finish
+      if [ -z "$BIND" ] && command -v ifconfig >/dev/null 2>&1; then BIND=$(ifconfig bridge0 2>/dev/null | awk '/inet /{print $2; exit}'); fi
+      [ -n "$BIND" ] || { desk_fail "no Thunderbolt Bridge address found: pass --bind ADDRESS (the listener never binds every interface)"; desk_finish; }
+      desk_need iperf3 && { desk_say "listening for one test on the Thunderbolt address only; the other Mac runs --run client"; iperf3 -s -1 -B "$BIND"; } ;;
     client) run_client ;;
     smb) run_smb ;;
     *) echo "--run takes server, client or smb" >&2; exit 2 ;;

@@ -55,16 +55,16 @@ Pick FUSE-T first (no system extension). Try macFUSE only if FUSE-T fails E8.
 ## 6. E2 first half (Claude can run, read-only, 10 min)
 Quit everything except the login session. Then:
 `scripts/e2-memory-census.sh --phase before --out DIR --label new-studio`
-Writes `memory-before.kv`. Nothing else is touched. (`--dry-run` shows the commands.)
+Writes `census-before.kv`. Nothing else is touched. (`--dry-run` shows the commands.)
 
 ## 7. Darkbloom, then E2 second half (Penn's hands, then read-only)
 Penn installs Darkbloom and loads its model. Wait until the model is resident (5 minutes of settled memory), then:
 `scripts/e2-memory-census.sh --phase after --out DIR --label new-studio`
-`scripts/e2-memory-census.sh --compare DIR/memory-before.kv DIR/memory-after.kv`
+`scripts/e2-memory-census.sh --compare DIR/census-before.kv DIR/census-after.kv`
 The compare step prints `darkbloom_footprint_mb`, a TOML snippet for the placer (reserve = footprint + 8 GB, plan section 6 / E2) and the headroom verdict. Pass: more than 20 GB of headroom beside Darkbloom. Write the snippet into the placer's `placement.toml` and the number into the plan's E2 row.
 
 ## 8. E8 pooled volume (needs Penn's go, 2 to 4 h)
-Inventory first: `scripts/e8-pool-test.sh` (reads only: FUSE backends, rclone, BlackHole, SIP state, system extensions). Then, with a free work folder holding 50 GB:
+Inventory first: `scripts/e8-pool-test.sh` (reads only: FUSE backends, rclone, BlackHole, SIP state, system extensions). Then, with a NEW EMPTY work folder on a volume with 50 GB free (the script refuses a non-empty one, and deletes only the m1/m2/pool folders it makes):
 `scripts/e8-pool-test.sh --run --work DIR --backend fuse-t --size-gb 50 --hold`
 It mounts an rclone union over two folders, writes and reads the file, prints MB/s, and holds the mount so Penn can sleep and wake the Mac, then re-run to check the file still reads. Pass (plan): mounts with no Recovery step, survives sleep, above 500 MB/s. (b) Install BlackHole and note what the system asks; pass is that it asks nothing that lowers security.
 

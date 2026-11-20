@@ -10,6 +10,8 @@
 #                                         writes SIZE GB through it, reports MB/s and where the data landed,
 #                                         unmounts and deletes everything it made. Needs the pieces installed.
 #   e8-pool-test.sh --check | --dry-run | --help
+# The work directory must be empty and is the only place anything is created. Cache is off, so the MB/s
+# figures are the pool's own (a write cache would time the local disk, not the pool).
 # Sleep and wake is NOT scripted (it would put the Mac to sleep): do it by hand while the pool is mounted,
 # using --run ... --hold, which leaves the mount up until you press Return.
 
@@ -41,31 +43,58 @@ inventory() {
   desk_todo "Startup security level cannot be read without admin: check it by hand in Recovery > Startup Security Utility and write it in the results (RUNBOOK E8)."
 }
 
+# Cleanup removes only what this run created, and only after the mount is gone (so it can never delete through
+# a live mount). The work path is held in a variable, never pasted into a trap string, so any character is safe.
+CREATED_M1=0; CREATED_M2=0; CREATED_POOL=0
+cleanup() {
+  [ -n "$WORK" ] || return 0
+  if [ "$CREATED_POOL" -eq 1 ]; then
+    umount "$WORK/pool" 2>/dev/null || diskutil unmount force "$WORK/pool" >/dev/null 2>&1
+    sleep 1
+    if mount | grep -qF -- "$WORK/pool"; then desk_fail "the pool is still mounted; unmount it by hand, then delete the m1 and m2 folders"; return 0; fi
+    rmdir "$WORK/pool" 2>/dev/null
+  fi
+  [ "$CREATED_M1" -eq 1 ] && rm -rf "${WORK:?}/m1"
+  [ "$CREATED_M2" -eq 1 ] && rm -rf "${WORK:?}/m2"
+  return 0
+}
+
 pool_run() {
   [ -n "$WORK" ] || { echo "give --work DIR" >&2; exit 2; }
   have_fuse || { desk_fail "backend $BACKEND is not installed"; return 1; }
   command -v rclone >/dev/null 2>&1 || { desk_fail "rclone is not installed"; return 1; }
-  [ ! -e "$WORK/pool" ] || { desk_fail "$WORK/pool already exists; use an empty work directory"; return 1; }
-  mkdir -p "$WORK/m1" "$WORK/m2" "$WORK/pool" || return 1
-  # shellcheck disable=SC2064
-  trap "umount '$WORK/pool' 2>/dev/null; sleep 1; rm -rf '$WORK/m1' '$WORK/m2' '$WORK/pool'" EXIT
+  [ -d "$WORK" ] || { desk_fail "--work must be an existing directory"; return 1; }
+  # The whole work directory must be empty: m1 and m2 are deleted at the end, so they must be ours.
+  if [ -n "$(ls -A "$WORK" 2>/dev/null)" ]; then desk_fail "the work directory is not empty; use a new empty one (nothing in it is touched)"; return 1; fi
+  mkdir "$WORK/m1" && CREATED_M1=1; mkdir "$WORK/m2" && CREATED_M2=1; mkdir "$WORK/pool" && CREATED_POOL=1
+  trap cleanup EXIT
   export RCLONE_CONFIG_DESKPOOL_TYPE=union
   export RCLONE_CONFIG_DESKPOOL_UPSTREAMS="$WORK/m1 $WORK/m2"
   export RCLONE_CONFIG_DESKPOOL_CREATE_POLICY=mfs
-  rclone mount DESKPOOL: "$WORK/pool" --daemon --vfs-cache-mode writes >/dev/null 2>&1 || { desk_fail "rclone mount failed (a Recovery or security step may be required: write down exactly what macOS asked)"; return 1; }
+  rclone mount DESKPOOL: "$WORK/pool" --daemon --vfs-cache-mode off >/dev/null 2>&1 || { desk_fail "rclone mount failed (a Recovery or security step may be required: write down exactly what macOS asked)"; return 1; }
   sleep 3
-  if mount | grep -q "$WORK/pool"; then desk_pass "pool mounted with no Recovery step"; else desk_fail "pool did not mount"; return 1; fi
-  local t0 t1 mbs
+  if mount | grep -qF -- "$WORK/pool"; then desk_pass "pool mounted with no Recovery step"; else desk_fail "pool did not mount"; return 1; fi
+  local t0 t1 mbs SUM_BEFORE=""
   t0=$(desk_now)
   dd if=/dev/zero of="$WORK/pool/desk-e8.bin" bs=1048576 count=$((SIZE_GB * 1024)) 2>/dev/null; sync
   t1=$(desk_now)
   mbs=$(awk -v a="$t0" -v b="$t1" -v g="$SIZE_GB" 'BEGIN { s = b - a; if (s <= 0) print 0; else printf "%d", g * 1024 / s }')
   if [ "$mbs" -gt 500 ]; then desk_pass "write through the pool $mbs MB/s (mark: above 500)"; else desk_fail "write through the pool $mbs MB/s (mark: above 500); plan: pool becomes shares plus a folder of links"; fi
+  # Read it back (cache is off, so this is the pool's own read speed) and keep a checksum for the wake check.
+  t0=$(desk_now)
+  SUM_BEFORE=$(dd if="$WORK/pool/desk-e8.bin" bs=1048576 2>/dev/null | cksum)
+  t1=$(desk_now)
+  mbs=$(awk -v a="$t0" -v b="$t1" -v g="$SIZE_GB" 'BEGIN { s = b - a; if (s <= 0) print 0; else printf "%d", g * 1024 / s }')
+  desk_info "read back through the pool $mbs MB/s (includes checksumming; a lower bound)"
   desk_info "landed on: m1 $(du -sk "$WORK/m1" | awk '{print int($1/1024)}') MB, m2 $(du -sk "$WORK/m2" | awk '{print int($1/1024)}') MB"
   if [ "$HOLD" -eq 1 ]; then
     desk_todo "Mounted. Put the Mac to sleep by hand, wake it, then check that ls on the pool still works. Press Return here to unmount and clean up."
     read -r _
-    if ls "$WORK/pool" >/dev/null 2>&1; then desk_pass "pool answers after sleep and wake"; else desk_fail "pool did not survive sleep and wake"; fi
+    # A plain listing also succeeds on the empty folder left behind when the mount has gone, so require the
+    # mount entry AND the same bytes back.
+    if mount | grep -qF -- "$WORK/pool" && [ "$(dd if="$WORK/pool/desk-e8.bin" bs=1048576 2>/dev/null | cksum)" = "$SUM_BEFORE" ]; then
+      desk_pass "pool still mounted after sleep and wake and returns the same bytes"
+    else desk_fail "pool did not survive sleep and wake (mount gone or data differs)"; fi
   fi
 }
 

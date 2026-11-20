@@ -17,10 +17,30 @@ DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 usage() { sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; }
 
-PROFILE=""; DEST=""; DO_RUN=0; KEEP=0; BROWSER="${DESK_BROWSER_PROCESS:-firefox}"
+PROFILE=""; DEST=""; DO_RUN=0; KEEP=0; COPY_TARGET=""
+# Every common browser is checked, not just the one whose profile is copied: a profile of another browser
+# would be copied live. DESK_BROWSER_PROCESS (one exact name) replaces the list; used by the tests.
+BROWSERS="firefox
+Brave Browser
+Google Chrome
+Microsoft Edge
+Safari
+Arc
+Vivaldi
+Opera"
+BROWSER=""
 
-# True when a process with this exact name is running.
-browser_running() { pgrep -ix "$BROWSER" >/dev/null 2>&1; }
+# True when any listed browser is running; BROWSER names the one found.
+browser_running() {
+  local list n
+  list="${DESK_BROWSER_PROCESS:-$BROWSERS}"
+  while IFS= read -r n; do
+    if pgrep -ix "$n" >/dev/null 2>&1; then BROWSER="$n"; return 0; fi
+  done <<EOF
+$list
+EOF
+  return 1
+}
 
 judge() {
   if awk -v s="$1" 'BEGIN { exit !(s < 30) }'; then desk_pass "profile copy took $1 s (mark: under 30 s)"
@@ -33,7 +53,7 @@ observe() {
   kb=$(du -sk "$PROFILE" 2>/dev/null | awk '{print $1}')
   files=$(find "$PROFILE" -type f 2>/dev/null | wc -l | tr -d ' ')
   desk_say "<profile> size: $((kb / 1024)) MB in $files files"
-  if browser_running; then desk_fail "$BROWSER is running: quit it fully before the timed copy"; else desk_pass "$BROWSER is not running"; fi
+  if browser_running; then desk_fail "$BROWSER is running: quit it fully before the timed copy"; else desk_pass "no browser is running"; fi
 }
 
 timed_copy() {
@@ -41,13 +61,16 @@ timed_copy() {
   if browser_running; then desk_fail "$BROWSER is running: quit it fully first (File > Quit), then rerun"; return 1; fi
   local target="$DEST/desk-e10-copy" t0 t1 secs
   [ ! -e "$target" ] || { desk_fail "a previous test copy exists in the destination; remove it first"; return 1; }
+  # A failed or interrupted copy leaves sign-in data behind: remove the partial copy on any exit but success.
+  COPY_TARGET="$target"; trap 'if [ -n "$COPY_TARGET" ]; then rm -rf "${COPY_TARGET:?}"; fi' EXIT
   t0=$(desk_now)
-  rsync -a "$PROFILE/" "$target/" || { desk_fail "rsync failed"; return 1; }
+  rsync -a "$PROFILE/" "$target/" || { desk_fail "rsync failed (partial copy removed)"; return 1; }
   sync
   t1=$(desk_now)
   secs=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')
   judge "$secs"
-  if [ "$KEEP" -eq 0 ]; then rm -rf "${target:?}"; desk_info "test copy removed"; else desk_info "test copy kept in the destination"; fi
+  if [ "$KEEP" -eq 0 ]; then rm -rf "${target:?}"; desk_info "test copy removed"; else desk_info "test copy kept in the destination (it holds sign-in data: delete it when done)"; fi
+  COPY_TARGET=""
   desk_todo "Now open the browser on the other Mac with the copied profile and count what came back (RUNBOOK E10)."
 }
 

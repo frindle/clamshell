@@ -100,5 +100,32 @@ has "$out" "profile copy took" "E10 times a copy"
 lacks "$out" "$T" "E10 does not print the paths"
 rm -rf "$T"
 
+# ---- review round 2 ----
+# scrub: id forms and a name with spaces
+out=$(printf 'id 0x1234567890abcdef0 and 1234567890ABCDEF and host.corp x.ts.net\n' | desk_scrub)
+lacks "$out" "1234567890" "scrub removes 16-digit and 0x ids"; lacks "$out" "host.corp" "scrub removes .corp host"
+# Darkbloom detection by command line, with the pattern override
+T=$(mktemp -d); cp /bin/sleep "$T/xq-fake-service"
+"$T/xq-fake-service" 30 & FP=$!
+out=$(DESK_DARKBLOOM_PATTERN=xq-fake-service desk_darkbloom_running); eq "$?" 0 "Darkbloom check finds a matching process"; has "$out" process "evidence names the process"
+if DESK_DARKBLOOM_PATTERN=zz-no-such-thing-zz desk_darkbloom_running >/dev/null; then bad "false positive on an absent name"; else ok; fi
+# E5 refuses load modes beside Darkbloom, E2 baseline refuses it too
+out=$(DESK_DARKBLOOM_PATTERN=xq-fake-service "$S/e5-thunderbolt-speed.sh" --run smb --dir "$T" 2>&1); eq "$?" 1 "E5 refuses beside Darkbloom"; has "$out" "refusing" "E5 says why"
+out=$(DESK_DARKBLOOM_PATTERN=xq-fake-service "$S/e5-thunderbolt-speed.sh" --run server 2>&1); has "$out" "refusing" "E5 server refuses beside Darkbloom"
+# E2 uses the larger of the system difference and the process figure
+printf 'total_mb=98304\navailable_mb=90000\nswap_used_mb=0\ndarkbloom_running=no\n' > "$T/b.kv"
+printf 'total_mb=98304\navailable_mb=89000\nswap_used_mb=0\ndarkbloom_running=yes\ndarkbloom_rss_mb=30000\n' > "$T/a.kv"
+out=$(compare "$T/b.kv" "$T/a.kv" 2>&1); has "$out" "darkbloom_footprint_mb = 30000" "E2 takes the larger process figure"
+printf 'total_mb=98304\navailable_mb=90000\ndarkbloom_running=yes\n' > "$T/b2.kv"
+out=$(compare "$T/b2.kv" "$T/a.kv" 2>&1); has "$out" "not a clean baseline" "E2 rejects a dirty baseline"
+kill "$FP" 2>/dev/null; wait "$FP" 2>/dev/null
+# E8 refuses a non-empty work directory (before any mount is tried), even with the backend missing it reports and touches nothing
+mkdir -p "$T/bin" "$T/w" && printf '#!/bin/sh\n' > "$T/bin/rclone" && chmod +x "$T/bin/rclone" && echo keep > "$T/w/precious"
+out=$(PATH="$T/bin:$PATH" DESK_SOURCE_ONLY=1 bash -c '. "'"$S"'/e8-pool-test.sh"; have_fuse() { return 0; }; WORK="'"$T"'/w"; pool_run' 2>&1)
+has "$out" "not empty" "E8 refuses a non-empty work directory"; [ -f "$T/w/precious" ] && ok || bad "E8 touched a non-empty directory"
+# E8 work path with a quote does not break cleanup
+mkdir -p "$T/it's here"; DESK_SOURCE_ONLY=1 bash -c '. "'"$S"'/e8-pool-test.sh"; WORK="'"$T"'/it'"'"'s here"; mkdir "$WORK/m1"; CREATED_M1=1; cleanup'; [ ! -e "$T/it's here/m1" ] && ok || bad "E8 cleanup failed on a quoted path"
+rm -rf "$T"
+
 echo "arrival-kit tests: $N checks, $FAILS failed"
 [ "$FAILS" -eq 0 ]

@@ -55,7 +55,8 @@ report() {
   if xcode-select -p >/dev/null 2>&1; then ok "Xcode command line tools"; else desk_todo "Xcode command line tools absent (needed for codesign and swift only if building here)"; fi
 
   desk_say ""; desk_say "== Darkbloom must be absent for the 'before' census =="
-  if pgrep -il darkbloom >/dev/null 2>&1; then missing "Darkbloom is already running: the 'before' memory census is no longer possible on this Mac"; else ok "Darkbloom not running"; fi
+  if ev=$(desk_darkbloom_running); then missing "Darkbloom is already here ($ev): the 'before' memory census is no longer possible on this Mac"; else ok "no Darkbloom process, launchd job or app found (pattern '$(desk_darkbloom_pattern)')"; fi
+  desk_todo "The real Darkbloom process name is unconfirmed. After installing it, check 'ps -axo args= | grep -i <part>' once and set DESK_DARKBLOOM_PATTERN if it is not 'darkbloom'."
 }
 
 while [ $# -gt 0 ]; do
@@ -75,7 +76,7 @@ main() {
     dry)
       for c in "sw_vers -productVersion" "sysctl -n machdep.cpu.brand_string" "sysctl -n hw.memsize" "df -g /" \
                "system_profiler SPThunderboltDataType" "ibv_devices" "fdesetup status" "nc -z 127.0.0.1 22" \
-               "stat -f%Su /dev/console" "pgrep -il darkbloom" "command -v iperf3 rclone syncthing"; do
+               "stat -f%Su /dev/console" "pgrep -fi <pattern>" "command -v iperf3 rclone syncthing"; do
         desk_say "would run: $c"
       done
       exit 0 ;;

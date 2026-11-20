@@ -23,34 +23,75 @@ desk_sed_escape() { printf '%s' "$1" | sed -e 's/[][\.*^$/#&|(){}?+]/\\&/g'; }
 
 # Reads stdin, writes it with anything identifying replaced by a generic token.
 desk_scrub() {
-  local script names n e home serial
+  local script names n e home serial u cn
   script=$(mktemp "${TMPDIR:-/tmp}/desk-scrub.XXXXXX") || return 1
   # Exact local names first, so a host name is not half-eaten by the address rules.
-  names="$(hostname 2>/dev/null) $(hostname -s 2>/dev/null)"
+  # One name per line: a computer name may contain spaces (often the owner's name), so never word-split.
+  names="$(hostname 2>/dev/null)
+$(hostname -s 2>/dev/null)"
   if desk_is_macos; then
-    names="$names $(scutil --get ComputerName 2>/dev/null | tr ' ' '_') $(scutil --get LocalHostName 2>/dev/null)"
+    cn=$(scutil --get ComputerName 2>/dev/null)
+    names="$names
+$cn
+$(printf '%s' "$cn" | tr ' ' '_')
+$(printf '%s' "$cn" | tr ' ' '-')
+$(printf '%s' "$cn" | sed "s/'/’/g")
+$(scutil --get LocalHostName 2>/dev/null)"
     serial=$(ioreg -c IOPlatformExpertDevice -d 2 2>/dev/null | awk -F'"' '/IOPlatformSerialNumber/{print $4}')
     if [ -n "$serial" ]; then e=$(desk_sed_escape "$serial"); printf 's/%s/<serial>/g\n' "$e" >> "$script"; fi
   fi
   home="${HOME:-}"
   if [ -n "$home" ] && [ "$home" != "/" ]; then e=$(desk_sed_escape "$home"); printf 's#%s#~#g\n' "$e" >> "$script"; fi
-  for n in $(id -un 2>/dev/null) $names; do
+  u=$(id -un 2>/dev/null)
+  # Longest names first so "Owner's Mac Studio" goes before "Owner".
+  names=$(printf '%s\n%s\n' "$u" "$names" | awk 'length($0) >= 2 { print length($0) "\t" $0 }' | sort -rn | cut -f2- | awk '!seen[$0]++')
+  while IFS= read -r n; do
     [ "${#n}" -ge 2 ] || continue
     e=$(desk_sed_escape "$n")
-    case "$n" in
-      "$(id -un 2>/dev/null)") printf 's/%s/<user>/g\n' "$e" >> "$script" ;;
-      *) printf 's/%s/<host>/g\n' "$e" >> "$script" ;;
-    esac
-  done
+    if [ "$n" = "$u" ]; then printf 's/%s/<user>/g\n' "$e" >> "$script"; else printf 's/%s/<host>/g\n' "$e" >> "$script"; fi
+  done <<EOF
+$names
+EOF
   sed -E -f "$script" \
     -e 's/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/<email>/g' \
     -e 's/[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}/<uuid>/g' \
     -e 's/([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}/<mac>/g' \
+    -e 's/0x[0-9A-Fa-f]{8,}/<id>/g' \
+    -e 's/(^|[^0-9A-Za-z])[0-9A-Fa-f]{16}([^0-9A-Za-z]|$)/\1<id>\2/g' \
     -e 's/([0-9]{1,3}\.){3}[0-9]{1,3}/<ip>/g' \
     -e 's/([0-9A-Fa-f]{1,4}:){7}[0-9A-Fa-f]{1,4}/<ip6>/g' \
     -e 's/[0-9A-Fa-f:]*::[0-9A-Fa-f:]*/<ip6>/g' \
-    -e 's/[A-Za-z0-9-]+\.(local|lan|home|internal|home\.arpa)([^A-Za-z0-9-]|$)/<host>\2/g'
+    -e 's/[A-Za-z0-9-]+\.(local|lan|home|internal|home\.arpa|localdomain|ts\.net|corp|intranet|private)([^A-Za-z0-9-]|$)/<host>\2/g'
   rm -f "$script"
+}
+
+# Is Darkbloom on this Mac? A real check, not a guess at one process name:
+#   - any process whose name OR full command line matches the pattern,
+#   - any launchd job whose label matches,
+#   - an installed app bundle whose name matches.
+# The pattern is DESK_DARKBLOOM_PATTERN (extended regex, case-insensitive), default "darkbloom".
+# The real process name is NOT confirmed (the app is not on the new Mac yet): after installing it, run
+# `ps -axo args= | grep -i <part of the name>` once and set the variable if the name differs.
+# Prints the evidence kinds found (process, launchd, app) on stdout; exit 0 when any was found.
+desk_darkbloom_pattern() { printf '%s' "${DESK_DARKBLOOM_PATTERN:-darkbloom}"; }
+desk_darkbloom_pids() {
+  local pat pid
+  pat=$(desk_darkbloom_pattern)
+  for pid in $(pgrep -fi -- "$pat" 2>/dev/null); do
+    [ "$pid" = "$$" ] || [ "$pid" = "$PPID" ] || printf '%s\n' "$pid"
+  done
+}
+desk_darkbloom_running() {
+  local pat found=""
+  pat=$(desk_darkbloom_pattern)
+  [ -n "$(desk_darkbloom_pids)" ] && found="$found process"
+  if command -v launchctl >/dev/null 2>&1 && launchctl list 2>/dev/null | grep -qiE -- "$pat"; then found="$found launchd"; fi
+  local a
+  for a in /Applications/*; do
+    if [ -e "$a" ] && printf '%s' "${a##*/}" | grep -qiE -- "$pat"; then found="$found app"; break; fi
+  done
+  [ -n "$found" ] || return 1
+  printf '%s' "${found# }"
 }
 
 # Print one line of our own text through the scrubber.
