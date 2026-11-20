@@ -49,5 +49,6 @@ for e in entries {
 let root = URL(fileURLWithPath: out)
 let plan = StubPlanner.plan(apps: apps, existing: StubWriter.scan(root: root), options: StubOptions(thisMac: mac, deskPath: desk))
 for r in plan.rejected { FileHandle.standardError.write(Data("rejected: \(r)\n".utf8)) }
+if !plan.rejected.isEmpty { fail("nothing changed: \(plan.rejected.count) entries rejected") }
 for a in plan.actions { print(a) }
 if !dry { do { print("applied \(try StubWriter.apply(plan, into: root))") } catch { fail("write failed: \(error)") } }

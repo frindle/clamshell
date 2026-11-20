@@ -17,16 +17,30 @@ public enum StubAction: Equatable {
 }
 
 public struct StubPlan: Equatable {
+    /// Empty whenever `rejected` is not: one bad entry stops the whole run, so nothing is removed on the strength of a half-read list.
     public var actions: [StubAction]
     public var rejected: [StubRejection]
 }
 
 public enum StubPlanner {
+    /// Owner marker for directories that are not stubs of ours; never equal to a bundle id.
+    static let foreignOwner = "\u{0}foreign"
+
     /// Reconciles what should exist with what does.
     public static func plan(apps: [HostedApp], existing: [ExistingStub], options: StubOptions) -> StubPlan {
         var rejected: [StubRejection] = []
         var specs: [StubSpec] = []
-        var usedNames: [String: String] = [:]    // lowercased dir name -> hosted id
+        // lowercased dir name -> owner. Anything already on disk keeps its name: a directory that is not ours is never
+        // overwritten (the new stub gets a suffixed name), and the stub of an app that stays keeps its place.
+        var usedNames: [String: String] = [:]
+        let wantedIds = Set(apps.filter { StubGenerator.wantsStub($0, thisMac: options.thisMac) }.map { $0.bundleId })
+        for e in existing {
+            if let h = e.hostedBundleId {
+                if wantedIds.contains(h) { usedNames[e.dirName.lowercased()] = h }
+            } else {
+                usedNames[e.dirName.lowercased()] = foreignOwner
+            }
+        }
         // Deterministic: sorted by bundle id, so a name clash always resolves the same way.
         for app in apps.sorted(by: { $0.bundleId < $1.bundleId }) where StubGenerator.wantsStub(app, thisMac: options.thisMac) {
             // A name clash with a different app gets a numeric suffix. The macOS filesystem is case-insensitive by default.
@@ -52,6 +66,7 @@ public enum StubPlanner {
             }
         }
         for e in ours where !wanted.contains(e.hostedBundleId!) { actions.append(.remove(dirName: e.dirName)) }
+        if !rejected.isEmpty { return StubPlan(actions: [], rejected: rejected) }
         return StubPlan(actions: actions, rejected: rejected)
     }
 }

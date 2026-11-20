@@ -4,6 +4,9 @@ import DeskStubs
 public enum StubWriteError: Error, Equatable {
     case unsafePath(String)
     case iconUnreadable(String)
+    /// The destination exists and is not a stub this tool wrote (no `DeskHostedBundleId`, or a different app's).
+    case destinationNotOurs(String)
+    case planHasRejections
 }
 
 public enum StubWriter {
@@ -28,7 +31,10 @@ public enum StubWriter {
                 }
                 try fm.setAttributes([.posixPermissions: f.executable ? 0o755 : 0o644], ofItemAtPath: dest.path)
             }
-            if fm.fileExists(atPath: final.path) { try fm.removeItem(at: final) }
+            if fm.fileExists(atPath: final.path) {
+                guard hostedId(of: final) == spec.hostedBundleId else { throw StubWriteError.destinationNotOurs(spec.dirName) }
+                try fm.removeItem(at: final)
+            }
             try fm.moveItem(at: tmp, to: final)
         } catch {
             try? fm.removeItem(at: tmp)
@@ -39,7 +45,15 @@ public enum StubWriter {
     public static func remove(dirName: String, from root: URL) throws {
         // Only ever a plain directory name inside root.
         guard !dirName.contains("/"), !dirName.hasPrefix(".") else { throw StubWriteError.unsafePath(dirName) }
-        try FileManager.default.removeItem(at: root.appendingPathComponent(dirName + ".app"))
+        let target = root.appendingPathComponent(dirName + ".app")
+        guard hostedId(of: target) != nil else { throw StubWriteError.destinationNotOurs(dirName) }
+        try FileManager.default.removeItem(at: target)
+    }
+
+    /// The hosted bundle id recorded in a bundle's Info.plist, nil if the directory is not a stub this tool wrote.
+    static func hostedId(of app: URL) -> String? {
+        let text = (try? String(contentsOf: app.appendingPathComponent("Contents/Info.plist"), encoding: .utf8)) ?? ""
+        return value(StubFormat.hostedKey, in: text)
     }
 
     /// Reads the Desk keys out of every `*.app/Contents/Info.plist` under root. Plain text scan of the XML plist
@@ -66,17 +80,21 @@ public enum StubWriter {
     /// Applies a plan. Returns the number of actions applied.
     @discardableResult
     public static func apply(_ plan: StubPlan, into root: URL) throws -> Int {
-        var n = 0
+        guard plan.rejected.isEmpty else { throw StubWriteError.planHasRejections }
+        // Removals first, so a name freed by a removal or a rename can be taken in the same run.
         for a in plan.actions {
             switch a {
-            case .create(let s): try write(s, into: root)
-            case .replace(let s, let old):
-                try write(s, into: root)
-                if let old = old { try? remove(dirName: old, from: root) }
             case .remove(let d): try remove(dirName: d, from: root)
+            case .replace(_, let old): if let old = old { try remove(dirName: old, from: root) }
+            case .create: break
             }
-            n += 1
         }
-        return n
+        for a in plan.actions {
+            switch a {
+            case .create(let s), .replace(let s, _): try write(s, into: root)
+            case .remove: break
+            }
+        }
+        return plan.actions.count
     }
 }

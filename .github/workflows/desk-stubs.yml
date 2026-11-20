@@ -61,8 +61,11 @@ jobs:
           sips -g format "$RUNNER_TEMP/Desk/Heavy App.app/Contents/Resources/AppIcon.icns"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$RUNNER_TEMP/Desk/Heavy App.app/Contents/Info.plist")" = "local.desk.stub.org.example.heavy"
       - name: Launcher hands over to the Desk client
+        working-directory: DeskStubs
         run: |
           printf '#!/bin/sh\necho "$@" > "$RUNNER_TEMP/fake-desk.out"\n' > "$RUNNER_TEMP/fake-desk"
           chmod +x "$RUNNER_TEMP/fake-desk"
-          DESK_BIN="$RUNNER_TEMP/fake-desk" "$RUNNER_TEMP/Desk/Heavy App.app/Contents/MacOS/desk-stub" extra
+          # The client path is fixed at generation time; there is no environment override.
+          .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk2" --mac this-mac --desk "$RUNNER_TEMP/fake-desk" "$RUNNER_TEMP/apps.json"
+          "$RUNNER_TEMP/Desk2/Heavy App.app/Contents/MacOS/desk-stub" extra
           test "$(cat "$RUNNER_TEMP/fake-desk.out")" = "stub-run --bundle-id org.example.heavy extra"
