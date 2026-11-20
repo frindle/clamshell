@@ -28,6 +28,13 @@ internal sealed class MainWindow : Window
     private readonly ContentControl _screen = new();
     private readonly UIElement _badge = AuthScreens.BuildNotVerifiedBadge();
 
+    // Unlock disk: when the Mac does not answer, offer to unlock its disk over SSH (port 22, the
+    // pre-boot sshd), then try to connect again every few seconds until it is up. The account is
+    // typed here, or read from Credential Manager when the user chose "Save on this device".
+    private System.Windows.Threading.DispatcherTimer? _retryTimer;
+    private bool _retryBusy, _unlockShown, _unlocked;
+    private string _host = ""; private int _port; private StreamCodec _codec;
+
     public MainWindow()
     {
         Title = "Clamshell";
@@ -46,7 +53,8 @@ internal sealed class MainWindow : Window
         _image.MouseWheel += OnMouseWheel;
         KeyDown += OnKey;
         KeyUp += OnKey;
-        Closed += (_, _) => _client?.Dispose();
+        KeyDown += (_, e) => { if (e.Key == Key.F9 && Keyboard.Modifiers == ModifierKeys.Control) ShowRestart(); };
+        Closed += (_, _) => { _retryTimer?.Stop(); _client?.Dispose(); };
     }
 
     public async void Start(string host, int port, StreamCodec requestedCodec)
@@ -61,6 +69,8 @@ internal sealed class MainWindow : Window
             return;
         }
         _client = client;
+        _host = host; _port = port; _codec = requestedCodec;
+        client.OnRestartResult = code => Dispatcher.BeginInvoke(() => ShowRestartResult(code));
         // BeginInvoke, never Invoke, for everything the receive thread raises: it
         // holds the decoder lock while a frame comes out, and closing the window
         // (or StopAndClose) takes that lock on the UI thread, so waiting for the
@@ -81,7 +91,7 @@ internal sealed class MainWindow : Window
         // this exact line threw System.InvalidOperationException "The
         // calling thread cannot access this object because a different
         // thread owns it" when setting Title directly here).
-        catch (Exception e) { Dispatcher.Invoke(() => Title = $"Clamshell -- connect failed ({e.Message})"); }
+        catch (Exception e) { Dispatcher.Invoke(() => { Title = $"Clamshell -- connect failed ({e.Message})"; OfferUnlock(); }); }
     }
 
     /// <summary>What is on screen over the stream (null when none). For the self-test.</summary>
@@ -117,10 +127,105 @@ internal sealed class MainWindow : Window
     private void OnDisconnected(string reason)
     {
         Title = $"Clamshell -- disconnected ({reason})";
+        OfferUnlock();
+    }
+
+    // MARK: - Unlock disk
+
+    /// The Mac stopped answering: show the unlock form once (the Mac may be waiting at its disk
+    /// unlock), or, after an unlock, keep trying to connect.
+    private void OfferUnlock()
+    {
+        if (_client is null) return;
+        if (!_unlockShown && !_unlocked) ShowUnlock();
+        StartRetry();
+    }
+
+    private void StartRetry()
+    {
+        if (_retryTimer is not null) return;
+        _retryTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        _retryTimer.Tick += async (_, _) => await RetryTick();
+        _retryTimer.Start();
+    }
+
+    private async Task RetryTick()
+    {
+        if (_retryBusy || _client is null) return;
+        _retryBusy = true;
+        try { await _client.ConnectAsync(_host, _port, _codec); }
+        catch { /* not up yet: try again on the next tick */ }
+        finally { _retryBusy = false; }
+    }
+
+    /// <summary>Connected again: stop retrying and drop the form.</summary>
+    private void Reconnected()
+    {
+        _retryTimer?.Stop(); _retryTimer = null; _unlocked = false; _unlockShown = false;
+        _screen.Content = null; _screen.Visibility = Visibility.Collapsed;
+    }
+
+    private void ShowUnlock()
+    {
+        _unlockShown = true;
+        TextBlock? note = null;
+        var form = UnlockScreens.Build("Unlock disk",
+            "If the Mac restarted, it waits for its disk to be unlocked. Enter an account that can unlock it. This signs in over SSH, then connects again.",
+            "Unlock", true, UnlockCredentialStore.Load(),
+            async (user, pass, keep) =>
+            {
+                note!.Text = "Connecting...";
+                if (keep) { try { UnlockCredentialStore.Save(user, pass); } catch (Exception e) { Log.Line($"save failed: {e.GetType().Name}"); } }
+                else UnlockCredentialStore.Forget();
+                var unlocker = new DiskUnlocker(new SshNetUnlockTransport(), SshPinStore.Load, SshPinStore.Save,
+                    (_, fingerprint) => Dispatcher.Invoke(() => MessageBox.Show(this,
+                        $"First time unlocking this Mac. Check that its SSH key fingerprint is:\n\n{fingerprint}\n\nIt is remembered, and a different key later is refused.",
+                        "Trust this Mac?", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
+                    Log.Line);
+                var result = await unlocker.UnlockAsync(_host, 22, user, pass);
+                note.Text = DiskUnlockText.Of(result);
+                if (result == DiskUnlockResult.Unlocked) { _unlocked = true; _unlockShown = false; }
+            },
+            () => { _screen.Content = null; _screen.Visibility = Visibility.Collapsed; _unlocked = true; },
+            out var n);
+        note = n;
+        _screen.Content = form;
+        _screen.Visibility = Visibility.Visible;
+    }
+
+    // MARK: - Restart (Ctrl+F9): fdesetup authrestart on the Mac, so the disk does not ask once
+
+    private TextBlock? _restartNote;
+
+    private void ShowRestart()
+    {
+        if (_client is null || !_client.HostOffersRestart) { Title = "Clamshell -- this Mac does not offer Restart"; return; }
+        var form = UnlockScreens.Build("Restart the Mac",
+            "Restarts now and skips the disk unlock screen once. Nothing is saved.",
+            "Restart", false, null,
+            (user, pass, _) => { _restartNote!.Text = "Sent. Waiting for the Mac to answer..."; _ = _client.SendRestart(user, pass); },
+            () => { _screen.Content = null; _screen.Visibility = Visibility.Collapsed; },
+            out var n);
+        _restartNote = n;
+        _screen.Content = form;
+        _screen.Visibility = Visibility.Visible;
+    }
+
+    private void ShowRestartResult(byte code)
+    {
+        string text = code switch
+        {
+            0 => "Restarting. The disk will not ask to be unlocked this time.",
+            1 => "The Mac did not accept that user name and password. Nothing was restarted.",
+            2 => "This Mac cannot do an authenticated restart.",
+            _ => "Could not start the restart.",
+        };
+        if (_restartNote is not null) _restartNote.Text = text;
     }
 
     private void OnHelloAck(StreamCodec codec, int w, int h)
     {
+        Reconnected();
         _srcW = w; _srcH = h;
         Title = $"Clamshell -- {codec} {w}x{h}";
 

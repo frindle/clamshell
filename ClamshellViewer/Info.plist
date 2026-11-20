@@ -24,6 +24,8 @@
 	<array>
 		<string>_clamshell._tcp</string>
 	</array>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock the saved Mac account used to unlock your Mac's disk.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

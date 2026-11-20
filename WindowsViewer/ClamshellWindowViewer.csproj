@@ -28,6 +28,8 @@
     <PackageReference Include="Vortice.MediaFoundation" Version="3.6.2" />
     <!-- Sound out (WaveOutEvent + BufferedWaveProvider); the version WindowsServer pins. -->
     <PackageReference Include="NAudio" Version="2.2.1" />
+    <!-- SSH for "Unlock disk" (the Mac's pre-boot sshd). Pinned. -->
+    <PackageReference Include="SSH.NET" Version="2025.1.0" />
   </ItemGroup>
 
   <ItemGroup>

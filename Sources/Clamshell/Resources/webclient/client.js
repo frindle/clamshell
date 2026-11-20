@@ -47,6 +47,7 @@ const BRIDGE_PORT = { a: 5906, b: 5907, c: 5908 }[display];
 const T = {
   HELLO: 0x01, HELLO_ACK: 0x02, CLIENT_DISPLAYS: 0x03, STREAM_STATUS: 0x04, HOST_LOCK_STATE: 0x05,
   PING: 0x07, VIDEO_FRAME: 0x10, KEYFRAME_REQUEST: 0x11, AUDIO_FRAME: 0x13,
+  RESTART_REQUEST: 0x60, RESTART_RESULT: 0x61,
   MOUSE_MOVE: 0x20, MOUSE_BUTTON: 0x21, KEY: 0x22, SCROLL: 0x23, CLIPBOARD: 0x30,
 };
 
@@ -80,6 +81,7 @@ function showStatus(text) {
   canvas.classList.add('stale'); // keep the last picture, dimmed, behind the message
 }
 function hideStatus() {
+  const ul = document.getElementById('unlockLink'); if (ul) ul.remove();
   statusEl.style.display = 'none';
   canvas.classList.remove('stale');
 }
@@ -407,6 +409,24 @@ function scheduleReconnect({ delay = null, quiet = false } = {}) {
   }
 
   reconnectTimer = setTimeout(() => { reconnectTimer = null; if (wantConnection) connect(); }, left * 1000);
+  if (delay === null && reconnectAttempt >= 2) {
+    showStatus('Not answering. If the Mac restarted: Unlock from the iPad/Windows app.');
+    showUnlockLink();
+  }
+}
+
+// "Unlock disk" for a page that stays open while the Mac is down: a plain link to the browser SSH
+// terminal (unlockTerminalURL in the host's preferences). Nothing is shown when it is not set.
+// The page never sees a password: the terminal is a separate site.
+function showUnlockLink() {
+  const meta = document.querySelector('meta[name="clamshell-unlock-terminal-url"]');
+  let url = '';
+  try { url = decodeURIComponent((meta && meta.content) || ''); } catch (e) { return; }
+  if (!/^https:\/\//i.test(url) || document.getElementById('unlockLink')) return;
+  const a = document.createElement('a');
+  a.id = 'unlockLink'; a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+  a.textContent = 'Unlock disk'; a.style.cssText = 'margin-left:12px;color:#8cf;';
+  statusText.after(a);
 }
 
 // Don't sit out the rest of a backoff when we have a good reason to think
@@ -664,6 +684,13 @@ async function handle(type, payload) {
       decoder = null; // rebuilt from the next keyframe's parameter sets
       waitingForKey = true; // delta frames before that keyframe are skipped
       pendingCodecByte = codecByte;
+      break;
+    }
+    case T.RESTART_RESULT: {
+      const texts = ['Restarting. The disk will not ask to be unlocked this time.',
+        'The Mac did not accept that user name and password. Nothing was restarted.',
+        'This Mac cannot do an authenticated restart.', 'Could not start the restart.'];
+      showCard({ title: 'Restart', text: texts[payload[0]] || texts[3], buttons: [['OK', false, hideCard]] });
       break;
     }
     case T.STREAM_STATUS: {
@@ -1244,3 +1271,25 @@ setInterval(() => {
 
 // Decide the codec before the first HELLO (isConfigSupported is async).
 pickCodec(globalThis.VideoDecoder, h264Only).then((c) => { wantCodec = c; }, () => {}).finally(() => connect());
+
+// MARK: - Restart (skips the disk unlock once: fdesetup authrestart on the Mac)
+const restartBtn = document.getElementById('restartBtn');
+restartBtn.addEventListener('click', () => {
+  const user = document.createElement('input');
+  user.placeholder = 'Mac user name'; user.autocomplete = 'off'; user.spellcheck = false;
+  const pass = document.createElement('input');
+  pass.type = 'password'; pass.placeholder = 'Password'; pass.autocomplete = 'off';
+  const go = () => {
+    const body = new TextEncoder().encode(JSON.stringify({ username: user.value, password: pass.value }));
+    pass.value = '';
+    send(frameMsg(T.RESTART_REQUEST, body)); // inside the encrypted session; never stored
+    authText.textContent = 'Sent. Waiting for the Mac to answer…';
+  };
+  showCard({
+    title: 'Restart the Mac',
+    text: 'Restarts now and skips the disk unlock screen once. Nothing is saved.',
+    buttons: [['Restart', false, go], ['Cancel', true, hideCard]],
+  });
+  authRows.replaceChildren(user, pass);
+  user.focus();
+});

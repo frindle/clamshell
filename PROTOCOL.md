@@ -79,6 +79,8 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x52 | PERIPHERAL_DETACH | client → host | id(4 BE) |
 | 0x53 | PERIPHERAL_INPUT  | client → host | id(4 BE), then a report whose layout depends on the peripheral's kind |
 | 0x54 | PERIPHERAL_OUTPUT | host → client | id(4 BE), then a report for the peripheral (rumble, MIDI) |
+| 0x60 | RESTART_REQUEST  | client → host | UTF-8 JSON `{"username","password"}` (inside the encrypted session); host runs `fdesetup authrestart`; needs capability bit 7 |
+| 0x61 | RESTART_RESULT   | host → client | status(1): 0 restarting, 1 refused, 2 unsupported, 3 failed |
 | 0x58 | FILE_OFFER       | both          | UTF-8 JSON — one file the sender wants to transfer; see "File transfer" |
 | 0x59 | FILE_ANSWER      | both          | id(4 BE), status(1) |
 | 0x5A | FILE_DATA        | both          | id(4 BE), then the next bytes of the file, at most 64 KB |

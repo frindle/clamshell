@@ -300,7 +300,7 @@ final class StreamClient: ObservableObject {
                                       })
         // This app sends files and game controllers to the Mac (bits 5 and 6).
         // It receives no files: a host offer is answered "declined".
-        config.capabilities = ClientAuthFlow.defaultCapabilities.union([.fileTransfer, .peripherals])
+        config.capabilities = ClientAuthFlow.defaultCapabilities.union([.fileTransfer, .peripherals, .restart])
         config.fallbackDeviceName = UIDevice.current.userInterfaceIdiom == .pad ? "iPad" : "iPhone"
         config.expectedHostId = pickedHostId
         // An address from the saved list that the user did not type may fall
@@ -779,6 +779,8 @@ final class StreamClient: ObservableObject {
             onFileMessage?(type.rawValue, payload)
         case .peripheralStatus:
             onPeripheralStatus?(payload)
+        case .restartResult:
+            if let code = payload.first { DispatchQueue.main.async { self.onRestartResult?(code) } }
         case .ping:
             break // echo of our keepalive: nothing to do
         case .authChallenge, .authResponse, .authResult, .hostInfo, .clientInfo,
@@ -831,6 +833,16 @@ final class StreamClient: ObservableObject {
     /// the wire queue.
     var onFileMessage: ((UInt8, Data) -> Void)?
     var onPeripheralStatus: ((Data) -> Void)?
+    /// RestartService.Outcome of the Mac's answer to a restart request (main thread).
+    var onRestartResult: ((UInt8) -> Void)?
+
+    /// Asks the Mac to restart with `fdesetup authrestart`. The account goes inside the encrypted
+    /// session, for this one call. Dropped before the host has accepted this device.
+    func sendRestart(username: String, password: String) {
+        guard hostCapabilities.contains(.restart),
+              let body = try? JSONSerialization.data(withJSONObject: ["username": username, "password": password]) else { return }
+        send(StreamMessage.frame(type: .restartRequest, payload: body))
+    }
 
     /// A file message or a peripheral message: sealed like any other.
     func sendFrame(_ data: Data) { send(data) }
