@@ -301,6 +301,15 @@ planned restart skips the unlock. There is no relay. The web unlock is a link: s
 terminal on your tunnel hostname (Cloudflare browser rendering, which still has to be enabled)
 and an already-open web page shows "Unlock disk" with that link while the Mac is down.
 
+The web client (`/client`) keeps a copy of its own page in the browser (a service worker, only
+over https or localhost), so reloading or opening it while the Mac restarts still shows the
+reconnect state and the "Unlock disk" link. The copy is replaced by each app version; turn it
+off with `defaults write com.frindle.clamshell webClientOfflineShell -bool NO`, or open
+`/client?nosw=1` once in one browser. At the login window the menu has "Log in...", and the
+Restart and Log in forms are ordinary username/password forms, so a password manager such as
+Vaultwarden can fill them. The page never stores or logs the password and removes the form
+after sending.
+
 Make sure "Start at Login" is on so Clamshell comes back the moment you're
 logged in either way. Everything above (autorestart, FileVault, Screen Sharing,
 auto-login) is a setting only you can decide — the readiness check just tells

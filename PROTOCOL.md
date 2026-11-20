@@ -800,6 +800,12 @@ the same way as INPUT_TEXT. Rules:
 - The host never logs, stores or echoes the contents.
 - No reply. The client sees the result in the video.
 
+The web client sets bit 8 and, when the host advertises it, offers a "Log in"
+form (a real username/password form, so a password manager can fill it). It
+sends one message per submit, waits at least 3 seconds between sends, checks
+the field rules above before sending, never stores the password, and removes
+the form after sending.
+
 ## Host and client info (HOST_INFO / CLIENT_INFO)
 
 Both are UTF-8 JSON inside SECURE. Unknown fields are ignored.
