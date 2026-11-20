@@ -113,6 +113,9 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// device that was let in and set the matching capability bit (see
     /// `admitted`), and ends with the connection.
     private var fileSession: HostFileSession?
+    /// True for a primary connection whose device set capability bit 7 (restart).
+    private var restartAllowed = false
+    private var restartFailures = 0
     private var peripheralSession: HostPeripheralSession?
     /// Drives the time-based parts of the two above; runs only while one exists.
     private var deviceTimer: DispatchSourceTimer?
@@ -354,6 +357,8 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         // secondary display's connection must not get sessions or a timer.
         guard isPrimary else { return }
         guard let device = link.device else { return }
+        restartAllowed = link.phase == .accepted && device.capabilities.contains(.restart)
+        restartFailures = 0
         if HostFileSession.allowed(phase: link.phase, capabilities: device.capabilities) {
             let name = device.name
             fileSession = HostFileSession(onStored: { url in
@@ -445,6 +450,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         injector = nil
         fileSession?.closeAll()
         fileSession = nil
+        restartAllowed = false
     }
 
     // MARK: - Messages (on `queue`)
@@ -499,6 +505,26 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                                        now: ProcessInfo.processInfo.systemUptime) { send(frame) }
         case .fileAnswer:
             break // the host never offers a file, so there is nothing to answer
+        case .restartRequest:
+            // The user name and password arrive inside the encrypted session, are used for
+            // this one call and are never logged or kept (RestartService).
+            guard restartAllowed, payload.count <= 1024,
+                  let body = try? JSONSerialization.jsonObject(with: payload) as? [String: String],
+                  let user = body["username"], let password = body["password"] else { return }
+            restartAllowed = false // one at a time
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let outcome = RestartService.restart(username: user, password: password)
+                clog("RESTART: authrestart result \(outcome)")
+                self?.queue.async {
+                    self?.send(StreamMessage.frame(type: .restartResult, payload: Data([outcome.rawValue])))
+                    if outcome != .restarting, let self {
+                        self.restartFailures += 1
+                        self.restartAllowed = self.restartFailures < 3 // three wrong tries per connection
+                    }
+                }
+            }
+        case .restartResult:
+            break // host to client only
         case .peripheralAttach, .peripheralDetach, .peripheralInput:
             // Only a session made for a device that set the bit has one.
             guard let peripherals = peripheralSession else { return }

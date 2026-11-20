@@ -10,14 +10,27 @@ enum UpdateInstaller {
 
     /// Kicks off the install; calls back on the main queue with an error
     /// message, or never returns (relaunch) on success.
-    static func install(completion: @escaping (String) -> Void) {
+    /// How the app starts the new build after the swap.
+    enum Mode {
+        /// Menu bar app: start the new copy, then quit.
+        case app
+        /// `clamshell update` over SSH: restart in place, then report.
+        case cli
+    }
+
+    static func install(version: String? = nil, mode: Mode = .app,
+                        completion: @escaping (String) -> Void, success: ((String) -> Void)? = nil) {
         let fail: (String) -> Void = { msg in
             clog("update failed: \(msg)")
-            DispatchQueue.main.async { completion(msg) }
+            // The CLI blocks the main thread waiting for this, so the main
+            // queue would never run it there: call it directly.
+            if mode == .cli { completion(msg) } else { DispatchQueue.main.async { completion(msg) } }
         }
         guard canInstall else { return fail("not running from an .app bundle") }
 
-        let api = URL(string: "https://api.github.com/repos/frindle/clamshell/releases/latest")!
+        guard let api = SafeUpdate.releaseAPIURL(version: version) else {
+            return fail("\(version ?? "") is not a version number")
+        }
         URLSession.shared.dataTask(with: api) { data, response, _ in
             // A rate-limited or failed API call returns JSON too; say which.
             if let status = (response as? HTTPURLResponse)?.statusCode, status != 200 {
@@ -37,7 +50,7 @@ enum UpdateInstaller {
                     return fail("download returned HTTP \(status)")
                 }
                 do {
-                    try performSwap(dmgAt: tmpFile)
+                    try performSwap(dmgAt: tmpFile, mode: mode, success: success)
                 } catch {
                     return fail(String(describing: error))
                 }
@@ -57,17 +70,18 @@ enum UpdateInstaller {
 
     /// Old bundles a previous update moved aside (the running app can't
     /// delete itself). Called at launch.
+    /// The kept previous version (in the state folder) is not touched.
     static func removeOldCopies() {
         let tmp = NSTemporaryDirectory()
         let names = (try? FileManager.default.contentsOfDirectory(atPath: tmp)) ?? []
-        for name in names where name.hasPrefix("clamshell-old-") && name.hasSuffix(".app") {
+        for name in names where SafeUpdate.isStaleCopy(name: name) && name.hasPrefix("clamshell-old-") {
             try? FileManager.default.removeItem(atPath: tmp + name)
         }
         // A staged copy left by an update that was interrupted before the swap.
         let parent = (Bundle.main.bundlePath as NSString).deletingLastPathComponent
         guard canInstall else { return }
         let staged = (try? FileManager.default.contentsOfDirectory(atPath: parent)) ?? []
-        for name in staged where name.hasPrefix(stagingPrefix) && name.hasSuffix(".app") {
+        for name in staged where SafeUpdate.isStaleCopy(name: name) && name.hasPrefix(stagingPrefix) {
             try? FileManager.default.removeItem(atPath: parent + "/" + name)
         }
     }
@@ -86,7 +100,7 @@ enum UpdateInstaller {
         init(_ d: String) { description = d }
     }
 
-    private static func performSwap(dmgAt dmg: URL) throws {
+    private static func performSwap(dmgAt dmg: URL, mode: Mode, success: ((String) -> Void)?) throws {
         let mount = NSTemporaryDirectory() + "clamshell-update-\(UUID().uuidString)"
         guard shell("/usr/bin/hdiutil", ["attach", dmg.path, "-nobrowse", "-readonly", "-mountpoint", mount]) == 0 else {
             throw UpdateError("could not mount update DMG")
@@ -134,29 +148,60 @@ enum UpdateInstaller {
             try? FileManager.default.removeItem(atPath: staging)
             throw UpdateError("the copied update failed its signature check — the installed app was not changed")
         }
-        let graveyard = NSTemporaryDirectory() + "clamshell-old-\(UUID().uuidString).app"
+        // Keep the working version: it moves to a fixed place instead of being
+        // deleted, so `clamshell rollback` and the health check can swap it back.
+        let fm = FileManager.default
+        let stateDir = HostState.directory
+        let previous = SafeUpdate.previousBundle(in: stateDir).path
         do {
-            try FileManager.default.moveItem(atPath: dest, toPath: graveyard)
+            try? HostState.prepare(stateDir)
+            try fm.createDirectory(atPath: (previous as NSString).deletingLastPathComponent,
+                                   withIntermediateDirectories: true)
+            if fm.fileExists(atPath: previous) { try fm.removeItem(atPath: previous) }
+            try fm.moveItem(atPath: dest, toPath: previous)
         } catch {
-            try? FileManager.default.removeItem(atPath: staging)
+            try? fm.removeItem(atPath: staging)
             throw UpdateError("could not move the installed app aside (\(error.localizedDescription)) — the installed app was not changed")
         }
         do {
-            try FileManager.default.moveItem(atPath: staging, toPath: dest)
+            try fm.moveItem(atPath: staging, toPath: dest)
         } catch {
             // Roll back so we don't leave no app at all.
-            try? FileManager.default.moveItem(atPath: graveyard, toPath: dest)
-            try? FileManager.default.removeItem(atPath: staging)
+            try? fm.moveItem(atPath: previous, toPath: dest)
+            try? fm.removeItem(atPath: staging)
             throw UpdateError("could not move the update into place (\(error.localizedDescription)) — rolled back")
         }
-        clog("update installed and verified, relaunching")
+        let from = SafeUpdateOps.currentVersion
+        let to = SafeUpdateOps.version(ofApp: dest)
+        clog("update installed and verified (\(from) -> \(to)), relaunching")
 
-        DispatchQueue.main.async {
-            let relaunch = Process()
-            relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            relaunch.arguments = ["-n", dest]
-            try? relaunch.run()
-            NSApp.terminate(nil)
+        // The new build has to prove itself: a watcher from the previous
+        // bundle rolls back if it is not serving within the deadline.
+        SafeUpdateOps.writeRecord(from: from, to: to, result: "installed", reason: "health check pending")
+        // From the CLI, the old process is the running app, not this command.
+        let oldPID = mode == .cli ? (SafeUpdateOps.pids(ofApp: dest).first ?? 0) : getpid()
+        SafeUpdateOps.writePending(SafeUpdate.Pending(startedAt: Date(), from: from, to: to,
+                                                      oldPID: oldPID, installedApp: dest))
+        SafeUpdateOps.startHealthWatcher(installed: dest, previous: previous)
+
+        switch mode {
+        case .cli:
+            // This process is the old build; restart() replaces it (or ends it
+            // when the agent is not loaded) and then reports.
+            SafeUpdateOps.restart(appPath: dest, killOthers: true)
+            success?(to)
+        case .app:
+            DispatchQueue.main.async {
+                if SafeUpdateOps.agentLoaded {
+                    SafeUpdateOps.restart(appPath: dest, killOthers: false)
+                } else {
+                    let relaunch = Process()
+                    relaunch.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+                    relaunch.arguments = ["-n", dest]
+                    try? relaunch.run()
+                    NSApp.terminate(nil)
+                }
+            }
         }
     }
 

@@ -434,6 +434,7 @@ struct ContentView: View {
     @ObservedObject private var knownHosts = KnownHostsStore.shared
     @State private var resolvingNearby: String?
     @State private var showShortcuts = false
+    @State private var showRestart = false
     @State private var showFileImporter = false
     @AppStorage("hostAddress") private var host = ""
     @State private var machineName = ""
@@ -540,6 +541,7 @@ struct ContentView: View {
             } else if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
+                    .sheet(isPresented: $showRestart) { RestartMacSheet(client: client) }
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
                             if client.hostLocked && client.hostNativeLockScreen {
@@ -558,6 +560,10 @@ struct ContentView: View {
                         VStack(spacing: 8) {
                         if showShortcuts {
                             ShortcutBar(client: client)
+                        }
+                        if showShortcuts, client.hostCapabilities.contains(.restart) {
+                            Button("Restart Mac…") { showRestart = true }
+                                .font(.footnote).buttonStyle(.bordered).tint(.white)
                         }
                         if let notice = pointerLock.notice {
                             Text(notice)
@@ -848,6 +854,7 @@ struct ContentView: View {
                     case .failed(let reason): Text(reason).font(.footnote).foregroundStyle(.red)
                     default: EmptyView()
                     }
+                    UnlockDiskSection()
                 }
             }
             .padding()

@@ -23,6 +23,9 @@ internal sealed class ViewerClient : IDisposable
     public Action<int, int, byte[]>? OnFrame;          // decoded width, height, BGRA32
     public Action<bool, bool>? OnLockState;           // locked, host nativeLockScreen (this viewer never switches to the browser fallback)
     public Action<string>? OnDisconnected;
+    public Action<byte>? OnRestartResult; // RestartService outcome: 0 restarting, 1 refused, 2 unsupported, 3 failed
+    public IDeviceKey DeviceKey => _key;
+    public bool HostOffersRestart => (HostCapabilities & Caps.Restart) != 0;
     /// <summary>What the screen should show. Called from a worker thread.</summary>
     public Action<FlowState>? OnState;
 
@@ -66,6 +69,7 @@ internal sealed class ViewerClient : IDisposable
         await StartAttempt(new FlowCarry());
     }
 
+    public Task SendRestart(string username, string password) => SendApp(Proto.RestartRequest(username, password));
     public Task SendMouseMove(float x, float y) => SendApp(Proto.MouseMove(x, y));
     public Task SendMouseButton(byte button, bool down, float x, float y) => SendApp(Proto.MouseButton(button, down, x, y));
     public Task SendKey(ushort macKeyCode, bool down, ulong flags) => SendApp(Proto.Key(macKeyCode, down, flags));
@@ -124,7 +128,7 @@ internal sealed class ViewerClient : IDisposable
             Sign = _key.Sign,
             DeviceName = Environment.MachineName,
             FallbackDeviceName = "PC",
-            Capabilities = ClientAuthFlow.DefaultCapabilities,
+            Capabilities = ClientAuthFlow.DefaultCapabilities | Caps.Restart,
             AppName = "windows",
             AppVersion = typeof(ViewerClient).Assembly.GetName().Version?.ToString(3) ?? "0",
             DialledUrl = url,
@@ -474,6 +478,9 @@ internal sealed class ViewerClient : IDisposable
                     break;
                 case MessageType.HostLockState:
                     if (HostLock.Parse(p) is { } lk) _owner.OnLockState?.Invoke(lk.Locked, lk.Native);
+                    break;
+                case MessageType.RestartResult:
+                    if (p.Length >= 1) _owner.OnRestartResult?.Invoke(p[0]);
                     break;
                 // StreamStatus, CursorPos, Clipboard: not
                 // needed for v1 of this viewer -- see report/README for what's skipped.

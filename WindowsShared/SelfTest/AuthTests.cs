@@ -21,6 +21,7 @@ public static class AuthTests
         t.Group("secure frames", () => SecureFrames(t));
         t.Group("host lock state", () => LockState(t));
         FlowTests.Run(t);
+        DiskUnlockTests.Run(t);
     }
 
     private static void LockState(TestRun t)
