@@ -114,6 +114,25 @@ final class WebServer {
         return out
     }
 
+    static let unlockTerminalMetaName = "clamshell-unlock-terminal-url"
+
+    /// The https address of the browser SSH terminal that unlocks the disk after a power cut
+    /// (`defaults write com.frindle.clamshell unlockTerminalURL <https-url>`). Empty when unset or
+    /// not https. The page shows an "Unlock disk" link to it while the Mac does not answer.
+    static var unlockTerminalURL: String {
+        let v = (UserDefaults.standard.string(forKey: "unlockTerminalURL") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return v.lowercased().hasPrefix("https://") ? v : ""
+    }
+
+    /// The page with the unlock link's address in a `<meta>` tag; unchanged when `url` is empty.
+    static func withUnlockTerminalURL(_ page: Data, url: String) -> Data {
+        guard !url.isEmpty, let end = page.range(of: Data("</head>".utf8)) else { return page }
+        let tag = "<meta name=\"\(unlockTerminalMetaName)\" content=\"\(encodedToken(url))\">"
+        var out = page
+        out.insert(contentsOf: Data(tag.utf8), at: end.lowerBound)
+        return out
+    }
+
     /// Non-nil when dual display mode is on: the point sizes of virtual
     /// displays A and B. Drives the "/" picker page and the /display-a and
     /// /display-b cropped views. nil keeps the classic single-display flow.
@@ -388,7 +407,7 @@ final class WebServer {
                 return
             }
             send(conn, status: "200 OK", contentType: "text/html; charset=utf-8",
-                 body: Self.withClipboardToken(html, token: clipboardToken))
+                 body: Self.withUnlockTerminalURL(Self.withClipboardToken(html, token: clipboardToken), url: Self.unlockTerminalURL))
             return
         }
         if path.hasPrefix("/client/") {

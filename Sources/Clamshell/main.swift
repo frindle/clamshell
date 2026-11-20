@@ -255,6 +255,9 @@ if args.count > 1 {
         var probeLabel = "manual"
         if let i = args.firstIndex(of: "--label"), i + 1 < args.count { probeLabel = args[i + 1] }
         exit(LoginWindowProbe.run(label: probeLabel))
+    case "restart":
+        // Authenticated restart (skips the disk unlock once). See RestartService.
+        exit(RestartService.runCommand())
     case "loginwindow-agent":
         // Experimental, not installed by anything: serve the stream at the
         // login window and exit when a user logs in. See LoginWindowAgent.

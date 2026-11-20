@@ -25,6 +25,8 @@ internal enum MessageType : byte
     Key = 0x22,
     Scroll = 0x23,
     Clipboard = 0x30,
+    RestartRequest = 0x60,
+    RestartResult = 0x61,
 }
 
 internal enum StreamCodec : byte
@@ -89,6 +91,11 @@ internal static class Proto
         WriteF32(p, 0, dx); WriteF32(p, 4, dy);
         return Frame(MessageType.Scroll, p);
     }
+
+    /// <summary>UTF-8 JSON {"username","password"}; goes inside the encrypted session.</summary>
+    public static byte[] RestartRequest(string username, string password) =>
+        Frame(MessageType.RestartRequest, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(
+            new Dictionary<string, string> { ["username"] = username, ["password"] = password }));
 
     private static void WriteF32(Span<byte> p, int off, float v) =>
         BinaryPrimitives.WriteInt32BigEndian(p.Slice(off, 4), BitConverter.SingleToInt32Bits(v));

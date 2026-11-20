@@ -193,7 +193,7 @@ final class StreamGate {
             countUnanswered(link)
         }
         var capabilities: StreamCapabilities = [.relativeMouse, .textInput, .extraButtons, .deviceApproval]
-        if advertisesDeviceFeatures { capabilities.formUnion([.fileTransfer, .peripherals]) }
+        if advertisesDeviceFeatures { capabilities.formUnion([.fileTransfer, .peripherals, .restart]) }
         if auth.requireApproval { capabilities.insert(.approvalRequired) }
         do {
             let handshake = try HostHandshake(identityKey: auth.identity.publicKey,

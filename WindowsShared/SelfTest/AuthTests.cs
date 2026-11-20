@@ -20,6 +20,7 @@ public static class AuthTests
         t.Group("client refuses bad challenges and results", () => ClientRefuses(t));
         t.Group("secure frames", () => SecureFrames(t));
         FlowTests.Run(t);
+        DiskUnlockTests.Run(t);
     }
 
     private static byte[] H(JsonElement e, string name)

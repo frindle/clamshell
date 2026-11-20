@@ -570,6 +570,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             systemMenu.addItem(login)
 
             systemMenu.addItem(withTitle: "Check Reboot Readiness…", action: #selector(checkRebootReadiness), keyEquivalent: "")
+            systemMenu.addItem(withTitle: "Restart (skip disk unlock)…", action: #selector(restartSkippingUnlock), keyEquivalent: "")
                 .target = self
         }
 
@@ -919,6 +920,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if alert.runModal() == .alertSecondButtonReturn {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(RebootReadiness.autorestartCommand, forType: .string)
+        }
+    }
+
+    /// Planned restart with `fdesetup authrestart`. The credentials live in these two fields
+    /// for this one call and are handed to RestartService; nothing is stored.
+    @objc private func restartSkippingUnlock() {
+        let alert = NSAlert()
+        alert.messageText = "Restart this Mac"
+        alert.informativeText = "Restarts now and skips the disk unlock screen once. Enter an account that can unlock the disk. Nothing is saved."
+        let user = NSTextField(frame: NSRect(x: 0, y: 30, width: 260, height: 24))
+        user.stringValue = NSUserName()
+        let pass = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 56))
+        box.addSubview(user); box.addSubview(pass)
+        alert.accessoryView = box
+        alert.addButton(withTitle: "Restart")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let name = user.stringValue, secret = pass.stringValue
+        pass.stringValue = ""
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outcome = RestartService.restart(username: name, password: secret)
+            guard outcome != .restarting else { return }
+            DispatchQueue.main.async {
+                let done = NSAlert()
+                done.messageText = "Restart"
+                done.informativeText = RestartService.message(outcome)
+                done.runModal()
+            }
         }
     }
 

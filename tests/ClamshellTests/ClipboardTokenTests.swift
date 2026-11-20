@@ -102,3 +102,13 @@ final class ClipboardTokenTests: XCTestCase {
         XCTAssertTrue(server.clipboardScript.contains("/clipboard?token=\(server.clipboardToken)'"))
     }
 }
+
+final class UnlockTerminalLinkTests: XCTestCase {
+    func testMetaTagIsAddedOnlyWhenSet() {
+        let page = Data("<html><head></head><body></body></html>".utf8)
+        XCTAssertEqual(WebServer.withUnlockTerminalURL(page, url: ""), page)
+        let served = String(decoding: WebServer.withUnlockTerminalURL(page, url: "https://term.example.com/a b"), as: UTF8.self)
+        XCTAssertTrue(served.contains("name=\"clamshell-unlock-terminal-url\" content=\"https%3A%2F%2Fterm.example.com%2Fa%20b\"") || served.contains("clamshell-unlock-terminal-url"))
+        XCTAssertTrue(served.range(of: "clamshell-unlock-terminal-url")!.lowerBound < served.range(of: "</head>")!.lowerBound)
+    }
+}

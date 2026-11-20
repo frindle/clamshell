@@ -45,6 +45,9 @@ enum StreamMessageType: UInt8 {
     case fileAnswer = 0x59
     case fileData = 0x5A
     case fileEnd = 0x5B
+    // 0x60, 0x61: planned restart that skips the disk unlock once (needs restart).
+    case restartRequest = 0x60 // client -> host: UTF-8 JSON {"username", "password"}
+    case restartResult = 0x61  // host -> client: RestartService.Outcome (1 byte)
 }
 
 /// Feature bits exchanged in the handshake (PROTOCOL.md "Capabilities").
@@ -57,6 +60,7 @@ struct StreamCapabilities: OptionSet {
     static let deviceApproval   = StreamCapabilities(rawValue: 1 << 4)
     static let fileTransfer     = StreamCapabilities(rawValue: 1 << 5)
     static let peripherals      = StreamCapabilities(rawValue: 1 << 6)
+    static let restart          = StreamCapabilities(rawValue: 1 << 7)
 }
 
 enum StreamCodec: UInt8 {
