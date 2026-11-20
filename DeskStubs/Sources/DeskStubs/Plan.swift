@@ -56,7 +56,8 @@ public enum StubPlanner {
         var actions: [StubAction] = []
         let wanted = Set(specs.map { $0.hostedBundleId })
         for spec in specs {
-            let have = ours.first { $0.hostedBundleId == spec.hostedBundleId }
+            let copies = ours.filter { $0.hostedBundleId == spec.hostedBundleId }.sorted { $0.dirName < $1.dirName }
+            let have = copies.first { $0.dirName == spec.dirName } ?? copies.first
             if let have = have {
                 if have.digest != spec.digest || have.dirName != spec.dirName {
                     actions.append(.replace(spec, removing: have.dirName == spec.dirName ? nil : have.dirName))
@@ -66,6 +67,16 @@ public enum StubPlanner {
             }
         }
         for e in ours where !wanted.contains(e.hostedBundleId!) { actions.append(.remove(dirName: e.dirName)) }
+        // The same hosted app on disk under more than one name: keep the one the plan wants (or the first by name) and
+        // remove the rest, so nothing stays behind that nothing manages.
+        for spec in specs {
+            let copies = ours.filter { $0.hostedBundleId == spec.hostedBundleId }.sorted { $0.dirName < $1.dirName }
+            guard copies.count > 1 else { continue }
+            let keep = copies.first { $0.dirName == spec.dirName } ?? copies[0]
+            for c in copies where c.dirName != keep.dirName && !actions.contains(.replace(spec, removing: c.dirName)) {
+                actions.append(.remove(dirName: c.dirName))
+            }
+        }
         if !rejected.isEmpty { return StubPlan(actions: [], rejected: rejected) }
         return StubPlan(actions: actions, rejected: rejected)
     }

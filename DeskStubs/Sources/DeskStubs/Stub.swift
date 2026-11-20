@@ -13,9 +13,11 @@ public struct HostedApp: Equatable {
     public var version: String
     /// Absolute path of the real app's .icns, resolved by the caller. nil means no icon.
     public var iconPath: String?
+    /// Digest of the icon file's bytes (`StubGenerator.digest(bytes:)`), so a changed icon at the same path rewrites the stub.
+    public var iconDigest: String?
     public var policy: StubPolicy
-    public init(bundleId: String, name: String, version: String = "1.0", iconPath: String? = nil, policy: StubPolicy) {
-        self.bundleId = bundleId; self.name = name; self.version = version; self.iconPath = iconPath; self.policy = policy
+    public init(bundleId: String, name: String, version: String = "1.0", iconPath: String? = nil, iconDigest: String? = nil, policy: StubPolicy) {
+        self.bundleId = bundleId; self.name = name; self.version = version; self.iconPath = iconPath; self.iconDigest = iconDigest; self.policy = policy
     }
 }
 
@@ -23,8 +25,9 @@ public struct StubOptions: Equatable {
     /// This Mac's name in the rules file.
     public var thisMac: String
     /// Path of the Desk client the stub hands over to.
+    /// No default: a default in a shared binaries folder that admin tools can write would let any of them redirect every stub.
     public var deskPath: String
-    public init(thisMac: String, deskPath: String = "/usr/local/bin/desk") { self.thisMac = thisMac; self.deskPath = deskPath }
+    public init(thisMac: String, deskPath: String) { self.thisMac = thisMac; self.deskPath = deskPath }
 }
 
 /// A file in the bundle. `text` files are written as given; `copy` files are copied from `source`.
@@ -118,9 +121,11 @@ public enum StubGenerator {
     }
 
     /// 64-bit FNV-1a, hex. Not security: it only tells whether a stub needs rewriting.
-    public static func digest(_ s: String) -> String {
+    public static func digest(_ s: String) -> String { digest(bytes: Array(s.utf8)) }
+
+    public static func digest(bytes: [UInt8]) -> String {
         var h: UInt64 = 0xcbf29ce484222325
-        for b in s.utf8 { h ^= UInt64(b); h = h &* 0x100000001b3 }
+        for b in bytes { h ^= UInt64(b); h = h &* 0x100000001b3 }
         let hex = String(h, radix: 16)
         return String(repeating: "0", count: 16 - hex.count) + hex
     }
@@ -177,7 +182,7 @@ public enum StubGenerator {
         guard !name.isEmpty else { return .failure(.emptyName(app.bundleId)) }
         let iconFile = app.iconPath == nil ? nil : "AppIcon.icns"
         let script = launcherScript(hostedBundleId: app.bundleId, deskPath: options.deskPath)
-        let digest = digest([String(StubFormat.version), app.bundleId, name, app.version, app.iconPath ?? "", options.deskPath].joined(separator: "\u{1F}"))
+        let digest = digest([String(StubFormat.version), app.bundleId, name, app.version, app.iconPath ?? "", app.iconDigest ?? "", options.deskPath].joined(separator: "\u{1F}"))
         var files = [
             BundleFile(path: "Contents/Info.plist", content: .text(infoPlist(app, dirName: name, iconFile: iconFile, digest: digest)), executable: false),
             BundleFile(path: "Contents/MacOS/" + executableName, content: .text(script), executable: true),

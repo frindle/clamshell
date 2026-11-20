@@ -4,7 +4,7 @@ import Foundation
 @testable import DeskStubsDisk
 
 final class StubLogicTests: XCTestCase {
-    let opts = StubOptions(thisMac: "op")
+    let opts = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")
     func app(_ id: String, _ name: String, _ p: StubPolicy, icon: String? = nil) -> HostedApp {
         HostedApp(bundleId: id, name: name, version: "2.1", iconPath: icon, policy: p)
     }
@@ -90,7 +90,7 @@ final class StubLogicTests: XCTestCase {
 }
 
 final class StubPlanTests: XCTestCase {
-    let opts = StubOptions(thisMac: "op")
+    let opts = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")
     let slack = HostedApp(bundleId: "com.tinyspeck.slackmacgap", name: "Slack", policy: .anywhere)
     let ff = HostedApp(bundleId: "org.mozilla.firefox", name: "Firefox", policy: .home("big"))
     let finder = HostedApp(bundleId: "com.apple.finder", name: "Finder", policy: .local)
@@ -149,7 +149,7 @@ final class StubPlanTests: XCTestCase {
 }
 
 final class StubReviewTests: XCTestCase {
-    let opts = StubOptions(thisMac: "op")
+    let opts = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")
 
     func testNoEnvironmentOverrideInTheLauncher() throws {
         let spec = try StubGenerator.make(HostedApp(bundleId: "x.y", name: "Y", policy: .anywhere), options: opts).get()
@@ -197,7 +197,7 @@ final class StubDiskTests: XCTestCase {
         let root = try tempRoot()
         let icon = root.appendingPathComponent("src.icns")
         try Data([1, 2, 3]).write(to: icon)
-        let opts = StubOptions(thisMac: "op")
+        let opts = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")
         let apps = [HostedApp(bundleId: "org.mozilla.firefox", name: "Firefox", iconPath: icon.path, policy: .home("big")),
                     HostedApp(bundleId: "com.tinyspeck.slackmacgap", name: "Slack", policy: .anywhere)]
         let stubs = root.appendingPathComponent("Desk")
@@ -229,7 +229,7 @@ final class StubDiskTests: XCTestCase {
 
     func testMissingIconFailsCleanlyAndLeavesNothing() throws {
         let root = try tempRoot()
-        let spec = try StubGenerator.make(HostedApp(bundleId: "x.y", name: "Y", iconPath: "/nonexistent/i.icns", policy: .anywhere), options: StubOptions(thisMac: "op")).get()
+        let spec = try StubGenerator.make(HostedApp(bundleId: "x.y", name: "Y", iconPath: "/nonexistent/i.icns", policy: .anywhere), options: StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")).get()
         XCTAssertThrowsError(try StubWriter.write(spec, into: root))
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
     }
@@ -240,14 +240,14 @@ final class StubDiskTests: XCTestCase {
         let mine = root.appendingPathComponent("Slack.app/Contents")
         try fm.createDirectory(at: mine, withIntermediateDirectories: true)
         try "<plist>user's own app</plist>".write(to: mine.appendingPathComponent("Info.plist"), atomically: true, encoding: .utf8)
-        let spec = try StubGenerator.make(HostedApp(bundleId: "com.tinyspeck.slackmacgap", name: "Slack", policy: .anywhere), options: StubOptions(thisMac: "op")).get()
+        let spec = try StubGenerator.make(HostedApp(bundleId: "com.tinyspeck.slackmacgap", name: "Slack", policy: .anywhere), options: StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")).get()
         XCTAssertThrowsError(try StubWriter.write(spec, into: root)) { XCTAssertEqual($0 as? StubWriteError, .destinationNotOurs("Slack")) }
         XCTAssertThrowsError(try StubWriter.remove(dirName: "Slack", from: root))
         XCTAssertEqual(try String(contentsOf: mine.appendingPathComponent("Info.plist"), encoding: .utf8), "<plist>user's own app</plist>")
         XCTAssertEqual(try fm.contentsOfDirectory(atPath: root.path), ["Slack.app"], "no temp left")
         // Another app's stub in the same place is not overwritten either.
         try fm.removeItem(at: root.appendingPathComponent("Slack.app"))
-        let other = try StubGenerator.make(HostedApp(bundleId: "other.app", name: "Slack", policy: .anywhere), options: StubOptions(thisMac: "op")).get()
+        let other = try StubGenerator.make(HostedApp(bundleId: "other.app", name: "Slack", policy: .anywhere), options: StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")).get()
         try StubWriter.write(other, into: root)
         XCTAssertThrowsError(try StubWriter.write(spec, into: root))
     }
@@ -260,7 +260,7 @@ final class StubDiskTests: XCTestCase {
 
     func testRenameFreesTheNameInTheSameRun() throws {
         let root = try tempRoot()
-        let opts = StubOptions(thisMac: "op")
+        let opts = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")
         let v1 = [HostedApp(bundleId: "a.one", name: "Alpha", policy: .anywhere)]
         try StubWriter.apply(StubPlanner.plan(apps: v1, existing: [], options: opts), into: root)
         // The app is renamed; its old directory goes and the new one appears.
@@ -273,5 +273,94 @@ final class StubDiskTests: XCTestCase {
         let root = try tempRoot()
         XCTAssertThrowsError(try StubWriter.remove(dirName: "../x", from: root))
         XCTAssertThrowsError(try StubWriter.remove(dirName: ".hidden", from: root))
+    }
+
+    private let opts2 = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")
+
+    func testFailureMidRunDeletesNothing() throws {
+        let root = try tempRoot()
+        let fm = FileManager.default
+        try StubWriter.apply(StubPlanner.plan(apps: [HostedApp(bundleId: "a.old", name: "Old", policy: .anywhere)], existing: [], options: opts2), into: root)
+        // New plan drops "Old" and adds a stub whose icon is unreadable: the second step fails, "Old" must survive.
+        let apps = [HostedApp(bundleId: "b.new", name: "New", iconPath: "/nonexistent/i.icns", policy: .anywhere)]
+        let plan = StubPlanner.plan(apps: apps, existing: StubWriter.scan(root: root), options: opts2)
+        XCTAssertTrue(plan.actions.contains(.remove(dirName: "Old")))
+        XCTAssertThrowsError(try StubWriter.apply(plan, into: root))
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: root.path), ["Old.app"], "old stub kept, no temp left")
+    }
+
+    func testReplaceKeepsOneBundleAndTakesAFreedName() throws {
+        let root = try tempRoot()
+        let fm = FileManager.default
+        try StubWriter.apply(StubPlanner.plan(apps: [HostedApp(bundleId: "a.one", name: "Alpha", version: "1", policy: .anywhere)], existing: [], options: opts2), into: root)
+        // Same name, new version: replaced in place.
+        try StubWriter.apply(StubPlanner.plan(apps: [HostedApp(bundleId: "a.one", name: "Alpha", version: "2", policy: .anywhere)], existing: StubWriter.scan(root: root), options: opts2), into: root)
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: root.path), ["Alpha.app"])
+        XCTAssertTrue(try String(contentsOf: root.appendingPathComponent("Alpha.app/Contents/Info.plist"), encoding: .utf8).contains("<string>2</string>"))
+        // A different app takes the name of one that is dropped in the same run.
+        let plan = StubPlanner.plan(apps: [HostedApp(bundleId: "b.two", name: "Alpha", policy: .anywhere)], existing: StubWriter.scan(root: root), options: opts2)
+        try StubWriter.apply(plan, into: root)
+        XCTAssertEqual(StubWriter.scan(root: root).map { $0.hostedBundleId }, ["b.two"])
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: root.path), ["Alpha.app"])
+    }
+
+    func testDuplicateDirectoriesForOneAppAreCleanedUp() throws {
+        let root = try tempRoot()
+        let spec = try StubGenerator.make(HostedApp(bundleId: "a.one", name: "Alpha", policy: .anywhere), options: opts2).get()
+        try StubWriter.write(spec, into: root)
+        let dup = try StubGenerator.make(HostedApp(bundleId: "a.one", name: "Alpha copy", policy: .anywhere), options: opts2, dirName: "Alpha copy").get()
+        try StubWriter.write(dup, into: root)
+        let plan = StubPlanner.plan(apps: [HostedApp(bundleId: "a.one", name: "Alpha", policy: .anywhere)], existing: StubWriter.scan(root: root), options: opts2)
+        XCTAssertEqual(plan.actions, [.remove(dirName: "Alpha copy")])
+        try StubWriter.apply(plan, into: root)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["Alpha.app"])
+    }
+
+    func testOwnershipNeedsTheWholeMarkerNotAStringSearch() throws {
+        let root = try tempRoot()
+        let fm = FileManager.default
+        func fake(_ dir: String, _ plist: String) throws {
+            try fm.createDirectory(at: root.appendingPathComponent(dir + "/Contents"), withIntermediateDirectories: true)
+            try plist.write(to: root.appendingPathComponent(dir + "/Contents/Info.plist"), atomically: true, encoding: .utf8)
+        }
+        // The key appears only in a comment / a different value position / without the format key and matching identifier.
+        try fake("Comment.app", "<plist><!-- <key>DeskHostedBundleId</key><string>x.y</string> --></plist>")
+        try fake("NoFormat.app", "<plist><dict><key>DeskHostedBundleId</key><string>x.y</string></dict></plist>")
+        try fake("Mismatch.app", "<plist><dict><key>DeskHostedBundleId</key><string>x.y</string><key>DeskStubFormat</key><string>1</string><key>CFBundleIdentifier</key><string>com.other</string></dict></plist>")
+        try fake("Upper.APP", "<plist/>")
+        let found = StubWriter.scan(root: root)
+        XCTAssertEqual(found.map { $0.dirName }, ["Comment", "Mismatch", "NoFormat", "Upper"], "suffix match ignores case")
+        XCTAssertTrue(found.allSatisfy { $0.hostedBundleId == nil })
+    }
+
+    func testNamesThatDifferOnlyByUnicodeFormOrCaseClash() {
+        let composed = "Caf\u{E9}", decomposed = "Cafe\u{301}"
+        let existing = [ExistingStub(dirName: composed.uppercased(), hostedBundleId: nil, digest: nil)]
+        let plan = StubPlanner.plan(apps: [HostedApp(bundleId: "a.one", name: decomposed, policy: .anywhere)], existing: existing, options: opts2)
+        guard case .create(let spec)? = plan.actions.first else { return XCTFail("expected create") }
+        XCTAssertEqual(spec.dirName, decomposed + " 2")
+    }
+
+    func testIconContentChangesTheDigest() throws {
+        let a = try StubGenerator.make(HostedApp(bundleId: "x.y", name: "Y", iconPath: "/i.icns", iconDigest: StubGenerator.digest(bytes: [1]), policy: .anywhere), options: opts2).get()
+        let b = try StubGenerator.make(HostedApp(bundleId: "x.y", name: "Y", iconPath: "/i.icns", iconDigest: StubGenerator.digest(bytes: [2]), policy: .anywhere), options: opts2).get()
+        XCTAssertNotEqual(a.digest, b.digest)
+    }
+
+    func testClientPathMustNotBeWritableByOthers() throws {
+        let root = try tempRoot()
+        let fm = FileManager.default
+        let dir = root.appendingPathComponent("bin")
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+        let client = dir.appendingPathComponent("desk")
+        try "#!/bin/sh\n".write(to: client, atomically: true, encoding: .utf8)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: client.path)
+        XCTAssertNoThrow(try StubWriter.checkClient(client.path))
+        try fm.setAttributes([.posixPermissions: 0o775], ofItemAtPath: dir.path)
+        XCTAssertThrowsError(try StubWriter.checkClient(client.path), "group-writable folder")
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+        try fm.setAttributes([.posixPermissions: 0o757], ofItemAtPath: client.path)
+        XCTAssertThrowsError(try StubWriter.checkClient(client.path), "world-writable file")
+        XCTAssertThrowsError(try StubWriter.checkClient(dir.appendingPathComponent("missing").path))
     }
 }

@@ -2,7 +2,7 @@ import Foundation
 import DeskStubs
 import DeskStubsDisk
 
-// desk-stubgen --out DIR --mac NAME [--desk PATH] [--dry-run] apps.json
+// desk-stubgen --out DIR --mac NAME --desk PATH [--dry-run] apps.json
 //
 // apps.json: [{"bundleId": "...", "name": "...", "version": "1.0", "icon": "/path/AppIcon.icns",
 //              "mode": "local" | "anywhere" | "home", "home": "<mac>"}]
@@ -19,18 +19,19 @@ struct Entry: Decodable {
 
 func fail(_ m: String) -> Never { FileHandle.standardError.write(Data((m + "\n").utf8)); exit(2) }
 
-var out: String?, mac: String?, desk = "/usr/local/bin/desk", file: String?, dry = false
+var out: String?, mac: String?, desk: String?, file: String?, dry = false
 var it = CommandLine.arguments.dropFirst().makeIterator()
 while let a = it.next() {
     switch a {
     case "--out": out = it.next()
     case "--mac": mac = it.next()
-    case "--desk": desk = it.next() ?? desk
+    case "--desk": desk = it.next()
     case "--dry-run": dry = true
     default: file = a
     }
 }
-guard let out = out, let mac = mac, let file = file else { fail("usage: desk-stubgen --out DIR --mac NAME [--desk PATH] [--dry-run] apps.json") }
+guard let out = out, let mac = mac, let desk = desk, let file = file else { fail("usage: desk-stubgen --out DIR --mac NAME --desk PATH [--dry-run] apps.json") }
+do { try StubWriter.checkClient(desk) } catch { fail("unsafe client path: \(error)") }
 guard let data = FileManager.default.contents(atPath: file), let entries = try? JSONDecoder().decode([Entry].self, from: data) else { fail("cannot read \(file)") }
 
 var apps: [HostedApp] = []
@@ -44,7 +45,12 @@ for e in entries {
         policy = .home(h)
     default: fail("\(e.bundleId): unknown mode \(e.mode)")
     }
-    apps.append(HostedApp(bundleId: e.bundleId, name: e.name, version: e.version ?? "1.0", iconPath: e.icon, policy: policy))
+    var iconDigest: String?
+    if let icon = e.icon {
+        guard let d = FileManager.default.contents(atPath: icon) else { fail("\(e.bundleId): cannot read icon \(icon)") }
+        iconDigest = StubGenerator.digest(bytes: Array(d))
+    }
+    apps.append(HostedApp(bundleId: e.bundleId, name: e.name, version: e.version ?? "1.0", iconPath: e.icon, iconDigest: iconDigest, policy: policy))
 }
 let root = URL(fileURLWithPath: out)
 let plan = StubPlanner.plan(apps: apps, existing: StubWriter.scan(root: root), options: StubOptions(thisMac: mac, deskPath: desk))
