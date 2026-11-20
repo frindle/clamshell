@@ -42,6 +42,8 @@
   #authText{margin:0 0 10px}
   .authRow{font-family:ui-monospace,Menlo,monospace;font-size:13px;margin:4px 0;word-break:break-all;user-select:text}
   #authRows input{display:block;width:100%;box-sizing:border-box;margin:6px 0;padding:8px;font:inherit;border-radius:8px;border:1px solid #444;background:#2c2c2e;color:#eee}
+  #authRows form{display:block}
+  #authRows form button[type=submit]{font:inherit;padding:6px 14px;border-radius:8px;border:0;background:#0a84ff;color:#fff;cursor:pointer;margin-top:6px}
   #authButtons{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
   #authButtons button{font:inherit;padding:6px 14px;border-radius:8px;border:0;background:#0a84ff;color:#fff;cursor:pointer}
   #authButtons button.secondary{background:#3a3a3c}
@@ -78,6 +80,7 @@
     <div id="customRow" hidden><input id="customInput" placeholder="2560x1440" size="10" autocomplete="off" spellcheck="false"><button id="customApply">Apply</button></div>
     <button id="retinaBtn">Retina: 2×</button>
     <button id="fullscreenBtn">Full screen</button>
+    <button id="loginBtn" hidden>Log in…</button>
     <button id="restartBtn">Restart Mac…</button>
     <button id="soundBtn" hidden>Sound: off</button>
     <div id="stats">Not connected</div>

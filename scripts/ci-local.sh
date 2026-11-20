@@ -44,6 +44,11 @@ step_input() {
   node tests/test-webclient-input.js
 }
 
+step_login_sw() {
+  node tests/test-webclient-login.js || return 1
+  node tests/test-webclient-sw.js
+}
+
 step_auth() {
   node tests/test-webclient-auth.js || return 1
   node tests/test-webclient-auth-flow.js
@@ -90,6 +95,7 @@ step_ci_retry() {
 run_step "Web client hello test" step_hello
 run_step "Web client input and audio tests" step_input
 run_step "Web client auth tests" step_auth
+run_step "Web client login form and offline shell tests" step_login_sw
 run_step "Web client syntax check" step_syntax
 run_step "Lint probe plists" step_plists
 run_step "CI infrastructure auto-retry decision" step_ci_retry
