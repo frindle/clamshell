@@ -1,0 +1,26 @@
+name: desk-arrival-kit
+on:
+  pull_request:
+    paths: ['desk/arrival/**', '.github/workflows/desk-arrival.yml']
+  push:
+    branches: [main]
+    paths: ['desk/arrival/**', '.github/workflows/desk-arrival.yml']
+jobs:
+  lint-and-test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck (Linux)
+        if: runner.os == 'Linux'
+        run: shellcheck desk/arrival/scripts/*.sh desk/arrival/tests/run.sh
+      - name: shellcheck (macOS)
+        if: runner.os == 'macOS'
+        run: brew install shellcheck && shellcheck desk/arrival/scripts/*.sh desk/arrival/tests/run.sh
+      - name: bash 3.2 syntax check (macOS default shell)
+        if: runner.os == 'macOS'
+        run: for f in desk/arrival/scripts/*.sh; do /bin/bash -n "$f"; done
+      - name: tests (help, dry-run, scrubber, maths; measures nothing)
+        run: bash desk/arrival/tests/run.sh
