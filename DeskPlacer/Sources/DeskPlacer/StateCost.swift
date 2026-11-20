@@ -93,7 +93,13 @@ public enum StateCostTable {
 public struct RunningApp: Equatable {
     public var profile: AppProfile
     public var blockers: [Blocker]
-    public init(profile: AppProfile, blockers: [Blocker] = []) { self.profile = profile; self.blockers = blockers }
+    /// Memory the running copy uses now, from the node agent. When absent, the catalog figure stands in.
+    public var liveResidentMB: Int?
+    public init(profile: AppProfile, blockers: [Blocker] = [], liveResidentMB: Int? = nil) {
+        self.profile = profile; self.blockers = blockers; self.liveResidentMB = liveResidentMB
+    }
+    /// What a target must be able to hold: live figure first, catalog second.
+    public var sizeMB: Int { PlacementConfig.clampMB(liveResidentMB ?? profile.residentMB) }
 }
 
 public struct MoveProposal: Equatable {
@@ -105,26 +111,27 @@ public struct MoveProposal: Equatable {
 
 public enum MoveAdvisor {
     /// Short of memory: pressure above green, or swap at or over the threshold.
-    public static func isShort(_ s: HostSample, _ cfg: PlacementConfig) -> Bool {
-        s.pressure != .green || s.swapUsedMB >= cfg.swapThresholdMB
+    /// A stale reading says nothing, so it is never short (no offer is made from old data).
+    public static func isShort(_ s: HostSample, _ cfg: PlacementConfig, now: Double) -> Bool {
+        cfg.isFresh(s, now: now) && (s.pressure != .green || s.swapUsedMB >= cfg.swapThresholdMB)
     }
 
     /// Proposes moving the largest app that is free or cheap and may be offered automatically, to the Mac with the
     /// most headroom that can hold it. Never proposes anything that would lose state. nil when the Mac is not short,
     /// or nothing qualifies.
     public static func propose(from source: HostSample, running: [RunningApp], others: [HostSample], config cfg: PlacementConfig,
-                               neverFor: Set<String> = []) -> MoveProposal? {
-        guard isShort(source, cfg) else { return nil }
+                               neverFor: Set<String> = [], now: Double, ledger: LaunchLedger = LaunchLedger()) -> MoveProposal? {
+        guard isShort(source, cfg, now: now) else { return nil }
         let candidates = running
             .filter { $0.profile.offer == .auto && !neverFor.contains($0.profile.key) }
             .filter { StateCostTable.cost(of: $0.profile, blockers: $0.blockers).isMovable }
             .sorted { a, b in
-                a.profile.residentMB != b.profile.residentMB ? a.profile.residentMB > b.profile.residentMB : a.profile.key < b.profile.key
+                a.sizeMB != b.sizeMB ? a.sizeMB > b.sizeMB : a.profile.key < b.profile.key
             }
         for c in candidates {
-            let targets = others.filter { $0.name != source.name && Placer.eligible($0, cfg, need: c.profile.residentMB) }
+            let targets = others.filter { $0.name != source.name && Placer.eligible($0, cfg, need: c.sizeMB, now: now, ledger: ledger) }
                 .sorted { a, b in
-                    let ha = cfg.headroomMB(a) ?? Int.min, hb = cfg.headroomMB(b) ?? Int.min
+                    let ha = Placer.effectiveHeadroom(a, cfg, now: now, ledger: ledger) ?? Int.min, hb = Placer.effectiveHeadroom(b, cfg, now: now, ledger: ledger) ?? Int.min
                     return ha != hb ? ha > hb : a.name < b.name
                 }
             if let t = targets.first {
@@ -143,6 +150,20 @@ public struct OfferThrottle {
     public init() {}
 
     public mutating func neverOffer(_ appKey: String) { never.insert(appKey) }
+
+    /// "Never for this app" outlives the process: the caller saves this text (one app key per line) and restores it at
+    /// start. Keys with a newline or control character cannot be written and are skipped.
+    public func serialisedNever() -> String {
+        never.sorted().filter { Self.isWritable($0) }.map { $0 + "\n" }.joined()
+    }
+
+    public init(restoring text: String) {
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) where Self.isWritable(String(line)) { never.insert(String(line)) }
+    }
+
+    static func isWritable(_ key: String) -> Bool {
+        !key.isEmpty && key.utf8.count <= 255 && !key.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }
+    }
 
     /// True if an offer for this app may be shown now; records it when so.
     public mutating func shouldOffer(_ appKey: String, now: Double) -> Bool {

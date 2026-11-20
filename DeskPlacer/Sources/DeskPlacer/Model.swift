@@ -12,8 +12,11 @@ public struct HostSample: Equatable {
     public var freeMB: Int
     public var swapUsedMB: Int
     public var pressure: MemoryPressure
-    public init(name: String, totalMB: Int, freeMB: Int, swapUsedMB: Int = 0, pressure: MemoryPressure = .green) {
-        self.name = name; self.totalMB = totalMB; self.freeMB = freeMB; self.swapUsedMB = swapUsedMB; self.pressure = pressure
+    /// When the agent took this reading, seconds on a clock both sides share (the caller's `now`). Required: a report
+    /// without a time cannot be told from a stale one, and a stale green must not stay green.
+    public var sampledAt: Double
+    public init(name: String, totalMB: Int, freeMB: Int, swapUsedMB: Int = 0, pressure: MemoryPressure = .green, sampledAt: Double) {
+        self.name = name; self.totalMB = totalMB; self.freeMB = freeMB; self.swapUsedMB = swapUsedMB; self.pressure = pressure; self.sampledAt = sampledAt
     }
 }
 
@@ -45,6 +48,11 @@ public struct PlacementConfig: Equatable {
     public var reserveBufferMB: Int = 8 * 1024
     /// A Mac with at least this much swap in use counts as short of memory for move offers.
     public var swapThresholdMB: Int = 4 * 1024
+    /// A reading older than this (or dated in the future by more than `futureSkewSeconds`) is not trusted.
+    public var maxSampleAgeSeconds: Double = 30
+    public var futureSkewSeconds: Double = 5
+    /// Largest memory figure accepted from a rules file or an agent report (4 TB in MB). Beyond it a value is a typo or hostile.
+    public static let maxMB = 4 * 1024 * 1024
     /// Measured Darkbloom footprint per Mac (experiment E2). A Mac with no entry is unmeasured and receives nothing
     /// (plan 2.7: measured, never assumed). Write 0 for a Mac where Darkbloom is known not to be installed.
     public var darkbloomFootprintMB: [String: Int] = [:]
@@ -53,11 +61,21 @@ public struct PlacementConfig: Equatable {
 
     public func isMeasured(_ mac: String) -> Bool { darkbloomFootprintMB[mac] != nil }
 
-    /// Buffer plus Darkbloom's footprint; nil when the footprint is not measured.
-    public func reserveMB(on mac: String) -> Int? { darkbloomFootprintMB[mac].map { reserveBufferMB + $0 } }
+    static func clampMB(_ v: Int) -> Int { min(max(v, 0), maxMB) }
+
+    /// Buffer plus Darkbloom's footprint; nil when the footprint is not measured. Inputs are clamped to 0...maxMB, so the sum cannot overflow.
+    public func reserveMB(on mac: String) -> Int? { darkbloomFootprintMB[mac].map { Self.clampMB(reserveBufferMB) + Self.clampMB($0) } }
 
     /// Free memory after the reserve. May be negative. nil when the Mac's Darkbloom footprint is not measured.
-    public func headroomMB(_ s: HostSample) -> Int? { reserveMB(on: s.name).map { s.freeMB - $0 } }
+    /// Plain subtraction of clamped values: a bad figure in a report cannot trap.
+    public func headroomMB(_ s: HostSample) -> Int? { reserveMB(on: s.name).map { Self.clampMB(s.freeMB) - $0 } }
+
+    /// Whether a reading can be believed at `now`: not older than `maxSampleAgeSeconds`, not from the future.
+    public func isFresh(_ s: HostSample, now: Double) -> Bool {
+        guard s.sampledAt.isFinite, now.isFinite else { return false }
+        let age = now - s.sampledAt
+        return age >= -futureSkewSeconds && age <= maxSampleAgeSeconds
+    }
 
     public func resolve(_ app: String) -> (placement: Placement, needs: Set<Need>) {
         let rule = apps[app]

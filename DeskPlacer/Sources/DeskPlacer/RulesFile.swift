@@ -38,7 +38,8 @@ public enum RulesFile {
             if line.hasPrefix("[") {
                 guard line.hasSuffix("]") else { throw RulesParseError(line: lineNo, message: "unterminated table header") }
                 let inner = trim(String(line.dropFirst().dropLast()))
-                guard seenTables.insert(inner).inserted else { throw RulesParseError(line: lineNo, message: "duplicate table [\(inner)]") }
+                // Same table under different spelling ([app."x"] and [app.x], or spaces around the dot) is a duplicate too.
+                guard seenTables.insert(canonicalHeader(inner)).inserted else { throw RulesParseError(line: lineNo, message: "duplicate table [\(inner)]") }
                 seenKeys = []
                 if inner == "defaults" { section = .defaults; continue }
                 if let key = tableKey(inner, prefix: "app") {
@@ -103,13 +104,26 @@ public enum RulesFile {
 
     static func int(_ v: Value, _ key: String, _ line: Int) throws -> Int {
         guard case .int(let n) = v, n >= 0 else { throw RulesParseError(line: line, message: "\(key) wants a non-negative integer") }
+        guard n <= PlacementConfig.maxMB else { throw RulesParseError(line: line, message: "\(key) is over \(PlacementConfig.maxMB) MB; check for a typo") }
         return n
     }
 
-    /// `app."a.b.c"` or `app.name`.
+    /// The header with spacing and optional quotes removed, so equal tables compare equal.
+    static func canonicalHeader(_ inner: String) -> String {
+        for prefix in ["app", "mac"] {
+            if let key = tableKey(inner, prefix: prefix) { return prefix + "\u{0}" + key }
+        }
+        return trim(inner)
+    }
+
+    /// `app."a.b.c"` or `app.name`; blanks around the dot are allowed.
     static func tableKey(_ inner: String, prefix: String) -> String? {
-        guard inner.hasPrefix(prefix + ".") else { return nil }
-        let rest = trim(String(inner.dropFirst(prefix.count + 1)))
+        let head = trim(inner)
+        guard head.hasPrefix(prefix) else { return nil }
+        var afterWord = Substring(head.dropFirst(prefix.count))
+        while let f = afterWord.first, f == " " || f == "\t" { afterWord = afterWord.dropFirst() }
+        guard afterWord.hasPrefix(".") else { return nil }
+        let rest = trim(String(afterWord.dropFirst()))
         if rest.count >= 2, rest.hasPrefix("\""), rest.hasSuffix("\"") { return String(rest.dropFirst().dropLast()) }
         return rest.isEmpty ? nil : rest
     }

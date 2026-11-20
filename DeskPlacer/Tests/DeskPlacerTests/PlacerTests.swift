@@ -5,11 +5,11 @@ import XCTest
 // (operator 64 GB with heavy swap; second Mac 96 GB with ~71 GB free). Darkbloom footprint 1,524 + 440 MB
 // is the visible figure until experiment E2 measures the real one.
 enum Samples {
-    static let operatorPressured = HostSample(name: "op", totalMB: 65536, freeMB: 900, swapUsedMB: 9900, pressure: .red)
-    static let operatorCalm = HostSample(name: "op", totalMB: 65536, freeMB: 30000, swapUsedMB: 200, pressure: .green)
-    static let big = HostSample(name: "big", totalMB: 98304, freeMB: 71000, swapUsedMB: 0, pressure: .green)
-    static let tight = HostSample(name: "tight", totalMB: 65536, freeMB: 9000, swapUsedMB: 0, pressure: .green)
-    static let bigYellow = HostSample(name: "big", totalMB: 98304, freeMB: 71000, swapUsedMB: 0, pressure: .yellow)
+    static let operatorPressured = HostSample(name: "op", totalMB: 65536, freeMB: 900, swapUsedMB: 9900, pressure: .red, sampledAt: 1000)
+    static let operatorCalm = HostSample(name: "op", totalMB: 65536, freeMB: 30000, swapUsedMB: 200, pressure: .green, sampledAt: 1000)
+    static let big = HostSample(name: "big", totalMB: 98304, freeMB: 71000, swapUsedMB: 0, pressure: .green, sampledAt: 1000)
+    static let tight = HostSample(name: "tight", totalMB: 65536, freeMB: 9000, swapUsedMB: 0, pressure: .green, sampledAt: 1000)
+    static let bigYellow = HostSample(name: "big", totalMB: 98304, freeMB: 71000, swapUsedMB: 0, pressure: .yellow, sampledAt: 1000)
 
     static func config() -> PlacementConfig {
         var c = PlacementConfig()
@@ -19,7 +19,7 @@ enum Samples {
 }
 
 final class PlacerReviewTests: XCTestCase {
-    func input(_ hosts: [HostSample], mb: Int) -> PlacerInput { PlacerInput(seat: "op", hosts: hosts, running: [:], expectedMB: mb) }
+    func input(_ hosts: [HostSample], mb: Int) -> PlacerInput { PlacerInput(seat: "op", hosts: hosts, running: [:], expectedMB: mb, now: 1000) }
 
     func testMacWithNoMeasuredFootprintReceivesNothing() throws {
         var cfg = try RulesFile.parse("[app.\"slack\"]\nprefer = \"auto\"\n[app.\"ff\"]\nhome = \"big\"\n")
@@ -40,9 +40,9 @@ final class PlacerReviewTests: XCTestCase {
         cfg.darkbloomFootprintMB = ["small": 1964]
         let xcode = try XCTUnwrap(AppCatalog.profile("com.apple.dt.Xcode"))
         XCTAssertGreaterThan(xcode.residentMB, 10_000)
-        let small = HostSample(name: "small", totalMB: 16384, freeMB: 1024)
+        let small = HostSample(name: "small", totalMB: 16384, freeMB: 1024, sampledAt: 1000)
         XCTAssertEqual(Placer.decide(app: xcode.key, config: cfg, input: input([small], mb: xcode.residentMB)), .refused(.noHostQualifies))
-        let roomy = HostSample(name: "small", totalMB: 65536, freeMB: 40000)
+        let roomy = HostSample(name: "small", totalMB: 65536, freeMB: 40000, sampledAt: 1000)
         XCTAssertEqual(Placer.decide(app: xcode.key, config: cfg, input: input([roomy], mb: xcode.residentMB)), .run(on: "small", reason: .mostHeadroom))
     }
 
@@ -89,7 +89,7 @@ final class PlacerTests: XCTestCase {
             Case(name: "already running elsewhere: open that copy", rules: slackRule, app: "slack", seat: "op",
                  hosts: [Samples.big], running: ["slack": "tight"], want: .alreadyRunning(on: "tight")),
             Case(name: "prefer host avoids the seat", rules: "[app.\"mail\"]\nprefer = \"host\"\n", app: "mail", seat: "big",
-                 hosts: [Samples.big, HostSample(name: "other", totalMB: 98304, freeMB: 40000)], want: .run(on: "other", reason: .mostHeadroom)),
+                 hosts: [Samples.big, HostSample(name: "other", totalMB: 98304, freeMB: 40000, sampledAt: 1000)], want: .run(on: "other", reason: .mostHeadroom)),
             Case(name: "prefer host falls back to the seat when it is the only one", rules: "[app.\"mail\"]\nprefer = \"host\"\n", app: "mail", seat: "big",
                  hosts: [Samples.big], want: .run(on: "big", reason: .onlyOtherChoiceWasSeat)),
             Case(name: "expected memory must fit in the headroom", rules: slackRule, app: "slack", seat: "op",
@@ -97,13 +97,13 @@ final class PlacerTests: XCTestCase {
             Case(name: "default mode from the file", rules: "[defaults]\nmode = \"auto\"\n", app: "anything", seat: "op",
                  hosts: [Samples.operatorCalm, Samples.big], want: .run(on: "big", reason: .mostHeadroom)),
             Case(name: "tie goes to the lower name", rules: slackRule, app: "slack", seat: "op",
-                 hosts: [HostSample(name: "b", totalMB: 1, freeMB: 20000), HostSample(name: "a", totalMB: 1, freeMB: 20000)],
+                 hosts: [HostSample(name: "b", totalMB: 1, freeMB: 20000, sampledAt: 1000), HostSample(name: "a", totalMB: 1, freeMB: 20000, sampledAt: 1000)],
                  want: .run(on: "a", reason: .mostHeadroom)),
         ]
         for c in cases {
             var cfg = try RulesFile.parse(c.rules)
             cfg.darkbloomFootprintMB = Samples.config().darkbloomFootprintMB
-            let got = Placer.decide(app: c.app, config: cfg, input: PlacerInput(seat: c.seat, hosts: c.hosts, running: c.running, expectedMB: c.expectedMB))
+            let got = Placer.decide(app: c.app, config: cfg, input: PlacerInput(seat: c.seat, hosts: c.hosts, running: c.running, expectedMB: c.expectedMB, now: 1000))
             XCTAssertEqual(got, c.want, c.name)
         }
     }
@@ -114,7 +114,7 @@ final class PlacerTests: XCTestCase {
         let hosts = [Samples.operatorCalm, Samples.big, Samples.tight]
         var seen = Set<String>()
         for perm in [[0, 1, 2], [2, 1, 0], [1, 0, 2], [1, 2, 0]] {
-            let d = Placer.decide(app: "slack", config: cfg, input: PlacerInput(seat: "op", hosts: perm.map { hosts[$0] }, running: [:], expectedMB: 0))
+            let d = Placer.decide(app: "slack", config: cfg, input: PlacerInput(seat: "op", hosts: perm.map { hosts[$0] }, running: [:], expectedMB: 0, now: 1000))
             if case .run(let on, _) = d { seen.insert(on) }
         }
         XCTAssertEqual(seen, ["big"])
@@ -126,7 +126,7 @@ final class PlacerTests: XCTestCase {
         XCTAssertEqual(cfg.headroomMB(Samples.big), 71000 - 8192 - 1964)
         XCTAssertEqual(cfg.headroomMB(Samples.tight), 9000 - 8192 - 1964)
         XCTAssertNil(cfg.reserveMB(on: "unknown-mac"))
-        XCTAssertNil(cfg.headroomMB(HostSample(name: "unknown-mac", totalMB: 1, freeMB: 50000)))
+        XCTAssertNil(cfg.headroomMB(HostSample(name: "unknown-mac", totalMB: 1, freeMB: 50000, sampledAt: 1000)))
     }
 }
 
@@ -240,7 +240,7 @@ final class StateCostTests: XCTestCase {
     func testProposalPicksLargestMovableApp() {
         let running = scored(["com.tinyspeck.slackmacgap", "ch.protonmail.desktop", "com.anthropic.claudefordesktop", "org.mozilla.firefox", "darkbloom"])
         let cfg = Samples.config()
-        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big, Samples.tight], config: cfg)
+        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big, Samples.tight], config: cfg, now: 1000)
         // Firefox is bigger but only moves on request; Darkbloom never. Claude desktop (1805) is next.
         XCTAssertEqual(prop?.app.key, "com.anthropic.claudefordesktop")
         XCTAssertEqual(prop?.to, "big")
@@ -251,30 +251,30 @@ final class StateCostTests: XCTestCase {
         var running = scored(["com.tinyspeck.slackmacgap", "ch.protonmail.desktop", "com.anthropic.claudefordesktop"])
         running[2].blockers = [.inCall]                  // Claude desktop blocked
         running[0].profile.restore = .untested           // Slack never scored
-        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big], config: Samples.config())
+        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big], config: Samples.config(), now: 1000)
         XCTAssertEqual(prop?.app.key, "ch.protonmail.desktop")
     }
 
     func testNoProposalWhenNotShortOrNowhereToGoOrNeverFor() {
         let running = scored(["com.tinyspeck.slackmacgap"])
         let cfg = Samples.config()
-        XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorCalm, running: running, others: [Samples.big], config: cfg))
-        XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.tight, Samples.bigYellow], config: cfg))
-        XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big], config: cfg, neverFor: ["com.tinyspeck.slackmacgap"]))
+        XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorCalm, running: running, others: [Samples.big], config: cfg, now: 1000))
+        XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.tight, Samples.bigYellow], config: cfg, now: 1000))
+        XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big], config: cfg, neverFor: ["com.tinyspeck.slackmacgap"], now: 1000))
     }
 
     func testSwapAloneMakesAMacShort() {
         var s = Samples.operatorCalm; s.swapUsedMB = 6000
-        XCTAssertTrue(MoveAdvisor.isShort(s, Samples.config()))
+        XCTAssertTrue(MoveAdvisor.isShort(s, Samples.config(), now: 1000))
         s.swapUsedMB = 100
-        XCTAssertFalse(MoveAdvisor.isShort(s, Samples.config()))
+        XCTAssertFalse(MoveAdvisor.isShort(s, Samples.config(), now: 1000))
     }
 
     func testTargetMustHoldTheApp() {
         // Only a Mac with 1,000 MB of headroom is available; the 1,805 MB app does not fit, the 440 MB one does.
-        let small = HostSample(name: "small", totalMB: 16384, freeMB: 8192 + 1000)
+        let small = HostSample(name: "small", totalMB: 16384, freeMB: 8192 + 1000, sampledAt: 1000)
         let running = scored(["com.anthropic.claudefordesktop", "de.tutao.tutanota"])
-        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [small], config: { var c = Samples.config(); c.darkbloomFootprintMB["small"] = 0; return c }())
+        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [small], config: { var c = Samples.config(); c.darkbloomFootprintMB["small"] = 0; return c }(), now: 1000)
         XCTAssertEqual(prop?.app.key, "de.tutao.tutanota")
     }
 
@@ -286,5 +286,62 @@ final class StateCostTests: XCTestCase {
         XCTAssertTrue(t.shouldOffer("b", now: 10))
         t.neverOffer("a")
         XCTAssertFalse(t.shouldOffer("a", now: 100_000))
+    }
+}
+
+final class PlacerRound2Tests: XCTestCase {
+    func testStaleAndFutureReportsAreRefused() {
+        var cfg = try! RulesFile.parse("[app.\"x\"]\nprefer = \"auto\"\n")
+        cfg.darkbloomFootprintMB = Samples.config().darkbloomFootprintMB
+        let old = HostSample(name: "big", totalMB: 98304, freeMB: 71000, sampledAt: 900)
+        let fut = HostSample(name: "big", totalMB: 98304, freeMB: 71000, sampledAt: 1100)
+        for h in [old, fut] {
+            let d = Placer.decide(app: "x", config: cfg, input: PlacerInput(seat: "op", hosts: [h], running: [:], expectedMB: 100, now: 1000))
+            XCTAssertEqual(d, .refused(.staleReport(["big"])))
+        }
+        XCTAssertFalse(MoveAdvisor.isShort(HostSample(name: "op", totalMB: 1, freeMB: 1, pressure: .red, sampledAt: 1), cfg, now: 1000))
+    }
+
+    func testPendingLaunchesAreSubtracted() {
+        var cfg = try! RulesFile.parse("[app.\"x\"]\nprefer = \"auto\"\n")
+        cfg.darkbloomFootprintMB = Samples.config().darkbloomFootprintMB
+        var ledger = LaunchLedger()
+        let host = HostSample(name: "tight", totalMB: 65536, freeMB: 14000, sampledAt: 1000)
+        func go() -> PlacementDecision {
+            let inp = PlacerInput(seat: "op", hosts: [host], running: [:], expectedMB: 3000, now: 1001)
+            return Placer.decideAndRecord(app: "x", config: cfg, input: inp, ledger: &ledger)
+        }
+        // headroom = 9000 - (reserve + 1964); the default buffer leaves room for one 3000 MB app, not two.
+        let first = go()
+        XCTAssertEqual(first, .run(on: "tight", reason: .mostHeadroom))
+        XCTAssertNotEqual(go(), first)
+        // A reading taken after the launch settled replaces the reservation.
+        XCTAssertEqual(ledger.reservedMB(for: HostSample(name: "tight", totalMB: 1, freeMB: 1, sampledAt: 1100), now: 1101), 0)
+    }
+
+    func testQuotedAndUnquotedHeadersAreDuplicates() {
+        for text in ["[app.\"x\"]\n[app.x]\n", "[app.x]\n[app . \"x\"]\n", "[mac.\"m\"]\n[mac.m]\n"] {
+            XCTAssertEqual((try? RulesFile.parse(text)) == nil, true, text)
+        }
+    }
+
+    func testHugeNumbersAreRejectedAndMathCannotTrap() {
+        XCTAssertThrowsError(try RulesFile.parse("[defaults]\nreserve_buffer_mb = 9223372036854775807\n"))
+        var cfg = PlacementConfig()
+        cfg.darkbloomFootprintMB = ["h": Int.max]
+        cfg.reserveBufferMB = Int.max
+        XCTAssertNotNil(cfg.headroomMB(HostSample(name: "h", totalMB: 1, freeMB: Int.min, sampledAt: 0)))
+    }
+
+    func testLiveSizeBeatsCatalogAndNeverListPersists() throws {
+        var p = AppCatalog.profile("com.tinyspeck.slackmacgap")!
+        if p.kind == .c { p.restore = .passed }
+        XCTAssertEqual(RunningApp(profile: p, liveResidentMB: 5000).sizeMB, 5000)
+        XCTAssertEqual(RunningApp(profile: p).sizeMB, p.residentMB)
+        var t = OfferThrottle()
+        t.neverOffer("a.b")
+        t.neverOffer("bad\nkey")
+        let back = OfferThrottle(restoring: t.serialisedNever())
+        XCTAssertEqual(back.serialisedNever(), "a.b\n")
     }
 }
