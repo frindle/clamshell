@@ -178,7 +178,7 @@ internal sealed class MainWindow : Window
                 if (keep) { try { UnlockCredentialStore.Save(user, pass); } catch (Exception e) { Log.Line($"save failed: {e.GetType().Name}"); } }
                 else UnlockCredentialStore.Forget();
                 var unlocker = new DiskUnlocker(new SshNetUnlockTransport(), SshPinStore.Load, SshPinStore.Save,
-                    (_, fingerprint) => Dispatcher.Invoke(() => MessageBox.Show(this,
+                    (_, fingerprint) => Dispatcher.Invoke<bool>(() => MessageBox.Show(this,
                         $"First time unlocking this Mac. Check that its SSH key fingerprint is:\n\n{fingerprint}\n\nIt is remembered, and a different key later is refused.",
                         "Trust this Mac?", MessageBoxButton.OKCancel, MessageBoxImage.Question) == MessageBoxResult.OK),
                     Log.Line);
@@ -203,7 +203,7 @@ internal sealed class MainWindow : Window
         var form = UnlockScreens.Build("Restart the Mac",
             "Restarts now and skips the disk unlock screen once. Nothing is saved.",
             "Restart", false, null,
-            (user, pass, _) => { _restartNote!.Text = "Sent. Waiting for the Mac to answer..."; _ = _client.SendRestart(user, pass); },
+            (user, pass, _keep) => { _restartNote!.Text = "Sent. Waiting for the Mac to answer..."; _ = _client.SendRestart(user, pass); },
             () => { _screen.Content = null; _screen.Visibility = Visibility.Collapsed; },
             out var n);
         _restartNote = n;
