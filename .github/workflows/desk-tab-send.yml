@@ -5,6 +5,10 @@ on:
     paths: ['extensions/tab-send/**', '.github/workflows/desk-tab-send.yml']
   pull_request:
     paths: ['extensions/tab-send/**', '.github/workflows/desk-tab-send.yml']
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
