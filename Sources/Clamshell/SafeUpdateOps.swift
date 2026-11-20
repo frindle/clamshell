@@ -347,6 +347,13 @@ enum LaunchAgentSetup {
     /// is kickstarted (replacing this process) and this one quits.
     static func handOff() {
         guard !isLaunchedByAgent else { return }
+        // Quit only when launchd really has the job. An agent still waiting
+        // for approval in Login Items, or a bootstrap that failed, would
+        // leave nothing running, and this Mac is often reached remotely.
+        guard SafeUpdateOps.agentLoaded else {
+            clog("launch agent: not loaded yet (status \(service.status.rawValue)); this instance keeps running")
+            return
+        }
         let target = "\(SafeUpdateOps.guiDomain)/\(SafeUpdate.agentLabel)"
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/bin/sh")
@@ -365,6 +372,13 @@ enum LaunchAgentSetup {
         try? SMAppService.mainApp.unregister()
         guard enable() != nil else {
             // Put the old setting back rather than lose start-at-login.
+            try? SMAppService.mainApp.register()
+            return
+        }
+        // Not running under launchd yet (for example, waiting for approval in
+        // Login Items): keep the old login item until it is, so a reboot
+        // still starts the app.
+        guard SafeUpdateOps.agentLoaded else {
             try? SMAppService.mainApp.register()
             return
         }

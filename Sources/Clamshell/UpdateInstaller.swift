@@ -22,7 +22,9 @@ enum UpdateInstaller {
                         completion: @escaping (String) -> Void, success: ((String) -> Void)? = nil) {
         let fail: (String) -> Void = { msg in
             clog("update failed: \(msg)")
-            DispatchQueue.main.async { completion(msg) }
+            // The CLI blocks the main thread waiting for this, so the main
+            // queue would never run it there: call it directly.
+            if mode == .cli { completion(msg) } else { DispatchQueue.main.async { completion(msg) } }
         }
         guard canInstall else { return fail("not running from an .app bundle") }
 
@@ -176,8 +178,10 @@ enum UpdateInstaller {
         // The new build has to prove itself: a watcher from the previous
         // bundle rolls back if it is not serving within the deadline.
         SafeUpdateOps.writeRecord(from: from, to: to, result: "installed", reason: "health check pending")
+        // From the CLI, the old process is the running app, not this command.
+        let oldPID = mode == .cli ? (SafeUpdateOps.pids(ofApp: dest).first ?? 0) : getpid()
         SafeUpdateOps.writePending(SafeUpdate.Pending(startedAt: Date(), from: from, to: to,
-                                                      oldPID: getpid(), installedApp: dest))
+                                                      oldPID: oldPID, installedApp: dest))
         SafeUpdateOps.startHealthWatcher(installed: dest, previous: previous)
 
         switch mode {
