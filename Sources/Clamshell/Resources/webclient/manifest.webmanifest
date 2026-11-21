@@ -1,0 +1,14 @@
+{
+  "name": "Clamshell",
+  "short_name": "Clamshell",
+  "description": "Remote desktop for this Mac",
+  "scope": "/client",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "background_color": "#000000",
+  "theme_color": "#000000",
+  "icons": [
+    { "src": "/client/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/client/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
