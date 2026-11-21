@@ -353,7 +353,7 @@ final class RFBServerTests: XCTestCase {
             "move 0.5 0.5",
             "button 2 true 0.5 0.5",
             "button 2 false 0.5 0.5", "button 1 true 0.5 0.5",
-            "button 1 false 0.5 0.5", "scroll 0.0 40.0",
+            "button 1 false 1.0 0.0", "scroll 0.0 40.0",
         ])
     }
 
