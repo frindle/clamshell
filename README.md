@@ -2,7 +2,7 @@
 
 Make a multi-monitor Mac act like a laptop when you remote into it.
 
-When a remote session connects (Apple Screen Sharing / VNC, or Jump Desktop),
+When a remote session connects (a Clamshell viewer, a VNC client, or Jump Desktop),
 Clamshell snapshots your window layout, creates a virtual display shaped for
 your remote device, and mirrors every physical monitor onto it — so the remote
 client sees one clean, correctly-sized screen with all your windows on it.
@@ -26,8 +26,8 @@ against a real multi-monitor remote setup.
   all windows onto the one logical display.
 - **Window restore** — positions are snapshotted via the Accessibility API
   before collapsing and restored after the displays come back.
-- **Trigger** — a poller watches for established connections on the Screen
-  Sharing port (5900) and for active Jump Desktop Connect sessions. 10-second
+- **Trigger** — Clamshell's own sessions start and end the collapse, and a
+  poller watches for active Jump Desktop Connect sessions. 10-second
   grace period on disconnect so a flaky connection doesn't thrash displays.
 
 ## Install
@@ -148,12 +148,12 @@ too — either run it elevated once, or reserve the ports yourself:
 ## Browser access
 
 Enable **Web Access** in the menu and open `http://<mac-hostname>:5901`
-from any browser on your network — a full remote desktop session (noVNC),
-no client app needed. It bridges to the Mac's own Screen Sharing service,
-so enable **"VNC viewers may control screen with password"** in
-System Settings → General → Sharing → Screen Sharing options (browser
-clients speak standard VNC auth, not Apple's). Browser sessions trigger
-the collapse just like native clients.
+from any browser on your network — a full remote desktop session, no client
+app needed. The page is Clamshell's own web client; it talks to the same
+encrypted stream the apps use, so a device is approved the same way and the
+lock screen and login window come through the same way. Browser sessions
+trigger the collapse just like native clients. The Screen Sharing switch in
+System Settings controls it (see "Replacing Screen Sharing").
 
 **Full screen:** open the menu (the dot in the top-right corner) and choose
 **Full screen**, or turn on **Start in full screen** so the first click or tap
@@ -176,9 +176,8 @@ Then toggle Web Access. The web page (5901) and the stream bridges
 (5906-5908) switch to TLS together, and the log says "LAN TLS: serving...". If
 the files can't be read or don't match, the log says why and the ports stay
 plain. The keys stay where you put them; Clamshell makes a private keychain
-file next to the config for the loaded identity. The lock-screen
-fallback (`/vnc.html`) is told to dial the TLS websocket on 5902 with
-`encrypt=1`. The native viewer's ports (5903-5905) stay plain. The certificate
+file next to the config for the loaded identity. The native viewer's ports
+(5903-5905) stay plain. The certificate
 is re-read every 6 hours: when the files change (a renewal) the web listeners
 restart and the log says so; toggling Web Access reloads it at once.
 
@@ -186,22 +185,19 @@ restart and the log says so; toggling Web Access reloads it at once.
 WebSocket). Two good options:
 
 - **WireGuard/Tailscale VPN** — works as-is, nothing to configure.
-- **Cloudflare Tunnel** — route both ports through one hostname; Clamshell
+- **Cloudflare Tunnel** — route the web port through one hostname; Clamshell
   detects the proxy (`X-Forwarded-Proto`) and switches the client to
   same-origin `wss://`. Example `config.yml` ingress:
 
   ```yaml
   ingress:
     - hostname: mac.example.com
-      path: ^/websockify$
-      service: http://localhost:5902
-    - hostname: mac.example.com
       service: http://localhost:5901
     - service: http_status:404
   ```
 
-  Put Cloudflare Access in front of the hostname — the VNC password is the
-  only other lock on the door.
+  Put Cloudflare Access in front of the hostname as a second lock; the
+  device approval is the first.
 
 ## Surviving an unattended reboot
 
@@ -227,18 +223,17 @@ It reports go/no-go for the two real scenarios. Here's the honest picture.
   Accessibility grants. A LaunchDaemon (true boot, session 0) has no
   WindowServer at all, so it can't help here. *This is by macOS design —
   confirmed by the platform architecture, not something to work around.*
-- **Apple Screen Sharing (`screensharingd`) is different — it's a system
-  daemon that runs at the login window.** When "Screen Sharing" is on in
-  System Settings, macOS can show and control the **login window** remotely,
-  before any user logs in, with **zero extra Clamshell code**. Connect with a
-  native VNC client to port **5900** (the browser path at `:5901` won't work
-  pre-login — that's Clamshell's bridge and Clamshell isn't running yet). Log
-  in remotely, and *then* Clamshell's login item starts and you get the full
-  collapse/stream experience.
+- **The login window is served by a small helper instead.** Install the
+  login-window helper once (`sudo clamshell loginwindow install`, see
+  "Replacing Screen Sharing"): a launchd agent that runs in the login-window
+  session, serves the same encrypted stream from a root-owned copy of the
+  app, takes the same device approvals, and exits the moment someone logs in.
+  Connect with a Clamshell viewer, log in remotely, and *then* the app's
+  launch agent starts and you get the full collapse/stream experience.
 
 So the achievable flow after an unattended reboot is: **Mac powers on → reaches
-the login window → you connect to `:5900` and log in remotely → Clamshell
-starts.** Three things gate whether that chain completes:
+the login window → you connect and log in remotely → Clamshell starts.** Three
+things gate whether that chain completes:
 
 ### 1. Does the Mac even power back on? (`pmset autorestart`)
 
@@ -257,7 +252,7 @@ like the Mac mini support it; the readiness check confirms it's on.
 
 If **FileVault** disk encryption is on, a cold boot stops at the **pre-boot
 unlock screen** — an EFI environment *before* macOS, before the network stack,
-before `screensharingd`. Nothing can reach it remotely; the FileVault password
+before any login-window service. Nothing can reach it remotely; the FileVault password
 has to be typed at the physical machine. This means:
 
 - **macOS-update reboot → recovers unattended even with FileVault on.** The
@@ -277,13 +272,14 @@ disk); only you can make it.
 
 ### 3. Getting in once it reaches the login window
 
-- **Enable Apple Screen Sharing** (System Settings → General → Sharing → Screen
-  Sharing) and set a VNC password. This is what lets you log in remotely at the
-  login window. Already required for the browser/VNC path, so it's likely on.
+- **Install the login-window helper** (`sudo clamshell loginwindow install`) and
+  keep the Screen Sharing switch on (System Settings → General → Sharing →
+  Screen Sharing): the switch is the on/off control for Clamshell's remote
+  access, the login window included.
 - **Auto-login vs. remote-login:** you have two ways to end up on the desktop:
   - *Remote-login* (recommended, and the only option with FileVault on): sit at
-    the login window over Screen Sharing and type your password. Then the
-    Clamshell login item starts.
+    the login window through Clamshell and type your password. Then the
+    Clamshell launch agent starts.
   - *Auto-login* (System Settings → Users & Groups → Automatically log in as):
     the Mac boots straight to the desktop and Clamshell starts with no remote
     step. Smoothest, but **macOS disables auto-login whenever FileVault is on**,
@@ -318,9 +314,10 @@ Vaultwarden can fill them. The page never stores or logs the password and remove
 after sending.
 
 Make sure "Start at Login" is on so Clamshell comes back the moment you're
-logged in either way. Everything above (autorestart, FileVault, Screen Sharing,
-auto-login) is a setting only you can decide — the readiness check just tells
-you where you stand.
+logged in either way. Everything above (autorestart, FileVault, the Screen
+Sharing switch, auto-login) is a setting only you can decide — the readiness
+check just tells you where you stand. `clamshell remote-ready` (also in
+Diagnostics) checks the Clamshell side.
 
 ## Dual Display Mode (UNTESTED on real hardware)
 
@@ -337,30 +334,22 @@ Display B (**External Monitor Size**, default 1080p) immediately to its
 right, as a genuinely empty extended display (like plugging in a fresh
 monitor; nothing auto-populates it).
 
-With Web Access on, `http://<mac>:5901/` becomes a picker linking to two
-independent browser views, each cropped to one display's region of the
-Screen Sharing framebuffer:
-
-- `http://<mac>:5901/display-a` — Display A only
-- `http://<mac>:5901/display-b` — Display B only
-
-Open one in a Safari window on the iPad's screen and the other in a Safari
-window on the external monitor: two real, independent Mac monitors. The
-pages use noVNC's core API with a panned, clipped viewport, so mouse/touch
-input maps correctly within each region.
+The web client opens one view per display, using `?display=a` and
+`?display=b` on `http://<mac>:5901/client`. Open one in a Safari window on
+the iPad's screen and the other in a Safari window on the external monitor:
+two real, independent Mac monitors.
 
 Dual mode can be a manual menu toggle, but native-stream sessions drive it
 automatically: an iPad viewer with an external monitor attached reports the
 second surface in its stream handshake, and the Mac collapses in dual mode
 for that session (single when unplugged) — the "Auto-Detect Dual Display
-(native stream)" menu toggle (default on) controls this. The browser/VNC dual
-path stays manual (a browser can't report an attached monitor), and Sunshine's
-`Clamshell collapse` still sizes Display A only. The minimal browser viewer
-pages have no on-screen-keyboard button yet — use a hardware keyboard.
+(native stream)" menu toggle (default on) controls this. A browser can't
+report an attached monitor, so there dual mode stays manual, and Sunshine's
+`Clamshell collapse` still sizes Display A only.
 
 ## Native streaming (experimental)
 
-A from-scratch replacement for the browser-VNC path: ScreenCaptureKit
+Clamshell's own remote-desktop stream: ScreenCaptureKit
 capture → VideoToolbox HEVC/H.264 encode on the Mac → binary
 WebSocket (`ws://` on LAN, `wss://` through a Cloudflare Tunnel) → hardware
 decode on an iPad. Wire format is documented in [PROTOCOL.md](PROTOCOL.md).
@@ -420,10 +409,9 @@ screen**, for two independent reasons:
   `CGEventPost` from that same user session. The lock screen's password field is
   protected by secure event input in a *different* session, so synthetic events
   posted from a user process are ignored there — you can't type the password
-  remotely to get back in. (Apple's own Screen Sharing / Remote Desktop *can*
-  unlock a Mac only because `screensharingd` is a privileged system daemon wired
-  into the console, not a user-session app posting synthetic events — Clamshell's
-  native path is the latter.)
+  remotely to get back in. (Apple's own Screen Sharing *can* unlock a Mac only
+  because its daemon is a privileged system service wired into the console, not
+  a user-session app posting synthetic events.)
 
 Confidence: **high on input, moderate-high on capture.** The input side is a
 long-standing, well-documented macOS security boundary (secure event input at
@@ -432,29 +420,21 @@ that screen-capture frame updates stop at the lock screen plus the known
 session/`loginwindow` architecture, rather than from a single definitive Apple
 doc line — it has not been verified against a real locked Mac for this project.
 
-Making native capture or input work *through* an active lock would mean defeating
-a deliberate macOS security boundary, which Clamshell does not do. Instead, when
-the Mac locks Clamshell now **hands you off to the browser VNC fallback
-automatically**:
+Clamshell does not try to defeat that boundary from the user session. The lock
+screen and the login window are served by the login-window helper instead (see
+"Replacing Screen Sharing"), which runs in the login-window session:
 
 - The host watches the system `com.apple.screenIsLocked` /
   `com.apple.screenIsUnlocked` notifications and pushes the state to every
   connected native client (protocol message `HOST_LOCK_STATE`, see PROTOCOL.md).
-- On lock, the iPad viewer and iPhone control app show a banner over the frozen
-  video — *"Mac is locked — native video paused"* — with a one-tap button that
-  opens the Mac's browser VNC bridge (noVNC on `http://<mac>:5901`) in Safari.
-  That bridge fronts Apple's own privileged `screensharingd`, so — unlike the
-  native path — it can reach the lock screen and let you type your password to
-  unlock (real password auth, the same way Apple Screen Sharing does).
-- On unlock, the banner clears itself and the native video resumes on its own
-  through the client's existing auto-reconnect — no extra step.
+- With `nativeLockScreen` on (the default), the clients keep streaming and show
+  a banner while the Mac is locked; the helper carries the lock screen, so you
+  can type your password there.
+- On unlock, the banner clears itself and the video resumes on its own through
+  the client's existing auto-reconnect — no extra step.
 
-The one-tap link is derived from the address you connected to, so it only
-appears for a bare LAN host or `ws://` connection (where the web port can be
-substituted); over a `wss://` Cloudflare Tunnel the banner still explains the
-situation but you open the Mac's web access URL yourself. Note the browser
-fallback requires **Web Access** to be enabled on the Mac (it serves noVNC on
-port 5901) and Screen Sharing turned on in System Settings.
+Whether capture and typing at the lock screen work on a given Mac is decided by
+the probe (`clamshell loginwindow-probe`, below), not assumed.
 
 The display-sleep power assertion Clamshell holds during a session
 (`kIOPMAssertionTypePreventUserIdleDisplaySleep`, see `SessionComfort`) keeps the
@@ -522,8 +502,10 @@ that independently of this codebase).
 
 ## Remote client notes
 
-- **Plain VNC (Screens, etc.) → Apple Screen Sharing**: works; no audio over
-  VNC, and resolution comes from the preset (VNC can't negotiate it).
+- **Plain VNC (Screen Sharing.app, Screens, `vnc://` links)**: reaches
+  Clamshell once the cutover in "Replacing Screen Sharing" is applied and this
+  build carries the RFB server; no audio over VNC, and resolution comes from
+  the preset (VNC can't negotiate it).
 - **Jump Desktop (Fluid)**: pairs well — Jump provides fluid streaming,
   audio, and dynamic resolution; Clamshell provides the collapse + restore.
   Disable Jump's own virtual-display option so Clamshell owns the screen.
@@ -596,6 +578,38 @@ The binary carries an empty `__CGPreLoginApp,__cgpreloginapp` section (added at
 link time in `Package.swift`), which WindowServer requires before it accepts
 input from a program while nobody is logged in. CI checks for it with `otool -l`.
 
+## Replacing Screen Sharing
+
+Clamshell is meant to be what answers when you remote into this Mac, with
+Apple's Screen Sharing out of the path. The Screen Sharing switch in System
+Settings > General > Sharing stays the control: on, Clamshell serves; off,
+Clamshell refuses new sessions and drops open ones.
+
+1. Install the app in /Applications and open it once. Approve the Keychain
+   prompt, Screen Recording and Accessibility.
+2. Install the login-window helper (it serves the login window and lock
+   screen): `sudo /Applications/Clamshell.app/Contents/MacOS/Clamshell loginwindow install`.
+3. Check readiness: `/Applications/Clamshell.app/Contents/MacOS/Clamshell remote-ready`.
+   Every line must be ok.
+4. Look at what the cutover would do, changing nothing:
+   `scripts/cutover-screen-sharing.sh --check`.
+5. Apply it: `sudo scripts/cutover-screen-sharing.sh --apply`. It refuses unless
+   the readiness check and the RFB server's self-test both pass. After that,
+   Screen Sharing.app and `vnc://` links to this Mac reach Clamshell. A macOS
+   update can reset the packet filter; a root daemon puts the redirect back
+   within seconds and logs that it did.
+
+SSH is never touched by any of this. Keep it on: it is how you unlock the disk
+after a power cut.
+
+**FileVault limit.** With FileVault on, a cold boot stops at the pre-boot
+unlock screen, before any of this runs. Only the SSH disk unlock reaches it.
+
+**Escape hatch.** If anything misbehaves, from SSH or at the Mac run
+`sudo scripts/cutover-screen-sharing.sh --revert`. It removes the redirect and
+turns Apple's service back on (`sudo launchctl enable system/com.apple.screensharing &&
+sudo launchctl kickstart -k system/com.apple.screensharing`).
+
 ## Caveats
 
 Uses one private API (`CGVirtualDisplay`) — behavior should be re-verified
@@ -606,6 +620,35 @@ form.
 
 ### Unreleased
 
+- **Clamshell replaces Apple Screen Sharing for remote access.** The Screen
+  Sharing switch in System Settings (General > Sharing) is the one control: on,
+  Clamshell serves; off, it refuses new sessions (clients are told remote
+  access is off) and drops open ones. The menu shows its state read-only.
+  Clamshell no longer depends on Apple's service or port 5900: the noVNC bridge,
+  the "Screen Sharing is on" check and the browser VNC fallback are gone, and
+  the lock screen and login window are covered by the login-window helper. New
+  `clamshell remote-ready` (also in Diagnostics) checks the Clamshell side of
+  being reachable with no screen, and exits non-zero when anything fails. See
+  "Replacing Screen Sharing".
+- **Remote sessions find the display awake.** A trusted device connecting wakes
+  the display, a no-display-sleep hold lasts while anyone is connected, and
+  capture wakes the display and retries when it finds none.
+- **Clamshell comes back by itself.** The launch agent is installed by default
+  (turn "Start at Login" off to opt out, and that sticks), and a second copy
+  waits for the first to finish instead of fighting over the ports.
+- **A Keychain prompt no longer stalls a connection.** When the integrity key
+  needs approval, clients are told the host needs approval (busy reason 1)
+  straight away instead of timing out. The key is stored per build; an update
+  hands it to the new build through a 0600 file bound to that build and
+  deleted on first use or after 10 minutes, so updates stop asking.
+- **The login-window helper stays current.** After an update, the root sync
+  daemon replaces its root-owned app copy, only when the new app is signed by
+  the same identity as the copy; `clamshell loginwindow status` reports an
+  outdated copy. The helper also follows the Screen Sharing switch.
+- **Redirect and cutover tools.** `clamshell redirect` and
+  `scripts/cutover-screen-sharing.sh` (--check, --apply, --revert) keep a
+  packet-filter redirect from port 5900 to Clamshell's own RFB server. They
+  refuse to apply in builds without that server.
 - **A keychain question can no longer freeze Clamshell at launch.** The web
   page on port 5901 and the streams now start even when the Mac's keychain is
   waiting for someone to click "Allow". Devices that need the protection key
@@ -615,7 +658,7 @@ form.
   ended (forcefully after 5 seconds) before the previous version starts.
 - **A version that was rolled back is not installed again by itself.** You can
   still install it by hand from the menu.
-- Host setting `nativeLockScreen` (default on; an unset value means on): a locked Mac keeps streaming and accepting input, and the clients show a banner instead of switching to the browser VNC fallback. HOST_LOCK_STATE carries optional second and third bytes (native, and whether a legacy VNC link exists). Turn it off with `defaults write <bundle id> nativeLockScreen -bool false`. The noVNC bridge (ports 5901/5902) is a legacy path and off unless `legacyVNCBridge` is set.
+- Host setting `nativeLockScreen` (default on; an unset value means on): a locked Mac keeps streaming and accepting input, and the clients show a banner. HOST_LOCK_STATE carries an optional second byte (native). Turn it off with `defaults write <bundle id> nativeLockScreen -bool false`.
 - **The login-window probe can now settle the question.** It posts a Shift
   keystroke and reads it back, records brightness spread and whether the frame
   changes (a flat wallpaper no longer looks like success), records the
