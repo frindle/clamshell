@@ -1,0 +1,41 @@
+name: Import the Clamshell Dev signing certificate
+description: >
+  Puts the self-signed "Clamshell Dev" identity in a temporary keychain so codesign can use it.
+  Builds signed with one stable certificate keep their macOS privacy grants (Full Disk Access,
+  Accessibility, Screen Recording) from version to version: the grant is tied to the bundle
+  identifier and the certificate, not to the build. Ad-hoc builds lose them every time.
+  Same steps as the release workflow's import.
+inputs:
+  p12:
+    description: base64 of the .p12 (secrets.CLAMSHELL_CERT_P12)
+    required: true
+  password:
+    description: the .p12 password (secrets.CLAMSHELL_CERT_PASSWORD)
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        P12: ${{ inputs.p12 }}
+        PW: ${{ inputs.password }}
+      run: |
+        set -euo pipefail
+        if [ -z "$P12" ]; then echo "error: no signing certificate (secrets are not given to pull requests from forks)"; exit 1; fi
+        KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
+        KP="ci-$(uuidgen)"
+        echo "$P12" | base64 -d > "$RUNNER_TEMP/cert.p12"
+        security create-keychain -p "$KP" "$KEYCHAIN"
+        security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KP" "$KEYCHAIN"
+        security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$PW" -T /usr/bin/codesign -T /usr/bin/security
+        # The listing names every key and the log is public: discard standard output.
+        security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KEYCHAIN" > /dev/null
+        rm -f "$RUNNER_TEMP/cert.p12"
+        # Only a yes/no, never certificate names or hashes.
+        if security find-identity -p codesigning "$KEYCHAIN" | grep -qE '^ +[0-9]+\) [0-9A-F]{40} "Clamshell Dev"( \(.*\))?$'; then
+          echo "identity named 'Clamshell Dev' present: yes"
+        else
+          echo "error: no code-signing identity named exactly 'Clamshell Dev' in the build keychain"; exit 1
+        fi

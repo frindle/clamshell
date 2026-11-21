@@ -2,9 +2,9 @@ name: DeskProbes
 on:
   push:
     branches: [main]
-    paths: ['DeskProbes/**', '.github/workflows/desk-probes.yml']
+    paths: ['DeskProbes/**', '.github/workflows/desk-probes.yml', '.github/actions/import-signing-cert/**']
   pull_request:
-    paths: ['DeskProbes/**', '.github/workflows/desk-probes.yml']
+    paths: ['DeskProbes/**', '.github/workflows/desk-probes.yml', '.github/actions/import-signing-cert/**']
   workflow_dispatch:
 
 concurrency:
@@ -17,8 +17,21 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/import-signing-cert
+        with:
+          p12: ${{ secrets.CLAMSHELL_CERT_P12 }}
+          password: ${{ secrets.CLAMSHELL_CERT_PASSWORD }}
       - name: Build
+        env:
+          SIGN_ID: Clamshell Dev
         run: DeskProbes/E7/build.sh "$RUNNER_TEMP/e7"
+      # The grants follow the designated requirement: it must name the certificate, not a build hash.
+      - name: Check the signature keeps grants across builds
+        run: |
+          APP="$RUNNER_TEMP/e7/NotifProbe.app"
+          codesign -dvv "$APP" 2>&1 | grep -q '^Authority=Clamshell Dev$'
+          codesign -dr - "$APP" 2>&1 | grep -q 'identifier "com.frindle.desk.e7probe" and certificate leaf = H"'
+          echo "signed with Clamshell Dev; requirement is identifier + certificate"
       # No Full Disk Access or Accessibility on the runner: it must start, report both as missing, and exit on time.
       - name: Smoke run
         run: |
