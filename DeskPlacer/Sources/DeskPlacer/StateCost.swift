@@ -116,6 +116,19 @@ public enum MoveAdvisor {
         cfg.isFresh(s, now: now) && (s.pressure != .green || s.swapUsedMB >= cfg.swapThresholdMB)
     }
 
+    /// What the rules file says about moving `app`: nil when it must stay (a hardware need, a local rule, or no rule at
+    /// all with the default local); `.some(nil)` when it may go to any Mac; `.some(name)` when only that Mac is allowed
+    /// (its home). A move offer never overrides `needs`, `home` or the default-local rule.
+    static func movableByRules(_ app: String, _ cfg: PlacementConfig) -> String?? {
+        let (placement, needs) = cfg.resolve(app)
+        guard needs.isEmpty else { return nil }
+        switch placement {
+        case .local: return nil
+        case .home(let h): return .some(h)
+        case .anywhere: return .some(nil)
+        }
+    }
+
     /// Proposes moving the largest app that is free or cheap and may be offered automatically, to the Mac with the
     /// most headroom that can hold it. Never proposes anything that would lose state. nil when the Mac is not short,
     /// or nothing qualifies.
@@ -125,11 +138,13 @@ public enum MoveAdvisor {
         let candidates = running
             .filter { $0.profile.offer == .auto && !neverFor.contains($0.profile.key) }
             .filter { StateCostTable.cost(of: $0.profile, blockers: $0.blockers).isMovable }
+            .filter { movableByRules($0.profile.key, cfg) != nil }
             .sorted { a, b in
                 a.sizeMB != b.sizeMB ? a.sizeMB > b.sizeMB : a.profile.key < b.profile.key
             }
         for c in candidates {
-            let targets = others.filter { $0.name != source.name && Placer.eligible($0, cfg, need: c.sizeMB, now: now, ledger: ledger) }
+            let rulePlacement = movableByRules(c.profile.key, cfg)
+            let targets = others.filter { $0.name != source.name && (rulePlacement.flatMap { $0 } == nil || rulePlacement.flatMap { $0 } == $0.name) && Placer.eligible($0, cfg, need: c.sizeMB, now: now, ledger: ledger) }
                 .sorted { a, b in
                     let ha = Placer.effectiveHeadroom(a, cfg, now: now, ledger: ledger) ?? Int.min, hb = Placer.effectiveHeadroom(b, cfg, now: now, ledger: ledger) ?? Int.min
                     return ha != hb ? ha > hb : a.name < b.name
@@ -158,7 +173,7 @@ public struct OfferThrottle {
     }
 
     public init(restoring text: String) {
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) where Self.isWritable(String(line)) { never.insert(String(line)) }
+        for line in text.split(omittingEmptySubsequences: true, whereSeparator: { $0.isNewline }) where Self.isWritable(String(line)) { never.insert(String(line)) }
     }
 
     static func isWritable(_ key: String) -> Bool {

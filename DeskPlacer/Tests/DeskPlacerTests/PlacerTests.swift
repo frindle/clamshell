@@ -11,6 +11,14 @@ enum Samples {
     static let tight = HostSample(name: "tight", totalMB: 65536, freeMB: 9000, swapUsedMB: 0, pressure: .green, sampledAt: 1000)
     static let bigYellow = HostSample(name: "big", totalMB: 98304, freeMB: 71000, swapUsedMB: 0, pressure: .yellow, sampledAt: 1000)
 
+    /// The sample config plus a rule that lets every app in these tests go anywhere (an app with no rule stays local).
+    static func movableConfig() -> PlacementConfig {
+        let keys = ["com.tinyspeck.slackmacgap", "ch.protonmail.desktop", "com.anthropic.claudefordesktop", "org.mozilla.firefox", "de.tutao.tutanota", "darkbloom"]
+        var c = try! RulesFile.parse(keys.map { "[app.\"\($0)\"]\nprefer = \"auto\"\n" }.joined())
+        c.darkbloomFootprintMB = config().darkbloomFootprintMB
+        return c
+    }
+
     static func config() -> PlacementConfig {
         var c = PlacementConfig()
         c.darkbloomFootprintMB = ["op": 1964, "big": 1964, "tight": 1964, "other": 1964, "a": 1964, "b": 1964]
@@ -239,7 +247,7 @@ final class StateCostTests: XCTestCase {
 
     func testProposalPicksLargestMovableApp() {
         let running = scored(["com.tinyspeck.slackmacgap", "ch.protonmail.desktop", "com.anthropic.claudefordesktop", "org.mozilla.firefox", "darkbloom"])
-        let cfg = Samples.config()
+        let cfg = Samples.movableConfig()
         let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big, Samples.tight], config: cfg, now: 1000)
         // Firefox is bigger but only moves on request; Darkbloom never. Claude desktop (1805) is next.
         XCTAssertEqual(prop?.app.key, "com.anthropic.claudefordesktop")
@@ -251,13 +259,13 @@ final class StateCostTests: XCTestCase {
         var running = scored(["com.tinyspeck.slackmacgap", "ch.protonmail.desktop", "com.anthropic.claudefordesktop"])
         running[2].blockers = [.inCall]                  // Claude desktop blocked
         running[0].profile.restore = .untested           // Slack never scored
-        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big], config: Samples.config(), now: 1000)
+        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big], config: Samples.movableConfig(), now: 1000)
         XCTAssertEqual(prop?.app.key, "ch.protonmail.desktop")
     }
 
     func testNoProposalWhenNotShortOrNowhereToGoOrNeverFor() {
         let running = scored(["com.tinyspeck.slackmacgap"])
-        let cfg = Samples.config()
+        let cfg = Samples.movableConfig()
         XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorCalm, running: running, others: [Samples.big], config: cfg, now: 1000))
         XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.tight, Samples.bigYellow], config: cfg, now: 1000))
         XCTAssertNil(MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [Samples.big], config: cfg, neverFor: ["com.tinyspeck.slackmacgap"], now: 1000))
@@ -274,7 +282,7 @@ final class StateCostTests: XCTestCase {
         // Only a Mac with 1,000 MB of headroom is available; the 1,805 MB app does not fit, the 440 MB one does.
         let small = HostSample(name: "small", totalMB: 16384, freeMB: 8192 + 1000, sampledAt: 1000)
         let running = scored(["com.anthropic.claudefordesktop", "de.tutao.tutanota"])
-        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [small], config: { var c = Samples.config(); c.darkbloomFootprintMB["small"] = 0; return c }(), now: 1000)
+        let prop = MoveAdvisor.propose(from: Samples.operatorPressured, running: running, others: [small], config: { var c = Samples.movableConfig(); c.darkbloomFootprintMB["small"] = 0; return c }(), now: 1000)
         XCTAssertEqual(prop?.app.key, "de.tutao.tutanota")
     }
 
@@ -343,5 +351,53 @@ final class PlacerRound2Tests: XCTestCase {
         t.neverOffer("bad\nkey")
         let back = OfferThrottle(restoring: t.serialisedNever())
         XCTAssertEqual(back.serialisedNever(), "a.b\n")
+    }
+}
+
+final class PlacerFollowUpTests: XCTestCase {
+    func movable(_ keys: [String]) -> [RunningApp] {
+        keys.map { var p = AppCatalog.profile($0)!; if p.kind == .c { p.restore = .passed }; return RunningApp(profile: p) }
+    }
+    func cfg(_ rules: String) throws -> PlacementConfig {
+        var c = try RulesFile.parse(rules)
+        c.darkbloomFootprintMB = Samples.config().darkbloomFootprintMB
+        return c
+    }
+
+    func testCRLFRulesFileParsesLikeLF() throws {
+        let lf = "# comment\n[defaults]\nreserve_buffer_mb = 100\n[app.\"x\"]\nprefer = \"auto\"\n[mac.\"m\"]\ndarkbloom_footprint_mb = 7\n"
+        let crlf = lf.replacingOccurrences(of: "\n", with: "\r\n")
+        let a = try RulesFile.parse(lf), b = try RulesFile.parse(crlf)
+        XCTAssertEqual(b.reserveBufferMB, 100)
+        XCTAssertEqual(b.darkbloomFootprintMB["m"], 7)
+        XCTAssertEqual(b.resolve("x").placement, a.resolve("x").placement)
+        XCTAssertEqual(b.resolve("x").placement, .anywhere(avoidSeat: false))
+        // A CRLF error still carries the right line number.
+        XCTAssertThrowsError(try RulesFile.parse("[defaults]\r\nreserve_buffer_mb = 1\r\nreserve_buffer_mb = 2\r\n")) { XCTAssertEqual(($0 as? RulesParseError)?.line, 3) }
+    }
+
+    func testCRLFNeverListRestoresAllEntries() {
+        let t = OfferThrottle(restoring: "a.b\r\nc.d\r\n")
+        XCTAssertEqual(t.serialisedNever(), "a.b\nc.d\n")
+    }
+
+    func testMoveOffersRespectNeedsHomeAndDefaultLocal() throws {
+        let running = movable(["com.tinyspeck.slackmacgap"])
+        let src = Samples.operatorPressured
+        func propose(_ rules: String) throws -> MoveProposal? {
+            var c = try cfg(rules); c.darkbloomFootprintMB["mid"] = 1964
+            let mid = HostSample(name: "mid", totalMB: 65536, freeMB: 25000, sampledAt: 1000)
+            return MoveAdvisor.propose(from: src, running: running, others: [Samples.big, mid], config: c, now: 1000)
+        }
+        // No rule at all: default local, never offered.
+        XCTAssertNil(try propose("[defaults]\nreserve_buffer_mb = 100\n"))
+        // Explicit local, and a hardware need, both stay.
+        XCTAssertNil(try propose("[app.\"com.tinyspeck.slackmacgap\"]\nprefer = \"local\"\n"))
+        XCTAssertNil(try propose("[app.\"com.tinyspeck.slackmacgap\"]\nprefer = \"auto\"\nneeds = [\"camera\"]\n"))
+        // Auto: any Mac with room (the one with most headroom).
+        XCTAssertEqual(try propose("[app.\"com.tinyspeck.slackmacgap\"]\nprefer = \"auto\"\n")?.to, "big")
+        // Home: only that Mac, even though another has more room.
+        XCTAssertEqual(try propose("[app.\"com.tinyspeck.slackmacgap\"]\nhome = \"mid\"\n")?.to, "mid")
+        XCTAssertNil(try propose("[app.\"com.tinyspeck.slackmacgap\"]\nhome = \"elsewhere\"\n"))
     }
 }

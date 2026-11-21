@@ -145,3 +145,8 @@ test('review round 2: local and private addresses are recognised, public ones ar
   local.forEach((u) => assert.equal(core.isLocalHost(u), true, u));
   ['https://example.com/', 'http://8.8.8.8/', 'https://a.b.example.org/x', 'http://172.32.0.1/'].forEach((u) => assert.equal(core.isLocalHost(u), false, u));
 });
+
+test('follow-up: a trailing dot does not turn a local name into a public one', () => {
+  ['http://localhost./', 'http://localhost../', 'http://router./', 'http://nas.local./', 'http://printer.lan.', 'http://x.box/', 'http://192.168.0.1./'].forEach((u) => assert.equal(core.isLocalHost(u), true, u));
+  ['https://example.com./', 'https://a.b.example.org./x'].forEach((u) => assert.equal(core.isLocalHost(u), false, u));
+});

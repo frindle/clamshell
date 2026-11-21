@@ -10,8 +10,10 @@
   const MENU_BRING = 'desk-bring';
 
   const ASK_TTL_MS = 60000;
+  const HELD_TTL_MS = 600000;           // a held local-address tab waits ten minutes: walking to the other Mac takes a while
+  const HELD_MAX = 5;
   const RESTORE_KEY = 'pendingRestore';
-  const STATE_KEY = 'deskState';        // { seen: [ids], ask, pendingOpen } kept across worker restarts
+  const STATE_KEY = 'deskState';        // { seen: [ids], ask, held: [tabs] } kept across worker restarts
   const OPEN_LIMIT = 10;                // tabs the placer may open per minute without a click
   const OPEN_WINDOW_MS = 60000;
   const RESTORE_TTL_MS = 300000;
@@ -24,13 +26,13 @@
     const seen = new core.Seen(50);
     const memRestore = new Map(); // fallback when storage.session is missing
     let ws = null;
-    let connecting = false;
+    let connectPromise = null;
     let timer = null;
     let session = null;       // { cnonce, snonce, authed, seq } for the current socket
     let ask = null;           // { id, at }: the other Mac asked for our tab; waits for a click
-    let pendingOpen = null;   // { tab, at }: a tab for a local or private address; opens only after a click
+    let held = [];            // [{ tab, at }]: tabs for local or private addresses; each opens only after a click
+    let statePromise = null;
     let opens = [];           // times of tabs opened without a click, for the rate limit
-    let stateLoaded = false;
     let authWaiters = [];
     let status = { connected: false, authenticated: false, lastError: '' };
 
@@ -56,23 +58,31 @@
     }
 
     // ---- small state that must survive the worker being stopped: seen ids, the pending question, a held local tab ----
-    async function loadState() {
-      if (stateLoaded) return;
-      stateLoaded = true;
+    // One shared load: every caller awaits the same read, and what it finds is merged under anything already set.
+    function loadState() {
+      if (!statePromise) statePromise = readState();
+      return statePromise;
+    }
+    async function readState() {
       if (!sessionStore) return;
       try {
         const r = await sessionStore.get(STATE_KEY);
         const s = r && r[STATE_KEY];
         if (s && typeof s === 'object') {
           if (Array.isArray(s.seen)) s.seen.forEach(function (id) { if (typeof id === 'string') seen.check(id); });
-          if (s.ask && typeof s.ask.id === 'string') ask = { id: s.ask.id, at: Number(s.ask.at) || 0 };
-          if (s.pendingOpen && s.pendingOpen.tab && core.isSendableUrl(s.pendingOpen.tab.url)) pendingOpen = { tab: s.pendingOpen.tab, at: Number(s.pendingOpen.at) || 0 };
+          if (!ask && s.ask && typeof s.ask.id === 'string') ask = { id: s.ask.id, at: Number(s.ask.at) || 0 };
+          const stored = Array.isArray(s.held) ? s.held : (s.pendingOpen ? [s.pendingOpen] : []);
+          const have = held.map(function (h) { return h.tab.url + '\n' + h.at; });
+          stored.forEach(function (h) {
+            if (h && h.tab && core.isSendableUrl(h.tab.url) && have.indexOf(h.tab.url + '\n' + (Number(h.at) || 0)) === -1) held.push({ tab: h.tab, at: Number(h.at) || 0 });
+          });
+          held = held.slice(-HELD_MAX);
         }
       } catch (e) { /* start empty */ }
     }
     async function saveState() {
       if (!sessionStore) return;
-      try { await sessionStore.set({ [STATE_KEY]: { seen: seen.ids.slice(), ask, pendingOpen } }); } catch (e) { /* best effort */ }
+      try { await sessionStore.set({ [STATE_KEY]: { seen: seen.ids.slice(), ask, held } }); } catch (e) { /* best effort */ }
     }
 
     // ---- permissions ----
@@ -120,14 +130,28 @@
     }
     function releaseWaiters(v) { const w = authWaiters; authWaiters = []; w.forEach(function (f) { f(v); }); }
 
+    function sessionKey(settings) { return core.wsUrl(settings) + '\n' + settings.token; }
+    function dropSocket() {
+      const old = ws;
+      ws = null; session = null;
+      releaseWaiters(false);
+      status.connected = false; status.authenticated = false;
+      if (old) { try { old.close(); } catch (e) { /* already closed */ } }
+    }
+
     async function post(settings, body) {
       if (!settings.token) throw new Error('set the shared token in options');
       if (!core.tokenIsStrong(settings.token)) throw new Error('the shared token is too short: generate one in options');
+      // The session proved the placer at one port with one token. If either changed since, it proves nothing about
+      // what listens now: drop it and verify again before anything is sent.
+      if (ws && session && session.key !== sessionKey(settings)) { dropSocket(); await connect(); }
       await waitAuthed();
-      if (!session || !session.authed) throw new Error('placer not verified');
-      session.seq += 1;
-      const sig = await deps.hmac(settings.token, core.httpProofInput(session.snonce, session.seq, body));
-      const req = core.buildRequest(settings, body, { session: session.snonce, seq: session.seq, sig });
+      const sess = session; // captured: the socket may be lost across the awaits below
+      if (!sess || !sess.authed || sess.key !== sessionKey(settings)) throw new Error('placer not verified');
+      sess.seq += 1;
+      const seq = sess.seq;
+      const sig = await deps.hmac(settings.token, core.httpProofInput(sess.snonce, seq, body));
+      const req = core.buildRequest(settings, body, { session: sess.snonce, seq, sig });
       const res = await deps.fetchFn(req.url, req.init);
       if (!res || !res.ok) throw new Error('placer answered ' + (res ? res.status : 'nothing'));
     }
@@ -175,7 +199,8 @@
       // An address on this machine or a private network is never opened unprompted: router pages, admin consoles
       // and dev servers are what a hostile placer would aim at. It waits for a click on the toolbar button.
       if (core.isLocalHost(m.tab.url)) {
-        pendingOpen = { tab: m.tab, at: deps.now() };
+        held.push({ tab: m.tab, at: deps.now() });
+        held = held.slice(-HELD_MAX);
         setBadge('o');
         await saveState();
         return false;
@@ -198,16 +223,30 @@
       return true;
     }
 
-    // A click while a local-address tab is held: open it (the click is the consent) instead of sending.
-    async function openPending() {
+    // A click while local-address tabs are held: open the oldest one still fresh (the click is the consent) instead of
+    // sending. Returns 'opened', 'expired' (tabs were held but all had expired: the click is used up telling the
+    // person so, and sends nothing) or 'none' (nothing was held).
+    async function openHeld() {
       await loadState();
-      if (!pendingOpen || deps.now() - pendingOpen.at > ASK_TTL_MS) { pendingOpen = null; await saveState(); return false; }
-      const tab = pendingOpen.tab;
-      pendingOpen = null;
-      setBadge('');
+      if (held.length === 0) return 'none';
+      const now = deps.now();
+      const fresh = held.filter(function (h) { return now - h.at <= HELD_TTL_MS; });
+      const hadExpired = fresh.length !== held.length;
+      if (fresh.length === 0) {
+        held = [];
+        status.lastError = 'the held tab expired; ask for it again';
+        setBadge('');
+        await saveState();
+        return 'expired';
+      }
+      const next = fresh[0];
+      held = fresh.slice(1);
+      setBadge(held.length > 0 ? 'o' : (hadExpired ? '' : ''));
       await saveState();
-      return openTab(tab);
+      await openTab(next.tab);
+      return 'opened';
     }
+    async function openPending() { return (await openHeld()) === 'opened'; }
 
     async function restoreState() { await loadState(); }
     function pendingAsk() { return !!ask && deps.now() - ask.at <= ASK_TTL_MS; }
@@ -240,9 +279,13 @@
     }
 
     // ---- event socket ----
-    async function connect() {
-      if (ws || connecting) return;
-      connecting = true; // set before the first await so two callers cannot both pass the check
+    // A second caller gets the same in-flight attempt, so it returns when the socket exists (or the attempt failed).
+    function connect() {
+      if (ws) return Promise.resolve();
+      if (!connectPromise) connectPromise = doConnect().finally(function () { connectPromise = null; });
+      return connectPromise;
+    }
+    async function doConnect() {
       try {
         const settings = core.normalizeSettings(await deps.getSettings());
         if (!(await hasHostPermission())) { status.lastError = 'allow access to 127.0.0.1 in the extension permissions'; return; }
@@ -252,7 +295,7 @@
         try { sock = new deps.WebSocketCtor(core.wsUrl(settings)); }
         catch (e) { scheduleReconnect(); return; }
         ws = sock;
-        session = { cnonce: '', snonce: '', authed: false, seq: 0 };
+        session = { cnonce: '', snonce: '', authed: false, seq: 0, key: sessionKey(settings) };
         const mine = session;
         sock.onopen = function () {
           mine.cnonce = deps.nonce();
@@ -264,16 +307,18 @@
         };
         sock.onmessage = function (ev) { onSocketMessage(sock, mine, settings, ev.data).catch(function () {}); };
         const lost = function () {
-          if (ws === sock) { ws = null; session = null; releaseWaiters(false); }
-          status.connected = false;
-          status.authenticated = false;
-          scheduleReconnect();
+          if (ws === sock) {
+            ws = null; session = null; releaseWaiters(false);
+            status.connected = false;
+            status.authenticated = false;
+            scheduleReconnect();
+          } else if (ws === null) {
+            scheduleReconnect(); // dropped on purpose (failed proof): retry later
+          } // else a newer socket replaced this one: its state is not ours to touch
         };
         sock.onclose = lost;
         sock.onerror = function () { status.lastError = 'event socket error'; };
-      } finally {
-        connecting = false;
-      }
+      } catch (e) { /* the next attempt retries */ }
     }
 
     async function onSocketMessage(sock, mine, settings, raw) {
@@ -295,6 +340,7 @@
         sock.send(core.buildAuth(await deps.hmac(settings.token, core.clientProofInput(mine.cnonce, h.snonce))));
       } else if (h.kind === 'ready' && mine.snonce) {
         mine.authed = true;
+        backoff.reset(); // a good connect starts the delays over
         status.authenticated = true;
         status.lastError = '';
         releaseWaiters(true);
@@ -332,7 +378,9 @@
       const granted = ensureHostPermission(); // first call, before any await
       return (async function () {
         if (!(await granted)) return fail('access to 127.0.0.1 was not allowed');
-        if (await openPending()) return true;
+        const h = await openHeld();
+        if (h === 'opened') return true;
+        if (h === 'expired') return false; // never turn "open the held tab" into "send this tab"
         if (!ws) await connect();
         return tab && tab.id !== undefined ? sendTab(tab.id) : false;
       })();

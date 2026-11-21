@@ -131,6 +131,10 @@ public enum FileName {
     /// Characters that never belong in a received name: invisible, bidirectional and line-separator characters, and
     /// look-alikes for dot and slash. The same set the v1 receiver strips ("File transfer" receiver rules).
     static func isForbiddenScalar(_ v: UInt32) -> Bool {
+        // Everything the v1 receiver removes or replaces (FileTransferCore.storedName): the whole Unicode format category
+        // (tag characters U+E0020..E007F included), the line and paragraph separators and the look-alike set below.
+        if let s = Unicode.Scalar(v), s.properties.generalCategory == .format { return true }
+        if v == 0x2028 || v == 0x2029 || lookAlikeSeparators.contains(v) { return true }
         if v < 0x20 || v == 0x7F || (v >= 0x80 && v <= 0x9F) { return true }          // C0, DEL, C1 controls
         switch v {
         case 0x00AD, 0x061C, 0x180E, 0x3164, 0xFEFF: return true                        // soft hyphen, Arabic mark, fillers, BOM
@@ -140,9 +144,19 @@ public enum FileName {
         }
     }
 
+    /// Same list as the v1 receiver's `lookAlikeSeparators`; the cross-check test fails if the two drift apart.
+    static let lookAlikeSeparators: Set<UInt32> = [
+        0xFF0E, 0xFE52, 0xFF61, 0x3002, 0x2024, 0x2215, 0x2044, 0xFF0F, 0x29F8, 0x2571, 0x2216, 0xFF3C, 0xFE68, 0x29F5, 0x2CFA,
+    ]
+
+    /// A blank in the v1 sense: a space, any Unicode white space or a space separator (U+00A0, U+3000 and the like).
+    static func isBlank(_ u: Unicode.Scalar) -> Bool {
+        u == " " || u.properties.isWhitespace || u.properties.generalCategory == .spaceSeparator
+    }
+
     /// A bare file name that is safe to hand to any receiver as is: not empty, at most 255 UTF-8 bytes; no `/`, `\`,
     /// `:` or Windows-reserved `< > " | ? *`; no control, invisible, bidirectional or look-alike characters; does not
-    /// start with a dot or blank, does not end with a dot or blank; not a Windows device name.
+    /// start with a dot or any Unicode blank, does not end with a dot or blank; not a Windows device name.
     public static func isSafe(_ s: String) -> Bool {
         let u = Array(s.utf8)
         guard !u.isEmpty, u.count <= maxBytes else { return false }
@@ -154,7 +168,7 @@ public enum FileName {
             }
         }
         guard let first = s.unicodeScalars.first, let last = s.unicodeScalars.last else { return false }
-        if first == "." || first == " " || last == "." || last == " " { return false }
+        if first == "." || isBlank(first) || last == "." || isBlank(last) { return false }
         let stem = String(s.split(separator: ".", maxSplits: 1, omittingEmptySubsequences: false).first ?? "").uppercased()
         let devices: Set<String> = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"]
         if devices.contains(stem) { return false }

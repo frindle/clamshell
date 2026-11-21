@@ -22,7 +22,7 @@ function setup(over) {
       sendMessage: async (id, msg) => { calls.sent.push([id, msg.type]); if (o.noContent) throw new Error('no receiver'); return msg.type === 'desk-collect' ? { scrollX: 0, scrollY: 40, media: null } : undefined; },
     },
     scripting: { executeScript: async (x) => { calls.injected.push(x.target.tabId); } },
-    storage: o.noSession ? {} : { session: { get: async (k) => ({ [k]: sess[k] }), set: async (v) => Object.assign(sess, v) } },
+    storage: o.noSession ? {} : { session: { get: async (k) => { if (o.gate) await o.gate; return { [k]: sess[k] }; }, set: async (v) => Object.assign(sess, v) } },
     permissions: { contains: async () => !o.noPerm, request: async (p) => { calls.perms.push(p); return !o.denyPerm; } },
     action: { setBadgeText: (b) => calls.badge.push(b.text) },
     contextMenus: { removeAll: (cb) => cb(), create: (x) => (calls.menus = (calls.menus || []).concat(x.id)) },
@@ -39,11 +39,12 @@ function setup(over) {
     WebSocketCtor: FakeWS,
     hmac,
     nonce: () => String(++n).padStart(32, '0'),
-    getSettings: async () => ({ port: 6000, token: o.token === undefined ? TOKEN : o.token }),
-    now: () => 1000,
-    setTimeoutFn: (fn, ms) => { calls.timers.push(ms); return calls.timers.length; },
+    getSettings: async () => (o.settings || { port: 6000, token: o.token === undefined ? TOKEN : o.token }),
+    now: () => (o.clock ? o.clock.t : 1000),
+    setTimeoutFn: (fn, ms) => { calls.timers.push(ms); (calls.timerFns = calls.timerFns || []).push(fn); return calls.timers.length; },
     random: () => 0,
   });
+  if (o.state) Object.assign(sess, o.state);
   return { ctl, calls, FakeWS, sess };
 }
 
@@ -344,4 +345,115 @@ test('review round 2: the permission request is the first call in a click handle
   const { ctl, calls } = setup({ noPerm: true });
   ctl.onActionClicked({ id: 7 });
   assert.equal(calls.perms.length, 1, 'request issued synchronously, before any await');
+});
+
+// ---- review follow-ups ----
+const RDY = JSON.stringify({ v: 1, kind: 'ready' });
+
+test('follow-up: after a port change the next tab goes only to a server that has proved itself', async () => {
+  const settings = { port: 6000, token: TOKEN };
+  const { ctl, calls, FakeWS } = setup({ settings });
+  await login(ctl, FakeWS);
+  settings.port = 6001;
+  const p = ctl.sendTab(7);
+  await settle();
+  assert.match(FakeWS.last.url, /6001/, 'a new socket was opened for the new port');
+  assert.equal(calls.fetch.length, 0, 'nothing is sent to the unverified server');
+  const h = await handshake(ctl, FakeWS);
+  h.ws.onmessage({ data: RDY });
+  assert.equal(await p, true);
+  assert.equal(calls.fetch.length, 1);
+  assert.match(calls.fetch[0][0], /:6001\//);
+});
+
+test('follow-up: after a port change a server that does not know the token never gets the tab', async () => {
+  const settings = { port: 6000, token: TOKEN };
+  const { ctl, calls, FakeWS } = setup({ settings });
+  await login(ctl, FakeWS);
+  settings.port = 6001;
+  const p = ctl.sendTab(7);
+  await settle();
+  await handshake(ctl, FakeWS, 'z'.repeat(40));
+  assert.equal(await p, false);
+  assert.equal(calls.fetch.length, 0);
+});
+
+test('follow-up: a changed token also drops the old session', async () => {
+  const settings = { port: 6000, token: TOKEN };
+  const { ctl, calls, FakeWS } = setup({ settings });
+  await login(ctl, FakeWS);
+  settings.token = 'q'.repeat(40);
+  const p = ctl.sendTab(7);
+  await settle();
+  assert.equal(calls.fetch.length, 0);
+  assert.equal(FakeWS.count, 2);
+  await handshake(ctl, FakeWS, 'q'.repeat(40)); // the fake placer answers with the new token
+  FakeWS.last.onmessage({ data: RDY });
+  assert.equal(await p, true);
+});
+
+const heldMsg = (id, url) => JSON.stringify({ v: 1, kind: 'open-tab', id, tab: { url } });
+
+test('follow-up: a click on an expired held tab does not send the current tab', async () => {
+  const clock = { t: 1000 };
+  const { ctl, calls, FakeWS } = setup({ clock });
+  await login(ctl, FakeWS);
+  await ctl.handleIncoming(heldMsg('h1', 'http://192.168.0.1/admin'));
+  clock.t = 1000 + 700000; // past the hold
+  assert.equal(await ctl.onActionClicked({ id: 7 }), false);
+  assert.equal(calls.created.length, 0);
+  assert.equal(calls.fetch.length, 0, 'the current tab was not sent');
+  assert.match(ctl.status.lastError, /expired/);
+  // The click was used up telling the person; the next one is an ordinary send.
+  assert.equal(await ctl.onActionClicked({ id: 7 }), true);
+  assert.equal(calls.fetch.length, 1);
+});
+
+test('follow-up: a held tab lasts minutes, and several can wait', async () => {
+  const clock = { t: 1000 };
+  const { ctl, calls, FakeWS } = setup({ clock });
+  await login(ctl, FakeWS);
+  await ctl.handleIncoming(heldMsg('h1', 'http://192.168.0.1/a'));
+  await ctl.handleIncoming(heldMsg('h2', 'http://192.168.0.1/b'));
+  clock.t = 1000 + 120000; // two minutes: the old 60 second hold would have lapsed
+  assert.equal(await ctl.onActionClicked({ id: 7 }), true);
+  assert.equal(await ctl.onActionClicked({ id: 7 }), true);
+  assert.deepEqual(calls.created.map((c) => c.url), ['http://192.168.0.1/a', 'http://192.168.0.1/b']);
+  assert.equal(calls.fetch.length, 0);
+});
+
+test('follow-up: state load race: callers during the read see the stored state', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const state = { deskState: { seen: ['m1'], held: [{ tab: { url: 'http://192.168.0.1/x' }, at: 1000 }] } };
+  const { ctl, calls } = setup({ gate, state });
+  const p1 = ctl.handleIncoming(heldMsg('m1', 'https://pub.example.org/'));
+  const p2 = ctl.openPending();
+  release();
+  assert.equal(await p1, false, 'm1 was already seen before the restart');
+  assert.equal(await p2, true, 'the held tab from before the restart is found');
+  assert.deepEqual(calls.created.map((c) => c.url), ['http://192.168.0.1/x']);
+});
+
+test('follow-up: a second connect() waits for the first and returns with the socket in place', async () => {
+  const { ctl } = setup();
+  const p1 = ctl.connect();
+  const p2 = ctl.connect();
+  await p2;
+  assert.equal(ctl.connected, true);
+  await p1;
+});
+
+test('follow-up: a good connect resets the reconnect delay', async () => {
+  const { ctl, calls, FakeWS } = setup();
+  await ctl.connect();
+  FakeWS.last.onclose();
+  assert.equal(calls.timers[0], 1000);
+  calls.timerFns[0]();
+  await settle();
+  const h = await handshake(ctl, FakeWS);
+  h.ws.onmessage({ data: RDY });
+  await settle();
+  h.ws.onclose();
+  assert.equal(calls.timers[calls.timers.length - 1], 1000, 'not 2000: the delay started over');
 });
