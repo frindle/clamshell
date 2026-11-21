@@ -11,10 +11,17 @@
 # windows or capture the real display). A skipped step is counted as skipped,
 # never as passed.
 #
+# -DesktopOnly is the other half: it runs only those desktop steps, plus the
+# two builds they need. On our VM a second runner runs this half, so the rest
+# never waits for the VM's screen.
+#
+# Only one run at a time on a machine: the VM has two runners, and the steps
+# share ports, key stores and the screen. A second run waits for the first.
+#
 # Every step runs even when an earlier one fails. The last line is a count
 # only ("N of M steps passed"), so it is safe to publish. Exit code 0 means
 # every step that ran passed.
-param([switch]$SkipDesktop)
+param([switch]$SkipDesktop, [switch]$DesktopOnly)
 
 $ErrorActionPreference = 'Stop'
 $InActions = ($env:GITHUB_ACTIONS -eq 'true')
@@ -30,8 +37,19 @@ function Test-Tools {
   if (-not (Test-Path (Join-Path $Root 'WindowsServer/ClamshellServer.csproj'))) { return "run this from the root of a checkout" }
   return $null
 }
+if ($SkipDesktop -and $DesktopOnly) { Write-Output "use -SkipDesktop or -DesktopOnly, not both"; exit 1 }
 $missing = Test-Tools
 if ($missing) { Write-Output $missing; exit 1 }
+
+# One run at a time on this machine (see the header). A run that was killed
+# leaves the lock abandoned; taking an abandoned lock is fine.
+$CiLock = New-Object System.Threading.Mutex($false, 'Global\ClamshellCI')
+try {
+  if (-not $CiLock.WaitOne(0)) {
+    Write-Output "waiting for another CI run on this machine to finish"
+    [void]$CiLock.WaitOne()
+  }
+} catch [System.Threading.AbandonedMutexException] { }
 
 # All temporary files (logs, clips, throwaway state) live here and go at the end.
 $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("clamshell-ci-" + [guid]::NewGuid().ToString('N'))
@@ -42,12 +60,15 @@ $script:Passed = 0
 $script:Skipped = 0
 
 function Invoke-Step {
-  param([string]$Name, [scriptblock]$Body, [switch]$NeedsDesktop)
+  param([string]$Name, [scriptblock]$Body, [switch]$NeedsDesktop, [switch]$Build)
   $script:Total++
   if ($InActions) { Write-Output "::group::$Name" } else { Write-Output "=== $Name" }
   if ($NeedsDesktop -and $SkipDesktop) {
     $script:Skipped++
     Write-Output "SKIPPED (needs a logged-in desktop)"
+  } elseif ($DesktopOnly -and -not $NeedsDesktop -and -not $Build) {
+    $script:Skipped++
+    Write-Output "SKIPPED (desktop-only run)"
   } else {
     $ok = $true
     $savedState = $env:CLAMSHELL_STATE_DIR
@@ -77,7 +98,7 @@ function Invoke-Step {
 
 try {
 
-Invoke-Step "Build Windows host server" {
+Invoke-Step "Build Windows host server" -Build {
   dotnet build WindowsServer/ClamshellServer.csproj -c Release
 }
 Invoke-Step "Self-test (pure protocol/framing logic)" {
@@ -138,7 +159,7 @@ Invoke-Step "Live smoke test (real display enum, encoder probe, listener bind)" 
   Write-Output "smoke test OK: process stayed up and completed the real startup sequence"
 }
 
-Invoke-Step "Build Windows viewer client" {
+Invoke-Step "Build Windows viewer client" -Build {
   dotnet build WindowsViewer/ClamshellWindowViewer.csproj -c Release
 }
 Invoke-Step "Viewer self-test (pure protocol/AVCC-AnnexB framing logic)" {
@@ -327,6 +348,7 @@ Invoke-Step "Viewer decode-audio-file (real AAC-LC -> real Media Foundation deco
 } finally {
   Set-Location $Root
   Remove-Item -LiteralPath $Tmp -Recurse -Force -ErrorAction SilentlyContinue
+  try { $CiLock.ReleaseMutex() } catch { }
 }
 
 $summary = "$($script:Passed) of $($script:Total) steps passed"

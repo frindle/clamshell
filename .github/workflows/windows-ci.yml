@@ -12,25 +12,12 @@ jobs:
   build:
     name: Windows build
     # Pushes to this repo's own branches run on our own Windows VM (label
-    # clamshell-win). The push run already covers PRs from this repo's branches,
+    # clamshell-win, the build runner). The push run already covers PRs from this repo's branches,
     # so those skip. PRs from forks never touch the VM: they run on GitHub's
     # windows-latest instead.
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ${{ github.event_name == 'push' && fromJSON('["self-hosted","Windows","X64","clamshell-win"]') || 'windows-latest' }}
     steps:
-      # On our VM the desktop tests need the VM's own screen. While someone is
-      # signed in over Remote Desktop they would fail, so wait (up to 60 min)
-      # until that session is handed back to the console.
-      - name: Wait while the VM is in a Remote Desktop session
-        if: runner.environment == 'self-hosted'
-        shell: pwsh
-        run: |
-          Add-Type -AssemblyName System.Windows.Forms
-          $deadline = (Get-Date).AddMinutes(60)
-          while ([System.Windows.Forms.SystemInformation]::TerminalServerSession) {
-            if ((Get-Date) -gt $deadline) { throw "still in a Remote Desktop session after 60 minutes" }
-            Start-Sleep -Seconds 30
-          }
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
@@ -49,9 +36,41 @@ jobs:
             $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
           }
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { throw "ffmpeg still missing after 3 chocolatey tries" }
-      # Every check lives in scripts/ci-local.ps1. Both machines have a desktop
-      # (our VM logs in by itself; windows-latest presents a virtual display), so
-      # the desktop steps (live smoke, GUI smoke, end-to-end connect) run on both.
+      # Every check lives in scripts/ci-local.ps1. windows-latest presents a
+      # virtual display, so there it runs everything, desktop steps included. On
+      # our VM this job skips the three desktop steps (live smoke, GUI smoke,
+      # end-to-end connect); the next job runs them. So this one never waits for
+      # the VM's screen, even while someone is in over Remote Desktop.
       - name: Windows checks
         shell: pwsh
-        run: pwsh -File scripts/ci-local.ps1
+        run: pwsh -File scripts/ci-local.ps1 ${{ runner.environment == 'self-hosted' && '-SkipDesktop' || '' }}
+
+  desktop:
+    name: Windows desktop tests
+    # The desktop steps, on a second runner on the same VM (label
+    # clamshell-win-desktop), so a wait here never holds up the build runner.
+    # Only push runs use the VM; fork PRs get these steps in the job above.
+    needs: build
+    if: github.event_name == 'push'
+    runs-on: [self-hosted, Windows, X64, clamshell-win-desktop]
+    timeout-minutes: 720
+    steps:
+      # These steps need the VM's own screen. Windows 11 Pro has one session, and
+      # Remote Desktop takes it off the screen, so wait (up to 11 hours) until it
+      # is handed back to the console. A newer push to the branch cancels this.
+      - name: Wait while the VM is in a Remote Desktop session
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Windows.Forms
+          $deadline = (Get-Date).AddHours(11)
+          while ([System.Windows.Forms.SystemInformation]::TerminalServerSession) {
+            if ((Get-Date) -gt $deadline) { throw "still in a Remote Desktop session after 11 hours" }
+            Start-Sleep -Seconds 30
+          }
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Windows desktop checks
+        shell: pwsh
+        run: pwsh -File scripts/ci-local.ps1 -DesktopOnly
