@@ -131,7 +131,9 @@ final class ServiceTests: XCTestCase {
         _ = conn.drain()
         rig.windows.byPid[4242] = [mainWindow(10)]
         rig.service.pollWindows()
-        XCTAssertTrue(conn.drain().isEmpty)
+        // An app list update may follow; a second WINDOW_ADDED for the same id must not.
+        let added = conn.drain().filter { if case .windowAdded = $0 { return true } else { return false } }
+        XCTAssertTrue(added.isEmpty)
     }
 
     func testWindowListResponse() {
@@ -356,7 +358,8 @@ final class ServiceTests: XCTestCase {
     // MARK: protocol errors
 
     func testMalformedKnownMessageClosesConnection() {
-        let (_, conn, op) = launched()
+        let (rig, conn, op) = launched()
+        defer { withExtendedLifetime(rig) {} }
         // WINDOW_MOVED with a 2-byte payload.
         op.receive(try! Framing.encode(type: DeskType.windowMoved.rawValue, payload: [0, 1]))
         XCTAssertTrue(conn.closed)
@@ -364,7 +367,8 @@ final class ServiceTests: XCTestCase {
     }
 
     func testOutOfRangeValueClosesConnection() {
-        let (_, conn, op) = launched()
+        let (rig, conn, op) = launched()
+        defer { withExtendedLifetime(rig) {} }
         var w = ByteWriter()
         w.u32(10); w.f32(2.5); w.f32(0.5)   // mouse x outside 0...1
         op.receive(try! Framing.encode(type: DeskType.windowInputMouseMove.rawValue, payload: w.bytes))
@@ -372,7 +376,8 @@ final class ServiceTests: XCTestCase {
     }
 
     func testOversizeFrameClosesConnection() {
-        let (_, conn, op) = launched()
+        let (rig, conn, op) = launched()
+        defer { withExtendedLifetime(rig) {} }
         op.receive([0x71, 0xFF, 0xFF, 0xFF, 0xFF])
         XCTAssertTrue(conn.closed)
     }
