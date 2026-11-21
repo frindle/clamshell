@@ -1572,6 +1572,11 @@ Rules:
   advisory: the host answers with WINDOW_RESIZED for the size it actually got.
 - A menu generation is a counter per app that goes up each time the host sends a
   new MENU_TREE. The operator sends only the newest generation's item ids back.
+- Stopping a window stream. v3 has no stop message. The operator stops watching a window by sending HANDOFF_RETURN
+  for it; the host stops capture when the last operator on that window has done so. A stream also ends on
+  WINDOW_CLOSED and when the connection closes. Streams do not resume after a reconnect: the operator sends
+  WINDOW_STREAM_START again for each window it wants. On a new connection the host sends APP_LIST, then a
+  WINDOW_ADDED for every open window (ordinary windows before their children), as if all were new.
 - Pasteboard and file messages never carry more than one in-flight request id
   per kind that the other side has not answered; a side may refuse by ignoring.
 - A receiver accepts PASTEBOARD_DATA only for a fetch it sent: the generation and uti match, `total` equals the offered size, and each chunk's `offset` is the number of bytes already received. Any other chunk closes the item (and the connection if it repeats). An item over 256 MiB is refused at the offer.

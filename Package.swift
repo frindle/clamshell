@@ -9,6 +9,9 @@ let package = Package(
         // device. Clamshell is a thin consumer: the core (challenge format,
         // verification, PIV transport) lives and is tested over there.
         .package(url: "https://github.com/frindle/immurok-yk.git", branch: "master"),
+        // Host side of Window Handoff v3 (app-host). Pure logic, tested in its
+        // own package; Sources/Clamshell/AppHost/ supplies the macOS parts.
+        .package(path: "DeskHost"),
     ],
     targets: [
         // Declarations for the private CoreGraphics virtual-display classes
@@ -25,6 +28,7 @@ let package = Package(
                 "CGVirtualDisplayShim",
                 "AXPrivateShim",
                 .product(name: "ImmurokKit", package: "immurok-yk"),
+                .product(name: "DeskHost", package: "DeskHost"),
             ],
             resources: [.copy("Resources/novnc"), .copy("Resources/webclient")],
             // Empty __CGPreLoginApp section: WindowServer drops synthetic input
