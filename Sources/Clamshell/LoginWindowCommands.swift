@@ -59,11 +59,8 @@ enum LoginWindowCommands {
 
             // 1. A root-owned copy of the app, put in place whole.
             try makeRootDirectory(layout.root)
-            let staged = layout.root.appendingPathComponent("Clamshell.app.new", isDirectory: true)
-            try? FileManager.default.removeItem(at: staged)
-            try runTool("/usr/bin/ditto", [appURL.path, staged.path])
-            try runTool("/usr/sbin/chown", ["-R", "root:wheel", staged.path])
-            try runTool("/bin/chmod", ["-R", "go-w", staged.path])
+            let staged = try LoginWindowInstall.stageRootCopy(of: appURL.path, root: layout.root)
+            defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
             try? FileManager.default.removeItem(at: layout.appCopy)
             try FileManager.default.moveItem(at: staged, to: layout.appCopy)
 

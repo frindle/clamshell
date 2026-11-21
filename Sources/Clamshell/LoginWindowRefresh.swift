@@ -42,19 +42,33 @@ extension LoginWindowInstall {
         return .refreshed(from: ours, to: theirs)
     }
 
+    /// Copies the app into a staging folder only root can enter (0700) and
+    /// makes it root-owned there. ditto run as root keeps the source's owner,
+    /// so a copy staged where the user can reach it would be theirs to open
+    /// for writing until the chown, and a descriptor opened then outlives the
+    /// chown and the signature check.
+    static func stageRootCopy(of source: String, root: URL) throws -> URL {
+        let fm = FileManager.default
+        let area = root.appendingPathComponent(".staging", isDirectory: true)
+        try? fm.removeItem(at: area)
+        try fm.createDirectory(at: area, withIntermediateDirectories: false,
+                               attributes: [.posixPermissions: 0o700])
+        let staged = area.appendingPathComponent("Clamshell.app", isDirectory: true)
+        try runProcess("/usr/bin/ditto", [source, staged.path])
+        try runProcess("/usr/sbin/chown", ["-R", "root:wheel", staged.path])
+        try runProcess("/bin/chmod", ["-R", "go-w", staged.path])
+        return staged
+    }
+
     /// Copies the app next to the live copy, checks the copy, then swaps by
     /// rename so there is never a moment with no copy.
     static func replaceCopy(from source: String, layout: Layout, to copy: URL) throws {
         let fm = FileManager.default
-        let staged = layout.root.appendingPathComponent("Clamshell.app.new", isDirectory: true)
         let old = layout.root.appendingPathComponent("Clamshell.app.old", isDirectory: true)
-        try? fm.removeItem(at: staged)
         try? fm.removeItem(at: old)
-        try runProcess("/usr/bin/ditto", [source, staged.path])
-        try runProcess("/usr/sbin/chown", ["-R", "root:wheel", staged.path])
-        try runProcess("/bin/chmod", ["-R", "go-w", staged.path])
+        let staged = try stageRootCopy(of: source, root: layout.root)
+        defer { try? fm.removeItem(at: staged.deletingLastPathComponent()) }
         guard CodeIdentity.sameIdentity(current: copy.path, candidate: staged.path) else {
-            try? fm.removeItem(at: staged)
             throw InstallError("the copied app failed its signature check")
         }
         try fm.moveItem(at: copy, to: old)
