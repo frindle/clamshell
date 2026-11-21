@@ -15,10 +15,14 @@ final class RFBServer {
     struct Options {
         var port: UInt16
         var serverName = "Clamshell"
-        /// Longest a client may take over the handshake and login.
+        /// Longest a client may take over the handshake and login, in all
+        /// (each read also times out after this long).
         var handshakeTimeout: TimeInterval = 20
         var maxClients = 8
         var failureDelay: TimeInterval = 1
+        /// Most clients one address may have mid-handshake at once, so one
+        /// peer can neither fill every slot nor try many passwords in parallel.
+        var perPeerPending = 3
     }
 
     static let offReason = "Remote access is turned off on this Mac."
@@ -39,7 +43,8 @@ final class RFBServer {
     private let lock = NSLock()
     private var listenFD: Int32 = -1
     private var sessions: [ObjectIdentifier: RFBSession] = [:]
-    private var pending = 0
+    /// Accepted but not yet logged in.
+    private var pending: [ObjectIdentifier: RFBSession] = [:]
     private var stopped = false
     private var switchObserver: NSObjectProtocol?
 
@@ -133,10 +138,10 @@ final class RFBServer {
         dropAll()
     }
 
-    /// Closes every open client.
+    /// Closes every open client, and any still logging in.
     func dropAll() {
         lock.lock()
-        let open = Array(sessions.values)
+        let open = Array(sessions.values) + Array(pending.values)
         lock.unlock()
         for s in open { s.terminate() }
     }
@@ -161,12 +166,13 @@ final class RFBServer {
             setsockopt(c, SOL_SOCKET, SO_KEEPALIVE, &yes, socklen_t(MemoryLayout<Int32>.size))
             var one: Int32 = 1
             setsockopt(c, IPPROTO_TCP, TCP_NODELAY, &one, socklen_t(MemoryLayout<Int32>.size))
+            let session = RFBSession(server: self, fd: c, peer: Self.peerName(c))
             lock.lock()
-            let full = sessions.count + pending >= options.maxClients
-            if !full { pending += 1 }
+            let full = sessions.count + pending.count >= options.maxClients
+                || pending.values.filter({ $0.peer == session.peer }).count >= options.perPeerPending
+            if !full { pending[ObjectIdentifier(session)] = session }
             lock.unlock()
             if full { close(c); continue }
-            let session = RFBSession(server: self, fd: c, peer: Self.peerName(c))
             let t = Thread { session.run() }
             t.name = "clamshell.rfb.session"
             t.stackSize = 1 << 21
@@ -188,12 +194,10 @@ final class RFBServer {
     }
 
     fileprivate func admit(_ s: RFBSession) {
-        lock.lock(); pending -= 1; sessions[ObjectIdentifier(s)] = s; lock.unlock()
+        lock.lock(); pending[ObjectIdentifier(s)] = nil; sessions[ObjectIdentifier(s)] = s; lock.unlock()
     }
-    fileprivate func gone(_ s: RFBSession, admitted: Bool) {
-        lock.lock()
-        if admitted { sessions[ObjectIdentifier(s)] = nil } else { pending -= 1 }
-        lock.unlock()
+    fileprivate func gone(_ s: RFBSession) {
+        lock.lock(); sessions[ObjectIdentifier(s)] = nil; pending[ObjectIdentifier(s)] = nil; lock.unlock()
     }
 }
 
@@ -201,7 +205,10 @@ final class RFBServer {
 final class RFBSession {
     private let server: RFBServer
     private let fd: Int32
-    private let peer: String
+    fileprivate let peer: String
+    // Lock order: writeLock, then stateLock. The fd is closed holding both, and
+    // every write and shutdown first checks `closed`, so neither can reach a
+    // number the system has since handed to another connection.
     private let writeLock = NSLock()
     private let stateLock = NSLock()
     private var closed = false
@@ -219,12 +226,19 @@ final class RFBSession {
         self.peer = peer
     }
 
+    /// Ends the session from any thread: blocked reads and writes return.
     func terminate() {
-        stateLock.lock()
-        let was = closed
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard !closed else { return }
         closed = true
-        stateLock.unlock()
-        if !was { shutdown(fd, SHUT_RDWR) }
+        shutdown(fd, SHUT_RDWR)
+    }
+
+    private func closeSocket() {
+        writeLock.lock(); stateLock.lock()
+        closed = true
+        close(fd)
+        stateLock.unlock(); writeLock.unlock()
     }
 
     private var isClosed: Bool { stateLock.lock(); defer { stateLock.unlock() }; return closed }
@@ -245,6 +259,7 @@ final class RFBSession {
     @discardableResult
     private func write(_ bytes: [UInt8]) -> Bool {
         writeLock.lock(); defer { writeLock.unlock() }
+        if isClosed { return false }
         var sent = 0
         while sent < bytes.count {
             let r = bytes.withUnsafeBytes { Foundation.write(fd, $0.baseAddress! + sent, bytes.count - sent) }
@@ -285,15 +300,20 @@ final class RFBSession {
         var admitted = false
         var input: RFBInputSink?
         var sourceHeld = false
+        // The handshake deadline is for the whole login, not each read: a
+        // client trickling bytes cannot hold a slot past it.
+        let deadline = DispatchWorkItem { [weak self] in self?.terminate() }
         defer {
+            deadline.cancel()
             if sourceHeld { server.source.releaseFrames() }
             if let input { input.releaseAll() }
             if admitted { server.sessionObserver?(self, false) }
-            close(fd)
-            server.gone(self, admitted: admitted)
+            closeSocket()
+            server.gone(self)
             if admitted { server.log("RFB: client \(peer) left") }
         }
 
+        DispatchQueue.global().asyncAfter(deadline: .now() + server.options.handshakeTimeout, execute: deadline)
         setTimeout(server.options.handshakeTimeout)
         guard write(Array(RFB.version.utf8)), let hello = read(12),
               let minor = RFB.minorVersion(hello), minor >= 7 else { return }
@@ -347,6 +367,8 @@ final class RFBSession {
         serverInit += RFBWire.u32(UInt32(name.count))
         serverInit += name
         guard write(serverInit) else { return }
+        deadline.cancel()
+        guard !isClosed else { return }   // the deadline passed just now
 
         admitted = true
         server.admit(self)

@@ -653,9 +653,11 @@ form.
   only (the redirect is what makes it answer on 5900), inside the Clamshell app
   and, at the login window, inside the login-window agent; no extra process.
   It offers only Apple Remote Desktop authentication (security type 30): the
-  user name and password are checked against the Mac's own accounts, there is
+  user name and password are checked against the Mac's own accounts and the
+  Screen Sharing access list ("Allow access for: Only these users"), there is
   no VNC password and no "none", at most 3 failed logins per address per
-  minute (20 across all addresses), and passwords are never logged. It follows
+  minute (20 across all addresses), at most 3 logins in progress per address,
+  20 seconds to finish one, and passwords are never logged. It follows
   the Screen Sharing switch: off refuses new clients and drops open ones. A
   client that logs in with a valid account is allowed what that account could
   do at the keyboard: it does not need a trusted device (the account password

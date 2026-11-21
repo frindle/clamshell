@@ -224,17 +224,34 @@ protocol RFBAuthenticator {
 
 /// The Mac's own accounts, through OpenDirectory: the check Screen Sharing
 /// does. Works from the user session and from the login window (as root).
+/// Honours System Settings' "Allow access for: Only these users" the same way.
 struct OpenDirectoryAuthenticator: RFBAuthenticator {
+    /// The service access list to honour (group com.apple.access_<service>).
+    var service = "screensharing"
+
     func verify(user: String, password: String) -> Bool {
         guard !user.isEmpty, !password.isEmpty, user.count <= 255 else { return false }
         do {
             let node = try ODNode(session: ODSession.default(), type: ODNodeType(kODNodeTypeAuthentication))
             let record = try node.record(withRecordType: kODRecordTypeUsers, name: user, attributes: nil)
             try record.verifyPassword(password)
-            return true
+            return Self.serviceAllows(user: record.recordName, service: service)
         } catch {
             return false
         }
+    }
+
+    /// Whether the service access list lets this account in, checked the way
+    /// macOS's own services check theirs. No list (the group does not exist,
+    /// "All users") lets everyone in; any other failure refuses.
+    static func serviceAllows(user: String, service: String) -> Bool {
+        var uuid = [UInt8](repeating: 0, count: 16)
+        let found = user.withCString { mbr_identifier_to_uuid(ID_TYPE_USERNAME, $0, strlen($0), &uuid) }
+        guard found == 0 else { return false }
+        var member: Int32 = 0
+        let result = mbr_check_service_membership(uuid, service, &member)
+        if result == ENOENT { return true }
+        return result == 0 && member != 0
     }
 }
 

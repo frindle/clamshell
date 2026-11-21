@@ -136,6 +136,65 @@ final class RFBServerTests: XCTestCase {
         XCTAssertNil(login(server))
     }
 
+    func testHandshakeHasATotalDeadlineNotJustAPerReadOne() throws {
+        let src = RFBStaticFrameSource(width: 20, height: 20, fill: colour)
+        let s = RFBServer(options: .init(port: 0, handshakeTimeout: 1, failureDelay: 0), authenticator: FixedAuth(),
+                          source: src, makeInput: { nil }, enabled: { true })
+        s.log = { _ in }
+        XCTAssertTrue(s.start())
+        servers.append(s)
+        let c = try XCTUnwrap(RFBClient(port: s.boundPort, timeout: 5))
+        _ = try XCTUnwrap(c.negotiate())
+        XCTAssertTrue(c.write([30]))
+        XCTAssertNotNil(c.read(4 + RFBARD.keyLength * 2))
+        // A byte every 0.3 s keeps each read under the 1 s timeout; the whole
+        // login still has to end at the deadline.
+        let started = Date()
+        var cut = false
+        for _ in 0..<20 where !cut {
+            Thread.sleep(forTimeInterval: 0.3)
+            cut = !c.write([7])
+        }
+        XCTAssertTrue(cut || c.sawEOF(), "the server kept a trickling client past its deadline")
+        XCTAssertLessThan(Date().timeIntervalSince(started), 4)
+    }
+
+    func testOnePeerCannotHoldEverySlotMidHandshake() throws {
+        let (server, _, _) = makeServer()
+        var stalled: [RFBClient] = []
+        for _ in 0..<server.options.perPeerPending {
+            let c = try XCTUnwrap(RFBClient(port: server.boundPort))
+            XCTAssertNotNil(c.negotiate())   // then never answers
+            stalled.append(c)
+        }
+        let extra = try XCTUnwrap(RFBClient(port: server.boundPort, timeout: 3))
+        XCTAssertNil(extra.negotiate(), "a peer over its handshake limit is closed at once")
+        stalled.forEach { $0.disconnect() }
+        stalled = []
+        var ok: RFBClient?
+        for _ in 0..<50 where ok == nil {   // the stalled sessions take a moment to end
+            ok = login(server)
+            if ok == nil { Thread.sleep(forTimeInterval: 0.05) }
+        }
+        XCTAssertNotNil(ok)
+    }
+
+    func testDroppingAllEndsClientsStillLoggingIn() throws {
+        let (server, _, _) = makeServer()
+        let c = try XCTUnwrap(RFBClient(port: server.boundPort, timeout: 5))
+        XCTAssertNotNil(c.negotiate())
+        server.dropAll()
+        XCTAssertTrue(c.sawEOF())
+    }
+
+    func testServiceAccessListIsHonoured() {
+        // No such list: everyone with a valid login may connect (System
+        // Settings' "All users").
+        XCTAssertTrue(OpenDirectoryAuthenticator.serviceAllows(user: NSUserName(), service: "clamshell-test-\(UUID().uuidString)"))
+        // An account that does not exist is never let in.
+        XCTAssertFalse(OpenDirectoryAuthenticator.serviceAllows(user: "clamshell-nobody-\(UUID().uuidString)", service: "screensharing"))
+    }
+
     func testRateLimiterWindowAndSuccessReset() {
         var now: TimeInterval = 100
         let l = RFBRateLimiter(perPeerLimit: 2, globalLimit: 3, window: 60, now: { now })
