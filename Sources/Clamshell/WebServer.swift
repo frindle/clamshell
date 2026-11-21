@@ -645,6 +645,7 @@ final class WebServer {
         case "js", "mjs": return "application/javascript"
         case "css": return "text/css"
         case "json": return "application/json"
+        case "webmanifest": return "application/manifest+json"
         case "png": return "image/png"
         case "svg": return "image/svg+xml"
         case "ico": return "image/x-icon"

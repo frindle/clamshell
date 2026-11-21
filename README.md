@@ -155,6 +155,13 @@ System Settings → General → Sharing → Screen Sharing options (browser
 clients speak standard VNC auth, not Apple's). Browser sessions trigger
 the collapse just like native clients.
 
+**Full screen:** open the menu (the dot in the top-right corner) and choose
+**Full screen**, or turn on **Start in full screen** so the first click or tap
+does it. On iPhone, browsers can't show a page full screen: tap Share, then
+**Add to Home Screen**, and open Clamshell from that icon. It opens without
+browser bars and keeps the address it was added from (for example
+`/client?display=b`).
+
 **LAN TLS (optional):** to serve `/client` over `https://` / `wss://` on the
 LAN (for example with a `*.example.com` wildcard pointed at the Mac), give
 Clamshell a PEM certificate and private key (unencrypted, RSA or EC; the cert
@@ -641,6 +648,17 @@ form.
   5901 answering and a stream port bound) within 90 seconds.
 - **Start at Login is a launch agent that restarts the app after a crash**
   (not after a quit). Anyone who had it on is moved over once.
+
+### 0.9.27 — 2026-11-20
+- **The browser client can run full screen with no app to install.**
+- The menu's Full screen item now also works in older iPad Safari. A new
+  item, "Start in full screen", remembered per browser, goes full screen on
+  your first click or tap on the screen; that click is not sent to the Mac.
+- Where a browser can't show a page full screen (Safari and the other
+  browsers on iPhone), Full screen explains how to add the page to the Home
+  Screen. Opened from that icon, it runs without browser bars. The icon
+  keeps the address it was added from, so `/client?display=b` stays Display B.
+- The menu dot and banners stay clear of the iPhone status bar and corners.
 
 ### 0.9.26 — 2026-11-20
 - **Resizing from the browser works again, and an old error no longer sticks.**

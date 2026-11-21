@@ -4,19 +4,31 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Clamshell</title>
+<!-- Added to the Home Screen (iPhone, iPad) or installed as an app, the page
+     opens without browser bars. The manifest has no start_url, so the icon
+     opens the address it was added from (for example /client?display=b). -->
+<link rel="manifest" href="/client/manifest.webmanifest" crossorigin="use-credentials">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Clamshell">
+<meta name="theme-color" content="#000000">
+<link rel="apple-touch-icon" href="/client/icon-180.png">
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,sans-serif}
   #canvas{width:100%;height:100%;display:block;background:#000;object-fit:contain;outline:none;touch-action:none;transition:opacity .2s}
   #canvas.stale{opacity:.35}
   #vncFallback{position:fixed;inset:0;width:100%;height:100%;border:0;display:none;background:#000;z-index:1}
   #vncFallback.show{display:block}
-  #banners{position:fixed;top:8px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;align-items:center;z-index:10}
+  #banners{position:fixed;top:max(8px,env(safe-area-inset-top));left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:6px;align-items:center;z-index:10}
   .banner{background:rgba(0,0,0,.78);color:#fff;padding:8px 14px;border-radius:10px;font-size:13px;display:none;text-align:center}
   .banner.show{display:block}
   #lockBanner{border:1px solid rgba(255,220,0,.7)}
   /* The menu opens from the small dot only. It used to be an invisible
      220x90 box that swallowed clicks on the right end of the Mac's menu bar. */
-  #hoverMenu{position:fixed;top:4px;right:4px;width:22px;height:22px;z-index:20}
+  /* Below the status bar and clear of the rounded corner on a Home Screen app. */
+  #hoverMenu{position:fixed;top:max(4px,env(safe-area-inset-top));right:max(4px,env(safe-area-inset-right));width:22px;height:22px;z-index:20}
+  #fsHint{max-width:min(420px,calc(100vw - 32px));cursor:pointer}
   #qualityDot{position:absolute;top:6px;right:6px;width:10px;height:10px;border-radius:50%;background:#666;
     border:0;padding:0;opacity:.6;box-shadow:0 0 0 1px rgba(255,255,255,.25);cursor:pointer}
   #hoverPanel{position:absolute;top:0;right:0;background:rgba(0,0,0,.8);border-radius:10px;padding:8px;min-width:170px;
@@ -61,6 +73,7 @@
   <div id="lockBanner" class="banner">Mac is locked — showing browser VNC fallback for login</div>
   <div id="errBanner" class="banner"></div>
   <div id="unverifiedBanner" class="banner">Not verified: this Mac did not prove who it is</div>
+  <div id="fsHint" class="banner">This browser can't show a page full screen. Tap Share, then Add to Home Screen, and open Clamshell from that icon: it opens without the browser bars.</div>
 </div>
 <div id="authPanel" hidden>
   <div id="authCard" role="dialog" aria-labelledby="authTitle">
@@ -80,6 +93,7 @@
     <div id="customRow" hidden><input id="customInput" placeholder="2560x1440" size="10" autocomplete="off" spellcheck="false"><button id="customApply">Apply</button></div>
     <button id="retinaBtn">Retina: 2×</button>
     <button id="fullscreenBtn">Full screen</button>
+    <button id="startFsBtn" hidden>Start in full screen: off</button>
     <button id="loginBtn" hidden>Log in…</button>
     <button id="restartBtn">Restart Mac…</button>
     <button id="soundBtn" hidden>Sound: off</button>

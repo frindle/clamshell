@@ -41,6 +41,7 @@ step_hello() {
 }
 
 step_input() {
+  node tests/test-webclient-fullscreen.js || return 1
   node tests/test-webclient-input.js
 }
 

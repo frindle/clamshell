@@ -22,6 +22,9 @@ import {
   encodeMouseMove, encodeMouseButton, encodeKey, encodeScroll, encodeMouseRelative, encodeButtonAtCursor,
 } from '/client/input.js';
 import { AudioPlayer, audioSupported } from '/client/audio.js';
+import {
+  fullscreenApi, isStandalone, fullscreenMode, loadStartFullscreen, saveStartFullscreen, shouldAutoEnter,
+} from '/client/fullscreen.js';
 import { buildCredentialForm, loginPayload, loginProblem, LoginLimiter } from '/client/login.js';
 import {
   AuthFlow, KnownHosts, WEB_CAPS, hasWebCrypto, idbStore, memoryStore, loadDeviceKey, loadKnownHosts,
@@ -1234,23 +1237,93 @@ canvas.addEventListener('pointerdown', () => menu.classList.remove('open'));
   show();
 }
 
-fullscreenBtn.hidden = !document.documentElement.requestFullscreen;
-fullscreenBtn.addEventListener('click', async () => {
-  try {
-    if (document.fullscreenElement) await document.exitFullscreen();
-    else await document.documentElement.requestFullscreen();
-  } catch (e) {}
-  canvas.focus();
-});
-document.addEventListener('fullscreenchange', () => {
-  const on = !!document.fullscreenElement;
-  fullscreenBtn.textContent = on ? 'Exit full screen' : 'Full screen';
-  // In full screen, Chromium can hand us keys the browser normally keeps
-  // (Esc, and on Windows/Linux the system shortcuts) so they reach the Mac.
-  if (navigator.keyboard && navigator.keyboard.lock) {
-    if (on) navigator.keyboard.lock().catch(() => {}); else navigator.keyboard.unlock();
+// Full screen (fullscreen.js): a toggle where the browser allows it, plus
+// "Start in full screen"; on iPhone, how to add the page to the Home Screen.
+{
+  const fs = fullscreenApi(document);
+  const standalone = isStandalone(window);
+  const mode = fullscreenMode({ api: fs, standalone });
+  const startBtn = document.getElementById('startFsBtn');
+  const hint = document.getElementById('fsHint');
+  let startOn = loadStartFullscreen(safeStorage());
+  let autoUsed = false;
+  let autoPointer = null;
+  let hintTimer = null;
+
+  const show = () => {
+    const on = !!(fs && fs.active());
+    fullscreenBtn.textContent = mode === 'homescreen' ? 'Full screen…' : (on ? 'Exit full screen' : 'Full screen');
+    startBtn.textContent = `Start in full screen: ${startOn ? 'on' : 'off'}`;
+  };
+  const enter = async () => { try { await fs.enter(); } catch (e) { /* refused */ } canvas.focus(); };
+  const showHint = () => {
+    hint.classList.add('show');
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => hint.classList.remove('show'), 12000);
+  };
+
+  fullscreenBtn.hidden = mode === 'none';
+  startBtn.hidden = mode !== 'toggle' || standalone;
+  fullscreenBtn.addEventListener('click', async () => {
+    if (mode === 'homescreen') { showHint(); return; }
+    try { if (fs.active()) await fs.exit(); else await fs.enter(); } catch (e) { /* refused */ }
+    canvas.focus();
+  });
+  startBtn.addEventListener('click', () => {
+    startOn = !startOn;
+    saveStartFullscreen(safeStorage(), startOn);
+    show();
+  });
+  hint.addEventListener('click', () => hint.classList.remove('show'));
+
+  for (const type of (fs ? fs.events : [])) {
+    document.addEventListener(type, () => {
+      show();
+      // In full screen, Chromium can hand us keys the browser normally keeps
+      // (Esc, and on Windows/Linux the system shortcuts) so they reach the Mac.
+      if (navigator.keyboard && navigator.keyboard.lock) {
+        if (fs.active()) navigator.keyboard.lock().catch(() => {}); else navigator.keyboard.unlock();
+      }
+    });
   }
-});
+
+  // "Start in full screen": the first click or tap on the screen enters full
+  // screen and is kept from the Mac (down, moves and up), so the Mac doesn't
+  // get a click or a drag while the page changes size under the pointer.
+  // Browsers allow the request on a mouse press but, for a touch or a pen,
+  // only on the release (a touch could still turn into a scroll), so a mouse
+  // asks on the press and the others on the release.
+  // Capture phase on window, so this runs before the canvas handlers.
+  let autoAskOnRelease = false;
+  window.addEventListener('pointerdown', (e) => {
+    if (e.target !== canvas || !e.isPrimary || autoPointer !== null) return;
+    if (!shouldAutoEnter({ pref: startOn, api: fs, standalone, used: autoUsed })) return;
+    autoUsed = true;
+    autoPointer = e.pointerId;
+    autoAskOnRelease = e.pointerType !== 'mouse';
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (!autoAskOnRelease) enter();
+  }, true);
+  window.addEventListener('pointermove', (e) => {
+    if (e.pointerId === autoPointer) e.stopImmediatePropagation();
+  }, true);
+  window.addEventListener('pointerup', (e) => {
+    if (e.pointerId !== autoPointer) return;
+    autoPointer = null;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    if (autoAskOnRelease) enter();
+  }, true);
+  window.addEventListener('pointercancel', (e) => {
+    if (e.pointerId !== autoPointer) return;
+    autoPointer = null;
+    autoUsed = false; // the browser took the touch (a scroll or a gesture): the next tap tries again
+    e.stopImmediatePropagation();
+  }, true);
+
+  show();
+}
 
 const audio = new AudioPlayer();
 const SOUND_KEY = 'clamshell.sound';
