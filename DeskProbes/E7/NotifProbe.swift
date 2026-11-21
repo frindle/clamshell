@@ -37,6 +37,11 @@ let marker = "E7 probe"
 let dbPath = home.appendingPathComponent("Library/Group Containers/group.com.apple.usernoted/db2/db").path
 var db: OpaquePointer?
 var lastRec: Int64 = -1
+// rec_id is a plain rowid, so clearing history lets new rows reuse ids below lastRec.
+// The delivery time is the second watermark; seenKeys stops a row being logged twice.
+var lastDate: Double = 0
+var seenKeys: Set<String> = []
+var dateCol = "NULL"
 var recordCols: Set<String> = []
 var seen = 0
 
@@ -69,9 +74,12 @@ func openStore() -> Bool {
   say("store: open (Full Disk Access works). tables=\(tables.joined(separator: ","))")
   _ = rows("PRAGMA table_info(record)") { recordCols.insert(text($0, 1)) }
   say("store: record columns=\(recordCols.sorted().joined(separator: ","))")
+  dateCol = recordCols.contains("delivered_date") ? "delivered_date" : (recordCols.contains("request_date") ? "request_date" : "NULL")
   var count: Int64 = 0
-  _ = rows("SELECT count(*), coalesce(max(rec_id), 0) FROM record") { count = sqlite3_column_int64($0, 0); lastRec = sqlite3_column_int64($0, 1) }
-  say("store: \(count) rows; watching for rec_id > \(lastRec)")
+  _ = rows("SELECT count(*), coalesce(max(rec_id), 0), coalesce(max(\(dateCol)), 0) FROM record") {
+    count = sqlite3_column_int64($0, 0); lastRec = sqlite3_column_int64($0, 1); lastDate = sqlite3_column_double($0, 2)
+  }
+  say("store: \(count) rows; watching for rec_id > \(lastRec) or \(dateCol) > \(lastDate)")
   return true
 }
 
@@ -84,8 +92,8 @@ func appID(_ id: Int64) -> String {
 func pollStore() {
   guard openStore(), recordCols.contains("rec_id"), recordCols.contains("data") else { return }
   let hasApp = recordCols.contains("app_id")
-  let dateCol = recordCols.contains("delivered_date") ? "delivered_date" : (recordCols.contains("request_date") ? "request_date" : "NULL")
-  let sql = "SELECT rec_id, \(hasApp ? "app_id" : "0"), \(dateCol), data FROM record WHERE rec_id > ? ORDER BY rec_id"
+  let byDate = dateCol == "NULL" ? "" : " OR \(dateCol) > \(lastDate)"
+  let sql = "SELECT rec_id, \(hasApp ? "app_id" : "0"), \(dateCol), data FROM record WHERE rec_id > ?\(byDate) ORDER BY rec_id"
   var fresh: [(Int64, Int64, Double?, Data)] = []
   _ = rows(sql, [lastRec]) { s in
     let date: Double? = sqlite3_column_type(s, 2) == SQLITE_NULL ? nil : sqlite3_column_double(s, 2)
@@ -96,6 +104,8 @@ func pollStore() {
   let now = Date().timeIntervalSinceReferenceDate
   for (rec, app, date, blob) in fresh {
     lastRec = max(lastRec, rec)
+    if let d = date { lastDate = max(lastDate, d) }
+    guard seenKeys.insert("\(rec)@\(date ?? 0)").inserted else { continue }
     seen += 1
     let lag = date.map { String(format: "%.2fs", now - $0) } ?? "n/a"
     guard let top = try? PropertyListSerialization.propertyList(from: blob, format: nil) as? [String: Any] else {
