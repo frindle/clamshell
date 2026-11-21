@@ -35,24 +35,53 @@ struct KeychainIntegrityKeyStore: IntegrityKeyStore {
     /// One item per state directory, so a host run on a scratch directory (the
     /// interop test) never shares or replaces the key of the real one.
     let account: String
+    /// The item this build made for itself, and the hand-off a previous build
+    /// left for it (see `TrustBridge`). Nil for a build with no code hash.
+    private let buildAccount: String?
+    private let directory: URL
+    private let cdhash: String?
     private let quietRead = BoundedRead()
     /// Longest a read that must not show anything may hold its caller.
     static let quietReadTimeout: TimeInterval = 2
 
-    init(directory: URL) {
+    init(directory: URL, cdhash: String? = TrustBridge.ownCdhash) {
         let path = directory.resolvingSymlinksInPath().standardizedFileURL.path
         let digest = SHA256.hash(data: Data(path.utf8))
         account = "mac-key-" + Hex.encode(Data(digest).prefix(8))
+        self.directory = directory
+        self.cdhash = cdhash
+        buildAccount = cdhash.map { account + "-" + String($0.prefix(16)) }
     }
 
-    private var baseQuery: [String: Any] {
+    private func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: Self.service,
          kSecAttrAccount as String: account]
     }
 
     func readKey(allowPrompt: Bool) throws -> Data? {
-        var query = baseQuery
+        guard let buildAccount, let cdhash else { return try read(account, allowPrompt: allowPrompt) }
+        return try IntegrityKeyResolver(
+            readBuild: { try read(buildAccount, allowPrompt: allowPrompt) },
+            takeBridge: {
+                switch TrustBridge.take(directory: directory, ownCdhash: cdhash) {
+                case .key(let k):
+                    clog("INTEGRITY: took the integrity key handed over by the previous build")
+                    return k
+                case .rejected(let why):
+                    clog("INTEGRITY: ignored the update hand-off (\(why))")
+                    return nil
+                case .none: return nil
+                }
+            },
+            readLegacy: { try read(account, allowPrompt: allowPrompt) },
+            storeBuild: { key in
+                do { _ = try add(key, account: buildAccount) } catch { clog("INTEGRITY: cannot keep the key for this build (\(error))") }
+            }).resolve()
+    }
+
+    private func read(_ account: String, allowPrompt: Bool) throws -> Data? {
+        var query = query(account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         // Never show a dialog from a background process: fail instead.
@@ -74,14 +103,20 @@ struct KeychainIntegrityKeyStore: IntegrityKeyStore {
     }
 
     func deleteKey() throws {
-        let status = SecItemDelete(baseQuery as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainStatusError(status: status)
+        for name in [account, buildAccount].compactMap({ $0 }) {
+            let status = SecItemDelete(query(name) as CFDictionary)
+            guard status == errSecSuccess || status == errSecItemNotFound else {
+                throw KeychainStatusError(status: status)
+            }
         }
     }
 
     func addKey(_ key: Data) throws -> Bool {
-        var query = baseQuery
+        try add(key, account: buildAccount ?? account)
+    }
+
+    private func add(_ key: Data, account: String) throws -> Bool {
+        var query = query(account)
         query[kSecValueData as String] = key
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         query[kSecAttrLabel as String] = "Clamshell trust store integrity key"
@@ -113,8 +148,18 @@ final class TrustIntegrity {
     /// that did not have MACs.
     private(set) var createdThisRun = false
 
-    init(keys: IntegrityKeyStore) {
+    /// After a read that could not be answered, further reads wait this long
+    /// instead of holding every new connection for the quiet-read timeout. A
+    /// Mac that needs its Keychain approved is answered at once, "host needs
+    /// Keychain approval", until someone does.
+    static let unavailableRetryInterval: TimeInterval = 30
+    private let now: () -> Date
+    private var unavailableSince: Date?
+    private var loggedNeedsApproval = false
+
+    init(keys: IntegrityKeyStore, now: @escaping () -> Date = Date.init) {
         self.keys = keys
+        self.now = now
     }
 
     /// The host's real integrity, backed by the keychain.
@@ -130,17 +175,27 @@ final class TrustIntegrity {
 
     private func lookupLocked() -> Lookup {
         if let cached { return .key(cached) }
+        if let since = unavailableSince, now().timeIntervalSince(since) < Self.unavailableRetryInterval,
+           now() >= since {
+            return .unavailable
+        }
         do {
-            guard let data = try keys.readKey(allowPrompt: false) else { return .missing }
+            guard let data = try keys.readKey(allowPrompt: false) else { unavailableSince = nil; return .missing }
             guard data.count == 32 else {
                 clog("INTEGRITY: the keychain item has an unexpected size — treating it as unavailable")
                 return .unavailable
             }
             let key = SymmetricKey(data: data)
             cached = key
+            unavailableSince = nil
+            loggedNeedsApproval = false
             return .key(key)
         } catch {
-            clog("INTEGRITY: cannot read the integrity key (\(error))")
+            unavailableSince = now()
+            if !loggedNeedsApproval {
+                loggedNeedsApproval = true
+                clog("INTEGRITY: the host needs Keychain approval (cannot read the integrity key: \(error)); clients are told so until it is approved from the menu bar")
+            }
             return .unavailable
         }
     }
@@ -215,6 +270,8 @@ final class TrustIntegrity {
             guard let data = try keys.readKey(allowPrompt: true), data.count == 32 else { return false }
             lock.lock()
             cached = SymmetricKey(data: data)
+            unavailableSince = nil
+            loggedNeedsApproval = false
             lock.unlock()
             return true
         } catch {
@@ -233,6 +290,7 @@ final class TrustIntegrity {
         lock.lock()
         defer { lock.unlock() }
         cached = nil
+        unavailableSince = nil
         do {
             try keys.deleteKey()
         } catch {

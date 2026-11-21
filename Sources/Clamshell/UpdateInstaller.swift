@@ -182,6 +182,7 @@ enum UpdateInstaller {
         let oldPID = mode == .cli ? (SafeUpdateOps.pids(ofApp: dest).first ?? 0) : getpid()
         SafeUpdateOps.writePending(SafeUpdate.Pending(startedAt: Date(), from: from, to: to,
                                                       oldPID: oldPID, installedApp: dest))
+        TrustBridge.handOff(toApp: dest, directory: stateDir)
         SafeUpdateOps.startHealthWatcher(installed: dest, previous: previous)
 
         switch mode {

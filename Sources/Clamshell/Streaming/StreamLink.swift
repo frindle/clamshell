@@ -314,6 +314,13 @@ final class StreamGate {
             return
         }
 
+        if auth.integrityKeyUnavailable {
+            // Nothing can be checked until someone approves the Keychain on
+            // this Mac: say so, instead of leaving the client to time out.
+            finish(link, .busy, why: "\(who) asked while the host needs Keychain approval", busyReason: .keychain)
+            return
+        }
+
         guard auth.requireApproval else {
             auth.store.noteConnected(id: device.id, name: device.name, address: link.address,
                                      reported: link.reported)
