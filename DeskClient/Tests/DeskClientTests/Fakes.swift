@@ -162,8 +162,10 @@ final class FakeHost: DeskLinkFactory {
     func sendAppList() { deliver(.appList(apps)) }
 
     func replay() {
+        // Take the list first: the operator may answer the app list by launching an app, which adds a window.
+        let open = windows
         sendAppList()
-        for w in windows { announce(w) }
+        for w in open { announce(w) }
     }
 
     func announce(_ w: HostWindow) {
