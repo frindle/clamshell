@@ -229,6 +229,9 @@ const CONNECT_TIMEOUT_MS = 10000;
 // The device key and the saved Macs live in this browser's IndexedDB (auth.js).
 // Without IndexedDB they last only as long as the page.
 let identityPromise = null;
+// The message about an unreadable saved copy, while it is on screen. Nothing
+// else hid it, so it stayed through every reconnect on the same page.
+let knownHostsBanner = null;
 function loadIdentity() {
   if (!identityPromise) {
     identityPromise = (async () => {
@@ -240,7 +243,10 @@ function loadIdentity() {
       const deviceKey = await loadDeviceKey(store);
       const { known, damaged, why } = await loadKnownHosts(store);
       // `why` says which check failed (never an address), so a screenshot is enough to diagnose it.
-      if (damaged) showBanner(errBanner, `The saved Macs could not be read (${why}). Each will be checked again as if new.`);
+      if (damaged) {
+        knownHostsBanner = `The saved Macs could not be read (${why}). Each will be checked again as if new.`;
+        showBanner(errBanner, knownHostsBanner);
+      }
       return { store, deviceKey, known };
     })().catch((e) => { identityPromise = null; throw e; });
   }
@@ -379,7 +385,12 @@ function resetSessionState() {
 let saving = Promise.resolve();
 function applyKnownChange(conn, change) {
   conn.known.apply(change, Math.floor(Date.now() / 1000));
-  saving = saving.then(() => saveKnownHosts(conn.id.store, conn.known)).catch(() => {
+  saving = saving.then(() => saveKnownHosts(conn.id.store, conn.known)).then(() => {
+    // The saved copy was just rewritten from what could be read: the message
+    // about the old one no longer applies.
+    if (knownHostsBanner && errBanner.textContent === knownHostsBanner) errBanner.classList.remove('show');
+    knownHostsBanner = null;
+  }).catch(() => {
     showBanner(errBanner, 'This browser could not save the Mac it just checked. It will ask again next time.');
   });
 }
