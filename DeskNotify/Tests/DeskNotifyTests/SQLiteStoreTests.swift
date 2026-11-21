@@ -34,7 +34,12 @@ final class SQLiteStoreTests: XCTestCase {
         let row = try store.fetch(afterRec: 1, afterDate: 1000)[0]
         XCTAssertEqual(row.appIdentifier, Fix.mail)
         XCTAssertEqual(row.date, 110)
-        XCTAssertEqual(row.data, Fix.payload(app: Fix.mail, title: "Second", subtitle: "Sub", body: "Two", thread: "t"))
+        // Plist key order is not stable, so compare what the payload says.
+        let rec = RecordDecoder.decode(row)
+        XCTAssertEqual(rec?.title, "Second")
+        XCTAssertEqual(rec?.subtitle, "Sub")
+        XCTAssertEqual(rec?.body, "Two")
+        XCTAssertEqual(rec?.thread, "t")
     }
 
     func testReaderOverRealTables() throws {
