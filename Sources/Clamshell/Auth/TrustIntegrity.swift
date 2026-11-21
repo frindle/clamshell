@@ -35,6 +35,9 @@ struct KeychainIntegrityKeyStore: IntegrityKeyStore {
     /// One item per state directory, so a host run on a scratch directory (the
     /// interop test) never shares or replaces the key of the real one.
     let account: String
+    private let quietRead = BoundedRead()
+    /// Longest a read that must not show anything may hold its caller.
+    static let quietReadTimeout: TimeInterval = 2
 
     init(directory: URL) {
         let path = directory.resolvingSymlinksInPath().standardizedFileURL.path
@@ -54,13 +57,20 @@ struct KeychainIntegrityKeyStore: IntegrityKeyStore {
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         // Never show a dialog from a background process: fail instead.
         if !allowPrompt { query[kSecUseAuthenticationUI as String] = kSecUseAuthenticationUIFail }
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &out)
-        switch status {
-        case errSecSuccess: return out as? Data
-        case errSecItemNotFound: return nil
-        default: throw KeychainStatusError(status: status)
+        func copy() throws -> Data? {
+            var out: CFTypeRef?
+            let status = SecItemCopyMatching(query as CFDictionary, &out)
+            switch status {
+            case errSecSuccess: return out as? Data
+            case errSecItemNotFound: return nil
+            default: throw KeychainStatusError(status: status)
+            }
         }
+        if allowPrompt { return try copy() }
+        // The login keychain can still raise its dialog for a read marked
+        // "fail instead", and the call then waits for an answer. A quiet read
+        // is therefore bounded, so launch can never hang on it.
+        return try quietRead.run(timeout: Self.quietReadTimeout, copy)
     }
 
     func deleteKey() throws {
@@ -118,10 +128,10 @@ final class TrustIntegrity {
         return lookupLocked()
     }
 
-    private func lookupLocked(allowPrompt: Bool = false) -> Lookup {
+    private func lookupLocked() -> Lookup {
         if let cached { return .key(cached) }
         do {
-            guard let data = try keys.readKey(allowPrompt: allowPrompt) else { return .missing }
+            guard let data = try keys.readKey(allowPrompt: false) else { return .missing }
             guard data.count == 32 else {
                 clog("INTEGRITY: the keychain item has an unexpected size — treating it as unavailable")
                 return .unavailable
@@ -196,9 +206,21 @@ final class TrustIntegrity {
     /// ask for a password. True when the key could be read afterwards.
     func retryWithPrompt() -> Bool {
         lock.lock()
-        defer { lock.unlock() }
-        if case .key = lookupLocked(allowPrompt: true) { return true }
-        return false
+        let have = cached != nil
+        lock.unlock()
+        if have { return true }
+        // Not under the lock: the dialog can stay up for as long as the user
+        // likes, and everything else that needs the key must not wait on it.
+        do {
+            guard let data = try keys.readKey(allowPrompt: true), data.count == 32 else { return false }
+            lock.lock()
+            cached = SymmetricKey(data: data)
+            lock.unlock()
+            return true
+        } catch {
+            clog("INTEGRITY: cannot read the integrity key (\(error))")
+            return false
+        }
     }
 
     /// Throws the old key away and makes a new one. Everything signed with the

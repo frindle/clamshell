@@ -126,6 +126,48 @@ enum SafeUpdateOps {
         _ = capture("/usr/bin/open", ["-n", appPath])
     }
 
+    /// For a rollback: every Clamshell process from `appPath` goes away
+    /// (SIGTERM, up to 5 s, then SIGKILL) whether or not the launch agent
+    /// manages it. Returns the PIDs that were there.
+    @discardableResult
+    static func endAllInstances(appPath: String) -> [Int32] {
+        let old = pids(ofApp: appPath)
+        for pid in old { kill(pid, SIGTERM) }
+        let start = Date()
+        while true {
+            let alive = old.filter(processExists)
+            switch RollbackRestart.nextStep(alive: alive, elapsed: Date().timeIntervalSince(start)) {
+            case .done:
+                return old
+            case .wait:
+                Thread.sleep(forTimeInterval: 0.2)
+            case .kill(let stuck):
+                clog("update: \(stuck.count) process(es) ignored SIGTERM — sending SIGKILL")
+                for pid in stuck { kill(pid, SIGKILL) }
+                Thread.sleep(forTimeInterval: 0.5)
+                return old
+            }
+        }
+    }
+
+    /// Rollback relaunch: end every old process, start the installed app and
+    /// check that a different process is running. True when it is.
+    @discardableResult
+    static func restartAfterRollback(appPath: String) -> Bool {
+        let old = endAllInstances(appPath: appPath)
+        restart(appPath: appPath, killOthers: false)
+        let deadline = Date().addingTimeInterval(15)
+        while Date() < deadline {
+            if RollbackRestart.relaunched(before: old, now: pids(ofApp: appPath)) {
+                clog("update: rollback relaunched the installed app")
+                return true
+            }
+            Thread.sleep(forTimeInterval: 0.5)
+        }
+        clog("update: rollback could not confirm a new process (old: \(old.count))")
+        return false
+    }
+
     static func signatureValid(_ app: String) -> Bool {
         capture("/usr/bin/codesign", ["--verify", "--deep", "--strict", app]).status == 0
     }
@@ -226,8 +268,8 @@ enum SafeUpdateOps {
         }
         writeRecord(from: from, to: to, result: "manual-rollback")
         clearPending()
-        restart(appPath: installed, killOthers: true)
-        out("Rolled back from \(from) to \(to) and restarted.")
+        let up = restartAfterRollback(appPath: installed)
+        out("Rolled back from \(from) to \(to)" + (up ? " and restarted." : "; the restart could not be confirmed."))
         return 0
     }
 
@@ -258,7 +300,7 @@ enum SafeUpdateOps {
                     try rollbackSwap(installed: app, previous: previous)
                     writeRecord(from: pending.from, to: pending.to, result: "rolled-back", reason: reason)
                     clearPending()
-                    restart(appPath: app, killOthers: true)
+                    restartAfterRollback(appPath: app)
                     return 0
                 } catch {
                     writeRecord(from: pending.from, to: pending.to, result: "failed",
