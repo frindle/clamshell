@@ -215,6 +215,8 @@ public struct HostModel {
         }
         windows.removeAll()
         registry = WindowRegistry()
+        // appId is stable only for one connection, so the old list must not name apps on the next one.
+        apps.removeAll()
         ghosts.append(contentsOf: frozen)
         return (frozen, dropped)
     }

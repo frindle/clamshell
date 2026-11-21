@@ -113,6 +113,8 @@ final class FakeHost: DeskLinkFactory {
     /// Seconds before the host answers a resize request. Nil: it never answers.
     var resizeLatency: Double? = 0.1
     var minSize = (width: Float(0), height: Float(0))
+    /// Replay the open windows ahead of the app list, which the protocol allows.
+    var windowsBeforeAppList = false
 
     var apps: [AppInfo] = []
     var windows: [HostWindow] = []
@@ -164,6 +166,11 @@ final class FakeHost: DeskLinkFactory {
     func sendAppList() { deliver(.appList(apps)) }
 
     func replay(_ open: [HostWindow]) {
+        if windowsBeforeAppList {
+            for w in open { announce(w) }
+            sendAppList()
+            return
+        }
         sendAppList()
         for w in open { announce(w) }
     }

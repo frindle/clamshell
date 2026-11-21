@@ -34,6 +34,37 @@ final class ReconnectTests: XCTestCase {
         XCTAssertEqual(h.log.closed(), [])
     }
 
+    func testRenumberedAppsAreMatchedByBundleNotByOldAppId() {
+        let viewer = AppInfo(appId: 8, bundleId: "org.example.viewer", name: "Viewer", pid: 322, windowCount: 1, residentMB: 50, running: true)
+        let h = Harness(apps: [editorApp, viewer])
+        h.host.windows = [
+            HostWindow(id: 100, appId: 7, title: "Doc", geometry: geo(0, 0, 400, 300)),
+            HostWindow(id: 101, appId: 8, title: "Doc", geometry: geo(10, 10, 400, 300)),
+        ]
+        h.conn.start()
+        h.advance(0.2)
+        let editorLocal = h.conn.model.localId(forWindowId: 100) ?? 0
+        let viewerLocal = h.conn.model.localId(forWindowId: 101) ?? 0
+        XCTAssertNotEqual(editorLocal, viewerLocal)
+
+        h.host.dropLink()
+        // The host numbers the apps the other way round, and sends the windows before the app list.
+        h.host.apps = [
+            AppInfo(appId: 8, bundleId: "org.example.editor", name: "Editor", pid: 321, windowCount: 1, residentMB: 120, running: true),
+            AppInfo(appId: 7, bundleId: "org.example.viewer", name: "Viewer", pid: 322, windowCount: 1, residentMB: 50, running: true),
+        ]
+        h.host.windows[0].appId = 8
+        h.host.windows[1].appId = 7
+        h.host.windowsBeforeAppList = true
+        h.advance(1)
+        XCTAssertEqual(h.conn.state, .ready)
+        XCTAssertEqual(h.conn.model.window(localId: editorLocal)?.bundleId, "org.example.editor")
+        XCTAssertEqual(h.conn.model.window(localId: viewerLocal)?.bundleId, "org.example.viewer")
+        XCTAssertEqual(h.conn.model.window(localId: editorLocal)?.windowId, 100)
+        XCTAssertEqual(h.conn.model.window(localId: viewerLocal)?.windowId, 101)
+        XCTAssertTrue(h.conn.model.ghosts.isEmpty)
+    }
+
     func testAWindowKeepsItsPlaceWhenTheHostNumbersItDifferently() {
         let h = Harness()
         h.startWithWindow()
