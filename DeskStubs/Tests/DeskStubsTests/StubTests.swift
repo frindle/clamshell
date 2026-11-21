@@ -364,3 +364,118 @@ final class StubDiskTests: XCTestCase {
         XCTAssertThrowsError(try StubWriter.checkClient(dir.appendingPathComponent("missing").path))
     }
 }
+
+final class StubSigningTests: XCTestCase {
+    private func tempRoot() throws -> URL {
+        let u = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("desk-stubs-sign-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: u) }
+        return u
+    }
+
+    /// A stand-in for codesign: logs each call, and on `--force --sign` marks the bundle (its last argument) as sealed.
+    private func fakeCodesign(in dir: URL, failing: Bool = false) throws -> (tool: String, log: URL) {
+        let log = dir.appendingPathComponent("codesign.log")
+        let tool = dir.appendingPathComponent("fake-codesign")
+        let body = failing
+            ? "#!/bin/sh\necho \"$*\" >> \"\(log.path)\"\necho 'no identity found' >&2\nexit 1\n"
+            : "#!/bin/sh\necho \"$*\" >> \"\(log.path)\"\ncase \"$1\" in --force) for last; do :; done; mkdir -p \"$last/Contents/_CodeSignature\" && echo sealed > \"$last/Contents/_CodeSignature/CodeResources\";; esac\nexit 0\n"
+        try body.write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        return (tool.path, log)
+    }
+
+    private let adhoc = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk", signIdentity: "-")
+
+    func testIdentityValidation() {
+        XCTAssertTrue(StubGenerator.isSafeSignIdentity("-"))
+        XCTAssertTrue(StubGenerator.isSafeSignIdentity("Developer ID Application: Someone (ABCDE12345)"))
+        XCTAssertTrue(StubGenerator.isSafeSignIdentity("0123456789ABCDEF0123456789ABCDEF01234567"))
+        for bad in ["", "--entitlements=/tmp/x.plist", "-s", "a\nb", "a\u{7f}", String(repeating: "x", count: 257)] {
+            XCTAssertFalse(StubGenerator.isSafeSignIdentity(bad), bad)
+        }
+        let app = HostedApp(bundleId: "a.one", name: "One", policy: .anywhere)
+        XCTAssertEqual(StubPlanner.plan(apps: [app], existing: [], options: StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk", signIdentity: "--deep")).rejected,
+                       [.badSignIdentity("--deep")])
+    }
+
+    func testIdentityIsPartOfTheDigestButUnsignedDigestsDoNotMove() throws {
+        let app = HostedApp(bundleId: "a.one", name: "One", policy: .anywhere)
+        let plain = try StubGenerator.make(app, options: StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")).get()
+        let signed = try StubGenerator.make(app, options: adhoc).get()
+        let named = try StubGenerator.make(app, options: StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk", signIdentity: "Someone")).get()
+        XCTAssertEqual(plain.signIdentity, nil)
+        XCTAssertEqual(signed.signIdentity, "-")
+        XCTAssertEqual(Set([plain.digest, signed.digest, named.digest]).count, 3)
+        // Before signing existed the digest had exactly these parts; unsigned stubs written then are not rewritten.
+        let legacy = StubGenerator.digest([String(StubFormat.version), "a.one", "One", "1.0", "", "", "/usr/local/bin/desk"].joined(separator: "\u{1F}"))
+        XCTAssertEqual(plain.digest, legacy)
+        // Turning signing on rewrites an unsigned stub.
+        let existing = [ExistingStub(dirName: "One", hostedBundleId: "a.one", digest: plain.digest)]
+        XCTAssertEqual(StubPlanner.plan(apps: [app], existing: existing, options: adhoc).actions.count, 1)
+    }
+
+    func testBundleIsSignedWhileHiddenAndArrivesSealed() throws {
+        let root = try tempRoot()
+        let fake = try fakeCodesign(in: root)
+        let stubs = root.appendingPathComponent("Desk")
+        let app = HostedApp(bundleId: "a.one", name: "One", policy: .anywhere)
+        let plan = StubPlanner.plan(apps: [app], existing: StubWriter.scan(root: stubs), options: adhoc)
+        XCTAssertEqual(try StubWriter.apply(plan, into: stubs, codesign: fake.tool), 1)
+
+        let calls = try String(contentsOf: fake.log, encoding: .utf8).split(separator: "\n").map(String.init)
+        XCTAssertEqual(calls.count, 2, "\(calls)")
+        XCTAssertTrue(calls[0].hasPrefix("--force --sign - --timestamp=none "), calls[0])
+        XCTAssertTrue(calls[1].hasPrefix("--verify --strict "), calls[1])
+        // Both calls name the hidden staging directory, never the visible bundle.
+        for c in calls {
+            let path = String(c.split(separator: " ").last ?? "")
+            XCTAssertTrue(URL(fileURLWithPath: path).lastPathComponent.hasPrefix(".a.one."), path)
+            XCTAssertTrue(path.hasSuffix(".tmp"), path)
+        }
+        let fm = FileManager.default
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: stubs.path), ["One.app"])
+        XCTAssertTrue(fm.fileExists(atPath: stubs.appendingPathComponent("One.app/Contents/_CodeSignature/CodeResources").path))
+        // Signing adds files but does not touch Info.plist, so a second run is empty.
+        XCTAssertEqual(StubPlanner.plan(apps: [app], existing: StubWriter.scan(root: stubs), options: adhoc).actions, [])
+    }
+
+    func testUnsignedSpecNeverRunsTheTool() throws {
+        let root = try tempRoot()
+        let fake = try fakeCodesign(in: root)
+        let spec = try StubGenerator.make(HostedApp(bundleId: "a.one", name: "One", policy: .anywhere),
+                                          options: StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")).get()
+        try StubWriter.write(spec, into: root.appendingPathComponent("Desk"), codesign: fake.tool)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fake.log.path))
+    }
+
+    func testSigningFailureChangesNothingVisible() throws {
+        let root = try tempRoot()
+        let fm = FileManager.default
+        let stubs = root.appendingPathComponent("Desk")
+        let unsigned = StubOptions(thisMac: "op", deskPath: "/usr/local/bin/desk")
+        let old = HostedApp(bundleId: "a.old", name: "Old", policy: .anywhere)
+        try StubWriter.apply(StubPlanner.plan(apps: [old], existing: [], options: unsigned), into: stubs)
+        let before = try String(contentsOf: stubs.appendingPathComponent("Old.app/Contents/Info.plist"), encoding: .utf8)
+
+        // Signing is turned on (Old is replaced) and a new app is added; codesign fails.
+        let fake = try fakeCodesign(in: root, failing: true)
+        let plan = StubPlanner.plan(apps: [old, HostedApp(bundleId: "b.new", name: "New", policy: .anywhere)], existing: StubWriter.scan(root: stubs), options: adhoc)
+        XCTAssertEqual(plan.actions.count, 2)
+        XCTAssertThrowsError(try StubWriter.apply(plan, into: stubs, codesign: fake.tool)) { e in
+            guard case .signFailed(let msg)? = e as? StubWriteError else { return XCTFail("\(e)") }
+            XCTAssertTrue(msg.contains("no identity found"), msg)
+        }
+        XCTAssertEqual(try fm.contentsOfDirectory(atPath: stubs.path), ["Old.app"], "old stub kept, nothing new, no temp left")
+        XCTAssertEqual(try String(contentsOf: stubs.appendingPathComponent("Old.app/Contents/Info.plist"), encoding: .utf8), before)
+    }
+
+    func testMissingToolIsASignFailure() throws {
+        let root = try tempRoot()
+        let spec = try StubGenerator.make(HostedApp(bundleId: "a.one", name: "One", policy: .anywhere), options: adhoc).get()
+        XCTAssertThrowsError(try StubWriter.write(spec, into: root, codesign: root.appendingPathComponent("nope").path)) { e in
+            guard case .signFailed? = e as? StubWriteError else { return XCTFail("\(e)") }
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), [])
+    }
+}

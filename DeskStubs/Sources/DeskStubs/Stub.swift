@@ -27,7 +27,12 @@ public struct StubOptions: Equatable {
     /// Path of the Desk client the stub hands over to.
     /// No default: a default in a shared binaries folder that admin tools can write would let any of them redirect every stub.
     public var deskPath: String
-    public init(thisMac: String, deskPath: String) { self.thisMac = thisMac; self.deskPath = deskPath }
+    /// `codesign` identity the bundles are signed with ("-" is ad hoc); nil leaves them unsigned. Part of the digest,
+    /// so changing it rewrites (and re-signs) every stub.
+    public var signIdentity: String?
+    public init(thisMac: String, deskPath: String, signIdentity: String? = nil) {
+        self.thisMac = thisMac; self.deskPath = deskPath; self.signIdentity = signIdentity
+    }
 }
 
 /// A file in the bundle. `text` files are written as given; `copy` files are copied from `source`.
@@ -45,12 +50,15 @@ public struct StubSpec: Equatable {
     public var dirName: String
     public var digest: String
     public var files: [BundleFile]
+    /// Sign the staged bundle with this identity before it is put in place; nil means unsigned.
+    public var signIdentity: String? = nil
 }
 
 public enum StubRejection: Error, Equatable {
     case badBundleId(String)
     case emptyName(String)
     case badDeskPath(String)
+    case badSignIdentity(String)
 }
 
 public enum StubFormat {
@@ -164,6 +172,14 @@ public enum StubGenerator {
         return !p.unicodeScalars.contains { $0.value < 32 || $0.value == 127 || "\"$`\\!}".unicodeScalars.contains($0) }
     }
 
+    /// "-" (ad hoc), or a certificate name or hash. It goes to `codesign` as its own argument, never through a shell;
+    /// it must not look like an option, and has no control characters.
+    public static func isSafeSignIdentity(_ s: String) -> Bool {
+        if s == "-" { return true }
+        guard !s.isEmpty, !s.hasPrefix("-"), s.utf8.count <= 256 else { return false }
+        return !s.unicodeScalars.contains { $0.value < 32 || $0.value == 127 }
+    }
+
     /// The program the Dock launches. It hands over to the Desk client, which owns the app's remote windows.
     /// Both inputs were validated by `make`.
     ///
@@ -178,11 +194,14 @@ public enum StubGenerator {
     public static func make(_ app: HostedApp, options: StubOptions, dirName: String? = nil) -> Result<StubSpec, StubRejection> {
         guard isSafeBundleId(app.bundleId) else { return .failure(.badBundleId(app.bundleId)) }
         guard isSafeDeskPath(options.deskPath) else { return .failure(.badDeskPath(options.deskPath)) }
+        if let id = options.signIdentity, !isSafeSignIdentity(id) { return .failure(.badSignIdentity(id)) }
         let name = dirName ?? sanitizeName(app.name)
         guard !name.isEmpty else { return .failure(.emptyName(app.bundleId)) }
         let iconFile = app.iconPath == nil ? nil : "AppIcon.icns"
         let script = launcherScript(hostedBundleId: app.bundleId, deskPath: options.deskPath)
-        let digest = digest([String(StubFormat.version), app.bundleId, name, app.version, app.iconPath ?? "", app.iconDigest ?? "", options.deskPath].joined(separator: "\u{1F}"))
+        // The identity is only added when set, so unsigned stubs keep the digests they had before signing existed.
+        let signPart = options.signIdentity.map { ["sign:" + $0] } ?? []
+        let digest = digest(([String(StubFormat.version), app.bundleId, name, app.version, app.iconPath ?? "", app.iconDigest ?? "", options.deskPath] + signPart).joined(separator: "\u{1F}"))
         var files = [
             BundleFile(path: "Contents/Info.plist", content: .text(infoPlist(app, dirName: name, iconFile: iconFile, digest: digest)), executable: false),
             BundleFile(path: "Contents/MacOS/" + executableName, content: .text(script), executable: true),
@@ -190,6 +209,6 @@ public enum StubGenerator {
         if let icon = app.iconPath {
             files.append(BundleFile(path: "Contents/Resources/AppIcon.icns", content: .copy(source: icon), executable: false))
         }
-        return .success(StubSpec(hostedBundleId: app.bundleId, stubBundleId: stubBundleId(for: app.bundleId), dirName: name, digest: digest, files: files))
+        return .success(StubSpec(hostedBundleId: app.bundleId, stubBundleId: stubBundleId(for: app.bundleId), dirName: name, digest: digest, files: files, signIdentity: options.signIdentity))
     }
 }

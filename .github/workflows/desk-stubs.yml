@@ -21,7 +21,8 @@ jobs:
       - name: Test
         working-directory: DeskStubs
         run: swift test
-  # Real bundles: generate, lint the plist, sign ad hoc, verify, and run the launcher against a fake client.
+  # Real bundles: generate (the generator signs them ad hoc), lint the plist, check the signature, and run the
+  # launcher against a fake client.
   macos:
     name: DeskStubs (macOS, real bundles)
     runs-on: macos-15
@@ -54,14 +55,33 @@ jobs:
           # A second run changes nothing.
           .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk" --mac this-mac --desk "$RUNNER_TEMP/bin/desk" --dry-run "$RUNNER_TEMP/apps.json" | tee "$RUNNER_TEMP/second.txt"
           test ! -s "$RUNNER_TEMP/second.txt"
-      - name: Lint plists, sign, verify
+      - name: Lint plists, check signatures
+        working-directory: DeskStubs
         run: |
+          # The generator signed every bundle before putting it in place; nothing is signed by hand here.
           for app in "$RUNNER_TEMP"/Desk/*.app; do
             plutil -lint "$app/Contents/Info.plist"
             sh -n "$app/Contents/MacOS/desk-stub"
-            codesign --force --sign - "$app"
             codesign --verify --strict --verbose=2 "$app"
+            codesign -dv "$app" 2>&1 | tee "$RUNNER_TEMP/sig.txt"
+            grep -q 'Signature=adhoc' "$RUNNER_TEMP/sig.txt"
+            grep -q 'Identifier=local.desk.stub.' "$RUNNER_TEMP/sig.txt"
           done
+          # No staging directory is left next to the stubs.
+          test -z "$(ls -A "$RUNNER_TEMP/Desk" | grep -v '\.app$')"
+          # --no-sign writes unsigned bundles; switching back to signing rewrites them signed.
+          .build/release/desk-stubgen --out "$RUNNER_TEMP/Unsigned" --mac this-mac --desk "$RUNNER_TEMP/bin/desk" --no-sign "$RUNNER_TEMP/apps.json"
+          if codesign --verify "$RUNNER_TEMP/Unsigned/Heavy App.app" 2>/dev/null; then echo "--no-sign bundle is signed"; exit 1; fi
+          .build/release/desk-stubgen --out "$RUNNER_TEMP/Unsigned" --mac this-mac --desk "$RUNNER_TEMP/bin/desk" "$RUNNER_TEMP/apps.json" | tee "$RUNNER_TEMP/resign.txt"
+          test -s "$RUNNER_TEMP/resign.txt"
+          codesign --verify --strict "$RUNNER_TEMP/Unsigned/Heavy App.app"
+          # An identity that is not in the keychain fails cleanly and leaves the signed stubs as they were.
+          before=$(ls -A "$RUNNER_TEMP/Desk")
+          if .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk" --mac this-mac --desk "$RUNNER_TEMP/bin/desk" --sign "No Such Identity" "$RUNNER_TEMP/apps.json"; then echo "unknown identity accepted"; exit 1; fi
+          test "$(ls -A "$RUNNER_TEMP/Desk")" = "$before"
+          codesign --verify --strict "$RUNNER_TEMP/Desk/Heavy App.app"
+          # An identity that reads as an option is refused before anything runs.
+          if .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk" --mac this-mac --desk "$RUNNER_TEMP/bin/desk" --sign "--deep" "$RUNNER_TEMP/apps.json"; then echo "option-like identity accepted"; exit 1; fi
           # The icon is a real icns the system can read.
           sips -g format "$RUNNER_TEMP/Desk/Heavy App.app/Contents/Resources/AppIcon.icns"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$RUNNER_TEMP/Desk/Heavy App.app/Contents/Info.plist")" = "local.desk.stub.org.example.heavy"
@@ -72,5 +92,6 @@ jobs:
           chmod +x "$RUNNER_TEMP/fake-desk"
           # The client path is fixed at generation time; there is no environment override.
           .build/release/desk-stubgen --out "$RUNNER_TEMP/Desk2" --mac this-mac --desk "$RUNNER_TEMP/fake-desk" "$RUNNER_TEMP/apps.json"
+          codesign --verify --strict "$RUNNER_TEMP/Desk2/Heavy App.app"
           "$RUNNER_TEMP/Desk2/Heavy App.app/Contents/MacOS/desk-stub" extra
           test "$(cat "$RUNNER_TEMP/fake-desk.out")" = "stub-run --bundle-id org.example.heavy extra"
