@@ -23,7 +23,8 @@ jobs:
       - name: Smoke run
         run: |
           rm -f ~/Library/Logs/NotifProbe/probe.log
-          timeout 30 "$RUNNER_TEMP/e7/NotifProbe.app/Contents/MacOS/NotifProbe" 3
+          # macOS has no timeout(1); perl alarm kills it if it hangs.
+          perl -e 'alarm 30; exec @ARGV' "$RUNNER_TEMP/e7/NotifProbe.app/Contents/MacOS/NotifProbe" 3
           cat ~/Library/Logs/NotifProbe/probe.log
           grep -q ' start: run 3s' ~/Library/Logs/NotifProbe/probe.log
           grep -q ' end: notifications=' ~/Library/Logs/NotifProbe/probe.log
