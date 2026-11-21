@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Desk Tab Send",
+  "version": "0.1.0",
+  "description": "Send this tab to the same browser on another Mac, or bring a tab here, through the local Desk placer.",
+  "permissions": ["activeTab", "scripting", "storage", "contextMenus", "alarms"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {
+    "service_worker": "src/background.js",
+    "scripts": ["src/core.js", "src/controller.js", "src/background.js"]
+  },
+  "action": { "default_title": "Send this tab to the other Mac" },
+  "options_ui": { "page": "options.html", "open_in_tab": false },
+  "browser_specific_settings": {
+    "gecko": { "id": "desk-tab-send@clamshell.local", "strict_min_version": "128.0" }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "desk-tab-send",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tab-send extension for Firefox and Brave (Chromium). No dependencies.",
+  "scripts": {
+    "test": "node --test tests/*.test.js"
+  }
+}
