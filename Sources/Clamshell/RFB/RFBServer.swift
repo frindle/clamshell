@@ -199,7 +199,7 @@ final class RFBServer {
 
 /// One client, on its own thread.
 final class RFBSession {
-    private unowned let server: RFBServer
+    private let server: RFBServer
     private let fd: Int32
     private let peer: String
     private let writeLock = NSLock()
