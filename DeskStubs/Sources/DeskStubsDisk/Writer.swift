@@ -9,11 +9,17 @@ public enum StubWriteError: Error, Equatable {
     case planHasRejections
     /// The Desk client path is missing, or it or a folder above it can be changed by someone other than its owner.
     case unsafeClient(String)
+    /// `codesign` could not be started, or failed to sign or verify the staged bundle. Nothing visible was changed.
+    case signFailed(String)
 }
 
 public enum StubWriter {
+    public static let defaultCodesign = "/usr/bin/codesign"
+
     /// Builds `spec` in a hidden sibling directory of `root` and returns its path. Nothing visible changes.
-    static func stage(_ spec: StubSpec, in root: URL) throws -> URL {
+    /// A spec with a signing identity is signed and verified here, before it can be seen, so a stub in place is
+    /// always signed; a signing failure leaves nothing behind.
+    static func stage(_ spec: StubSpec, in root: URL, codesign: String = defaultCodesign) throws -> URL {
         let fm = FileManager.default
         try fm.createDirectory(at: root, withIntermediateDirectories: true)
         let tmp = root.appendingPathComponent(".\(spec.hostedBundleId).\(UUID().uuidString).tmp")
@@ -31,11 +37,36 @@ public enum StubWriter {
                 }
                 try fm.setAttributes([.posixPermissions: f.executable ? 0o755 : 0o644], ofItemAtPath: dest.path)
             }
+            if let identity = spec.signIdentity { try sign(tmp, identity: identity, tool: codesign) }
         } catch {
             try? fm.removeItem(at: tmp)
             throw error
         }
         return tmp
+    }
+
+    /// Signs the bundle at `bundle`, then checks the signature strictly. No timestamp server is contacted.
+    static func sign(_ bundle: URL, identity: String, tool: String) throws {
+        guard StubGenerator.isSafeSignIdentity(identity) else { throw StubWriteError.signFailed("unsafe identity") }
+        try run(tool, ["--force", "--sign", identity, "--timestamp=none", bundle.path])
+        try run(tool, ["--verify", "--strict", bundle.path])
+    }
+
+    /// Runs `tool` with `args` (no shell) and turns a failure into `signFailed` with the start of its error output.
+    static func run(_ tool: String, _ args: [String]) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        let err = Pipe()
+        p.standardError = err
+        p.standardOutput = FileHandle.nullDevice
+        do { try p.run() } catch { throw StubWriteError.signFailed("\(tool): \(error)") }
+        let data = err.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        guard p.terminationStatus == 0 else {
+            let text = String(decoding: data.prefix(400), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            throw StubWriteError.signFailed("\(args.first ?? tool) exited \(p.terminationStatus): \(text)")
+        }
     }
 
     /// Puts a staged bundle at its final place. An existing stub of ours is swapped (see `swapDirectories`); anything else there is an error.
@@ -70,8 +101,8 @@ public enum StubWriter {
     }
 
     /// Writes `spec` as `<root>/<dirName>.app`; a reader never sees a half-written stub.
-    public static func write(_ spec: StubSpec, into root: URL) throws {
-        let tmp = try stage(spec, in: root)
+    public static func write(_ spec: StubSpec, into root: URL, codesign: String = defaultCodesign) throws {
+        let tmp = try stage(spec, in: root, codesign: codesign)
         do { try install(tmp, spec: spec, into: root) } catch { try? FileManager.default.removeItem(at: tmp); throw error }
     }
 
@@ -145,11 +176,11 @@ public enum StubWriter {
         }
     }
 
-    /// Applies a plan and returns the number of actions applied. Order: check everything, build every new bundle in
-    /// hidden directories, install them, and only then remove old ones. A failure before the install step changes
+    /// Applies a plan and returns the number of actions applied. Order: check everything, build (and sign) every new
+    /// bundle in hidden directories, install them, and only then remove old ones. A failure before the install step changes
     /// nothing visible; during installs, nothing has been deleted yet.
     @discardableResult
-    public static func apply(_ plan: StubPlan, into root: URL) throws -> Int {
+    public static func apply(_ plan: StubPlan, into root: URL, codesign: String = defaultCodesign) throws -> Int {
         guard plan.rejected.isEmpty else { throw StubWriteError.planHasRejections }
         let fm = FileManager.default
         var removals: [String] = []
@@ -165,7 +196,7 @@ public enum StubWriter {
             guard !d.contains("/"), !d.hasPrefix("."), hostedId(of: root.appendingPathComponent(d + ".app")) != nil else { throw StubWriteError.destinationNotOurs(d) }
         }
         var staged: [(StubSpec, URL)] = []
-        do { for s in specs { staged.append((s, try stage(s, in: root))) } }
+        do { for s in specs { staged.append((s, try stage(s, in: root, codesign: codesign))) } }
         catch { for (_, t) in staged { try? fm.removeItem(at: t) }; throw error }
         var installed = 0
         do {
