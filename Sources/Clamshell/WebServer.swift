@@ -1001,7 +1001,7 @@ final class WebServer {
     // MARK: - Parked VNC connections
 
     /// Whether the login session's screen is locked right now.
-    private static func hostLocked() -> Bool {
+    static func hostLocked() -> Bool {
         (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Int == 1
     }
 

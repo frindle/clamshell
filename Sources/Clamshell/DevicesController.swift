@@ -79,6 +79,49 @@ final class DevicesController: NSObject {
         if Self.canNotify { UNUserNotificationCenter.current().delegate = self }
         housekeeping = Self.timer(every: 60) { [weak self] in self?.lookAgain() }
         refresh()
+        startKeyRequests()
+    }
+
+    // MARK: the integrity key without blocking launch
+
+    private let keyQueue = DispatchQueue(label: "clamshell.integrity-key", qos: .utility)
+    private var keyAskInFlight = false
+
+    /// Launch reads the key quietly (bounded, no dialog). When the keychain
+    /// wants the user, device sessions keep being refused (nothing is
+    /// weakened) and the system's dialog is requested here, off the main
+    /// thread, only while the screen is unlocked, and again at each unlock.
+    private func startKeyRequests() {
+        observers.append(DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"), object: nil, queue: .main
+        ) { [weak self] _ in
+            // The session's lock flag settles a moment after the notification.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { self?.askForKeyIfNeeded(why: "screen unlocked") }
+        })
+        askForKeyIfNeeded(why: "launch")
+    }
+
+    private func askForKeyIfNeeded(why: String) {
+        guard !keyAskInFlight else { return }
+        keyAskInFlight = true
+        keyQueue.async { [weak self] in
+            guard let self else { return }
+            let unreadable = self.auth.integrityKeyUnavailable
+            let locked = WebServer.hostLocked()
+            if unreadable {
+                if IntegrityKeyPolicy.shouldAsk(keyUnreadable: true, screenLocked: locked, askInFlight: false) {
+                    clog("INTEGRITY: the keychain needs the user (\(why)) — asking for the key; device sessions are refused until it is readable")
+                    let ok = self.auth.retryIntegrityKey()
+                    clog(ok ? "INTEGRITY: the integrity key is readable now" : "INTEGRITY: the key is still unreadable; device sessions stay refused")
+                } else {
+                    clog("INTEGRITY: the key needs the user but the screen is locked — device sessions are refused; will ask when it unlocks")
+                }
+            }
+            DispatchQueue.main.async {
+                self.keyAskInFlight = false
+                if unreadable { self.refresh() }
+            }
+        }
     }
 
     /// How many devices are waiting for the user's answer.

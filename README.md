@@ -599,6 +599,15 @@ form.
 
 ### Unreleased
 
+- **A keychain question can no longer freeze Clamshell at launch.** The web
+  page on port 5901 and the streams now start even when the Mac's keychain is
+  waiting for someone to click "Allow". Devices that need the protection key
+  are still refused until it can be read; Clamshell asks for it in the
+  background, only while the screen is unlocked, and again when you unlock.
+- **A rollback now really restarts.** Any copy of Clamshell that is stuck is
+  ended (forcefully after 5 seconds) before the previous version starts.
+- **A version that was rolled back is not installed again by itself.** You can
+  still install it by hand from the menu.
 - Host setting `nativeLockScreen` (default off): when on, a locked Mac keeps streaming and accepting input, and the clients show a banner instead of switching to the browser VNC fallback. HOST_LOCK_STATE gains an optional second byte. Set with `defaults write <bundle id> nativeLockScreen -bool true`.
 - **The login-window probe can now settle the question.** It posts a Shift
   keystroke and reads it back, records brightness spread and whether the frame

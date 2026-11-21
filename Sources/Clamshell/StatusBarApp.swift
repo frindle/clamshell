@@ -637,7 +637,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// sessions. A surprise relaunch mid-remote-session would drop the
     /// user's connection.
     private func maybeAutoInstall() {
-        guard updateAvailable != nil, !installingUpdate,
+        guard let tag = updateAvailable, !installingUpdate,
               UpdateInstaller.canInstall,
               coordinator.state == .idle,
               !vncSessionActive, !webSessionActive else { return }
@@ -650,8 +650,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             clog("update: a stream viewer is connected — waiting to install")
             return
         }
+        // A version that was installed and rolled back is not tried again by
+        // itself; installing it from the menu still works.
+        if SafeUpdate.shouldSkipAutoInstall(tag: tag, lastRecord: SafeUpdateOps.readRecord()) {
+            if skippedAutoInstall != tag {
+                skippedAutoInstall = tag
+                clog("update: \(tag) was installed and rolled back — not installing it automatically")
+            }
+            return
+        }
         installUpdate()
     }
+
+    private var skippedAutoInstall: String?
 
     @objc private func installUpdate() {
         guard !installingUpdate else { return }
