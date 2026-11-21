@@ -76,7 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Start-at-login used to be a login item; it is a KeepAlive launch
         // agent now. Move anyone who had it on, once.
         if Bundle.main.bundleIdentifier != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { LaunchAgentSetup.migrateFromLoginItem() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                LaunchAgentSetup.migrateFromLoginItem()
+                AutoReturnPolicy.installIfNeeded()
+            }
         }
 
         // Request notification authorization for collapse failure alerts
@@ -909,8 +912,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleLogin() {
         if LaunchAgentSetup.isEnabled {
+            AutoReturnPolicy.setOptedOut(true)
             LaunchAgentSetup.disable()
         } else if LaunchAgentSetup.enable() != nil {
+            AutoReturnPolicy.setOptedOut(false)
             // The agent starts its own copy; hand this instance over to it.
             LaunchAgentSetup.handOff()
         } else {

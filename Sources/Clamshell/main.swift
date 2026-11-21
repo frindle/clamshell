@@ -275,6 +275,9 @@ if args.count > 1 {
     }
 }
 
+// One Clamshell per user; after an update the old copy may still be quitting.
+SingleInstance.waitForOthersOrExit()
+
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
