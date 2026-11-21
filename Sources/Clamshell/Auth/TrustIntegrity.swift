@@ -47,10 +47,11 @@ struct KeychainIntegrityKeyStore: IntegrityKeyStore {
     init(directory: URL, cdhash: String? = TrustBridge.ownCdhash) {
         let path = directory.resolvingSymlinksInPath().standardizedFileURL.path
         let digest = SHA256.hash(data: Data(path.utf8))
-        account = "mac-key-" + Hex.encode(Data(digest).prefix(8))
+        let base = "mac-key-" + Hex.encode(Data(digest).prefix(8))
+        account = base
         self.directory = directory
         self.cdhash = cdhash
-        buildAccount = cdhash.map { account + "-" + String($0.prefix(16)) }
+        buildAccount = cdhash.map { base + "-" + String($0.prefix(16)) }
     }
 
     private func query(_ account: String) -> [String: Any] {

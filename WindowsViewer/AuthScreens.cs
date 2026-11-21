@@ -62,7 +62,7 @@ internal static class AuthScreens
         FlowStateKind.HostNeedsKeychain =>
             $"The Mac needs Keychain approval for Clamshell before it can accept devices. Approve it on the Mac. Trying again in {s.RetryIn} s.",
         FlowStateKind.RemoteAccessOff =>
-            $"Remote access is switched off in Clamshell on this Mac. Turn it on from Clamshell's menu there. Trying again in {s.RetryIn} s.",
+            $"Remote access is off on this Mac. Turn on Screen Sharing in System Settings > General > Sharing there. Trying again in {s.RetryIn} s.",
         FlowStateKind.Failed => s.Message,
         _ => "",
     };
