@@ -128,10 +128,12 @@ final class ReconnectTests: XCTestCase {
         // The host lost the app meanwhile.
         h.host.windows = []
         h.host.apps[0].running = false
+        h.host.apps[0].pid = -1
+        h.host.apps[0].windowCount = 0
         h.advance(1.5)
         XCTAssertEqual(h.host.launches.map { $0.bundle }, ["org.example.editor"])
         XCTAssertEqual(h.host.launches.map { $0.activate }, [false])
-        XCTAssertEqual(h.conn.state, .ready)
+        XCTAssertEqual(h.conn.state, .ready, h.conn.lastLossReason ?? "")
         XCTAssertEqual(h.window?.localId, local, "the new window takes over the frozen one")
         XCTAssertEqual(h.log.opened().count, 1)
     }

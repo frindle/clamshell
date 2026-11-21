@@ -33,6 +33,8 @@ public final class DeskHostConnection {
     private var lastReceive = 0.0
     private var nextRequestId: UInt32 = 1
     private var relaunched = Set<String>()
+    /// Why the link was last given up, for diagnostics.
+    public private(set) var lastLossReason: String?
 
     private var retryTimer: DeskTimer?
     private var heartbeatTimer: DeskTimer?
@@ -217,6 +219,7 @@ public final class DeskHostConnection {
 
     /// The link is gone, or is not to be trusted. Freeze the windows and plan another attempt.
     private func lost(_ reason: String) {
+        lastLossReason = reason
         dropLink()
         cancelLiveTimers()
         guard wanted else { return }
