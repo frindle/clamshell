@@ -40,7 +40,8 @@ enum LoginWindowCommands {
         let home = String(cString: pw.pointee.pw_dir)
         let config = LoginWindowInstall.Config(
             user: user, uid: pw.pointee.pw_uid,
-            userStateDirectory: home + "/Library/Application Support/Clamshell")
+            userStateDirectory: home + "/Library/Application Support/Clamshell",
+            appPath: Bundle.main.bundleURL.path)
 
         let appURL = Bundle.main.bundleURL
         guard appURL.pathExtension == "app", let resources = Bundle.main.resourceURL else {
@@ -117,6 +118,7 @@ enum LoginWindowCommands {
         out("Root-owned app copy:   \(yn(s.appCopy))")
         out("Agent plist:           \(yn(s.agentPlist))")
         out("Sync daemon plist:     \(yn(s.syncPlist))" + (s.syncLoaded == true ? " (loaded)" : s.syncPlist ? " (not loaded)" : ""))
+        out("App copy version:      \(s.copyVersion ?? "unknown")" + (s.outdated ? " (OUTDATED: the installed app is \(s.installedVersion ?? "?")); reinstall with: sudo clamshell loginwindow install" : ""))
         out("Mirrored user:         \(s.config?.user ?? "none")")
         out("Copied host key:       \(s.mirrorHostKey ? "yes" : "not readable or missing (needs sudo to be sure)")")
         switch s.mirrorMatchesUser {
@@ -141,6 +143,13 @@ enum LoginWindowCommands {
             let outcome = try LoginWindowInstall.sync(userDirectory: URL(fileURLWithPath: config.userStateDirectory),
                                                       userUID: config.uid, mirror: layout.stateDirectory)
             if outcome != .unchanged { clog("LOGINWINDOW-SYNC: \(outcome)") }
+            switch LoginWindowInstall.refreshAppCopy(layout: layout, config: config) {
+            case .upToDate: break
+            case .refreshed(let from, let to):
+                clog("LOGINWINDOW-SYNC: the login-window copy of the app was updated (\(from) -> \(to)); it is used the next time the login window starts")
+            case .skipped(let why):
+                clog("LOGINWINDOW-SYNC: the login-window copy of the app was not updated: \(why); reinstall with the loginwindow install command")
+            }
             return 0
         } catch {
             clog("LOGINWINDOW-SYNC: \(error)")
