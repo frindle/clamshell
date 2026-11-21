@@ -22,7 +22,9 @@
     <key>WatchPaths</key>
     <array>
         <string>__WATCH_PATH__</string>
+        <string>__APP_WATCH_PATH__</string>
     </array>
+    <key>StartInterval</key><integer>1800</integer>
     <key>RunAtLoad</key><true/>
     <key>ThrottleInterval</key><integer>5</integer>
     <key>StandardOutPath</key><string>__LOG__</string>

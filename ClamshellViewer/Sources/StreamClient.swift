@@ -25,12 +25,11 @@ final class StreamClient: ObservableObject {
     /// on-screen while auto-reconnect keeps retrying. nil once streaming.
     @Published var lastError: String?
     /// True while the host reports its screen is locked (HOST_LOCK_STATE). The
-    /// native capture path can't survive the macOS lock screen, so the UI shows
-    /// a banner pointing at the browser VNC fallback until the host unlocks.
+    /// native stream carries the lock screen, so the UI shows a banner and the
+    /// video keeps running.
     @Published var hostLocked = false
     /// The host's `nativeLockScreen` setting, from the optional second byte of
-    /// HOST_LOCK_STATE. When true, a locked host keeps streaming natively: show a
-    /// banner, never the browser VNC fallback.
+    /// HOST_LOCK_STATE.
     @Published var hostNativeLockScreen = false
     /// Host video encoder state from VIDEO_STATE: 0 running, 1 rebuilding, 2 gave up.
     @Published var videoState: UInt8 = 0
@@ -603,29 +602,6 @@ final class StreamClient: ObservableObject {
         flowCarry = FlowCarry()
     }
 
-    /// The Mac's browser VNC bridge (noVNC on http://<mac>:5901), derived from
-    /// the connected host — the lock-screen fallback, since Apple's privileged
-    /// screensharingd can reach a locked Mac where native capture can't. Works
-    /// for a bare LAN host or ws:// URL (swap in the web port); a wss:// tunnel
-    /// host reuses the same origin instead — the Cloudflare Tunnel config
-    /// (README "Browser access") already routes that hostname's "/" to :5901
-    /// and "/websockify" to :5902, and WebServer's own "/" handler detects
-    /// the proxy and points noVNC at same-origin wss:// with no port override.
-    /// True when the browser VNC fallback should replace the native video: the
-    /// host is locked and has not asked to keep the native stream.
-    var showsVNCFallback: Bool { hostLocked && !hostNativeLockScreen }
-
-    var browserFallbackURL: URL? {
-        guard let host = connectHost else { return nil }
-        if host.contains("://") {
-            guard let url = URL(string: host), let h = url.host else { return nil }
-            if url.scheme == "wss" { return URL(string: "https://\(h)") }
-            guard url.scheme == "ws" else { return nil }
-            return URL(string: "http://\(h):5901") // WebServer.httpPort
-        }
-        return URL(string: "http://\(host):5901") // WebServer.httpPort
-    }
-
     // MARK: Keepalive
 
     private func noteSent() {
@@ -764,7 +740,7 @@ final class StreamClient: ObservableObject {
             guard let byte = payload.first else { return }
             let locked = byte == 1
             let native = payload.count >= 2 && payload[payload.startIndex + 1] == 1
-            clogViewer("HOST_LOCK_STATE: host screen \(locked ? (native ? "LOCKED — native stream continues" : "LOCKED — showing browser VNC fallback") : "unlocked")")
+            clogViewer("HOST_LOCK_STATE: host screen \(locked ? "LOCKED, native stream continues" : "unlocked")")
             DispatchQueue.main.async { self.hostLocked = locked; self.hostNativeLockScreen = native }
         case .videoState:
             guard let state = payload.first else { return }

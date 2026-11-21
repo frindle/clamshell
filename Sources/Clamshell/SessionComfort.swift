@@ -13,7 +13,7 @@ final class SessionComfort {
 
     func sessionDidStart() {
         // Keep the display awake for the duration of the remote session;
-        // an idle-slept display stalls some VNC clients on reconnect.
+        // an idle-slept display stalls some clients on reconnect.
         if !hasAssertion {
             let result = IOPMAssertionCreateWithName(
                 kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,

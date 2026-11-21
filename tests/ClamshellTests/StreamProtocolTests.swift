@@ -287,12 +287,22 @@ final class StreamProtocolTests: XCTestCase {
         XCTAssertTrue(parser.corrupt)
     }
 
-    func testNativeLockScreenSettingDefaultsOff() {
+    func testNativeLockScreenSettingDefaultsOn() {
         let suite = "nativeLockScreenTest-\(UUID().uuidString)"
         let d = UserDefaults(suiteName: suite)!
         defer { d.removePersistentDomain(forName: suite) }
+        // Unset means on (the default-on migration); explicit values win.
+        XCTAssertTrue(StreamMessage.nativeLockScreenEnabled(d))
+        d.set(false, forKey: "nativeLockScreen")
         XCTAssertFalse(StreamMessage.nativeLockScreenEnabled(d))
         d.set(true, forKey: "nativeLockScreen")
         XCTAssertTrue(StreamMessage.nativeLockScreenEnabled(d))
+        d.removeObject(forKey: "nativeLockScreen")
+        XCTAssertTrue(StreamMessage.nativeLockScreenEnabled(d))
+    }
+
+    func testHostLockStateIsTwoBytesAtMost() {
+        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(true, native: true)).messages[0].1), [1, 1])
+        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(false)).messages[0].1), [0])
     }
 }

@@ -71,7 +71,6 @@ attachResizeReporter(window, (p) => send(frameMsg(T.CLIENT_DISPLAYS, p)), 250, g
 
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
-const vncFallback = document.getElementById('vncFallback');
 const statusEl = document.getElementById('status');
 const statusText = document.getElementById('statusText');
 const menu = document.getElementById('hoverMenu');
@@ -93,24 +92,6 @@ const swBanner = document.getElementById('swBanner');
 const lockBanner = document.getElementById('lockBanner');
 const errBanner = document.getElementById('errBanner');
 const qualityDot = document.getElementById('qualityDot');
-
-// Store original lock banner text for restoration
-const originalLockBannerText = lockBanner.textContent;
-
-// noVNC lock-screen fallback page. It MUST point at "/vnc.html", not "/":
-// WebServer's "/" handler 302-redirects to "/client" (this same native
-// client that is looping), so a bare-slash fallback just reloads the broken
-// page. "/vnc.html" is served directly (with the clipboard bridge injected)
-// on both transports -- port 5901 direct-LAN, or same-origin over the
-// Cloudflare Tunnel (README "Browser access"), which routes this hostname to
-// the same WebServer.
-// Over LAN TLS (https on a port, not through the tunnel) noVNC is told where
-// the TLS websocket is: host, port 5902 and encrypt=1, plus autoconnect.
-const vncFallbackURL = location.protocol === 'https:'
-  ? (location.port
-    ? `${location.origin}/vnc.html?autoconnect=1&host=${encodeURIComponent(location.hostname)}&port=5902&encrypt=1`
-    : `${location.origin}/vnc.html`)
-  : `http://${location.hostname}:5901/vnc.html`;
 
 // Display size picker, Retina toggle. In-DOM buttons (a native <select> loses
 // its popup when the hover menu closes); clicks keep the menu open.
@@ -223,9 +204,7 @@ let reconnectAttempt = 0;
 let wantConnection = true;
 let reconnectTimer = null;
 let countdownTimer = null;
-// Track fallback reasons to avoid conflicts between failure-based and host-locked states
 let lockedByHost = false;
-let fallbackDueToFailure = false;
 
 const CONNECT_TIMEOUT_MS = 10000;
 
@@ -357,24 +336,14 @@ function onFlowEnd(conn, end, reason) {
   console.warn('[Clamshell] connection ended:', end.kind, '-', reason);
   try { conn.sock.close(); } catch (e) { /* ignore */ }
   if (end.kind === 'stop') {
-    // A refusal screen is showing. Do not retry and do not cover it with noVNC.
+    // A refusal screen is showing. Do not retry.
     resetSessionState();
-    dropFailureFallback();
     return;
   }
   nextCarry = end.kind === 'reconnect' ? end.carry : null;
   if (end.kind === 'reconnect' && end.after === 0) { resetSessionState(); connect(); return; }
   if (end.kind === 'reconnect') { scheduleReconnect({ delay: end.after, quiet: true }); return; }
   scheduleReconnect();
-}
-
-function dropFailureFallback() {
-  if (!fallbackDueToFailure || lockedByHost) return;
-  fallbackDueToFailure = false;
-  vncFallback.classList.remove('show');
-  vncFallback.src = 'about:blank';
-  lockBanner.textContent = originalLockBannerText;
-  lockBanner.classList.remove('show');
 }
 
 function resetSessionState() {
@@ -412,16 +381,6 @@ function scheduleReconnect({ delay = null, quiet = false } = {}) {
     showStatus(text());
     clearInterval(countdownTimer);
     countdownTimer = setInterval(() => { if (left > 1) { left--; showStatus(text()); } }, 1000);
-  }
-
-  // Check if we should fall back to noVNC after repeated failures
-  if (delay === null && reconnectAttempt >= 3 && !fallbackDueToFailure && !lockedByHost) {
-    fallbackDueToFailure = true;
-    vncFallback.src = vncFallbackURL;
-    vncFallback.classList.add('show');
-    // Show appropriate banner text for failure-based fallback
-    lockBanner.textContent = "Can't reach the desktop — showing the login screen instead.";
-    lockBanner.classList.add('show');
   }
 
   reconnectTimer = setTimeout(() => { reconnectTimer = null; if (wantConnection) connect(); }, left * 1000);
@@ -633,6 +592,20 @@ function renderAuthState(conn, s) {
         buttons: [['Close', true, userDisconnect]],
       });
       break;
+    case 'hostNeedsKeychain':
+      showCard({
+        title: 'The Mac needs Keychain approval',
+        text: `The Mac needs Keychain approval for Clamshell before it can accept devices. Approve it on the Mac. Trying again in ${s.retryIn} s.`,
+        buttons: [['Cancel', true, userDisconnect]],
+      });
+      break;
+    case 'remoteAccessOff':
+      showCard({
+        title: 'Remote access is off',
+        text: `Remote access is switched off in Clamshell on this Mac. Turn it on from Clamshell's menu there. Trying again in ${s.retryIn} s.`,
+        buttons: [['Cancel', true, userDisconnect]],
+      });
+      break;
     case 'busy':
       showCard({
         title: 'The Mac is busy',
@@ -652,11 +625,6 @@ function onConnected() {
   hideCard();
   reconnectAttempt = 0;
   showStatus('Connected — waiting for video…');
-  // The native stream is back. If noVNC was showing only because we could
-  // not connect -- as opposed to the host reporting itself locked -- drop
-  // back to the canvas. A genuinely locked host keeps noVNC up even with
-  // the socket open, so lockedByHost wins.
-  dropFailureFallback();
 }
 
 // Re-send the size right away (menu choice changed). The host resizes in place.
@@ -722,36 +690,13 @@ async function handle(type, payload) {
       const ls = parseLockState(payload);
       if (!ls) break;
       const locked = ls.locked;
-      // Track whether we're locked by host to avoid conflicts with failure-based fallbacks
       lockedByHost = locked;
-      
-      // Auto-forward into the noVNC bridge while locked, same as
-      // ViewerApp.swift's LockedHostView — screensharingd can reach a
-      // locked Mac where native Screen Recording capture can't. Reverts to
-      // the canvas on its own once a later HOST_LOCK_STATE reports
-      // unlocked; the native stream is never torn down underneath it.
-      if (locked && ls.native) {
-        // nativeLockScreen: keep the native stream, banner only. If the
-        // fallback page was up (an earlier non-native lock, or a failed
-        // connection), take it down: the native stream carries the lock screen.
-        vncFallback.classList.remove('show');
-        vncFallback.src = 'about:blank';
-        fallbackDueToFailure = false;
-        hideStatus();
-        canvas.focus();
-        requestKeyframe();
-      } else if (locked) {
-        vncFallback.src = vncFallbackURL;
-        vncFallback.classList.add('show');
-        hideStatus();
-      } else {
-        vncFallback.classList.remove('show');
-        vncFallback.src = 'about:blank';
-        canvas.focus();
-        // The picture may have frozen while locked; start from a fresh one.
-        requestKeyframe();
-      }
-      lockBanner.textContent = (locked && ls.native) ? 'Mac is locked \u2014 type the password to unlock' : originalLockBannerText;
+      // The native stream carries the lock screen: keep it, show a banner.
+      if (locked) hideStatus();
+      canvas.focus();
+      // The picture may have frozen across the lock change; start from a fresh one.
+      requestKeyframe();
+      lockBanner.textContent = 'Mac is locked \u2014 type the password to unlock';
       lockBanner.classList.toggle('show', locked);
       break;
     }

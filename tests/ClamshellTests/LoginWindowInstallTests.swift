@@ -135,7 +135,10 @@ final class LoginWindowInstallTests: XCTestCase {
         XCTAssertEqual(ap["LimitLoadToSessionType"] as? String, "LoginWindow")
         XCTAssertEqual((ap["EnvironmentVariables"] as? [String: String])?["CLAMSHELL_STATE_DIR"], layout.stateDirectory.path)
         XCTAssertTrue(layout.binary.path.hasPrefix("/Library/"))
-        XCTAssertEqual(sp["WatchPaths"] as? [String], [config.userStateDirectory])
+        let watched = try XCTUnwrap(sp["WatchPaths"] as? [String])
+        XCTAssertEqual(watched.first, config.userStateDirectory)
+        XCTAssertTrue(watched.contains { $0.hasSuffix("Info.plist") })
+        XCTAssertEqual(sp["StartInterval"] as? Int, 1800)
         XCTAssertEqual((sp["ProgramArguments"] as? [String])?.suffix(2), ["loginwindow", "sync"])
     }
 

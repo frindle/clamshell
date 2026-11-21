@@ -3,14 +3,11 @@ import Darwin
 
 /// Watches for an active remote-control session and reports transitions.
 ///
-/// Detection is trigger-based so multiple remote services can arm the
-/// collapse: Apple Screen Sharing (VNC, port 5900) and Jump Desktop Connect
-/// are both supported. Polling netstat is deliberate — screensharingd runs
-/// as root, so per-process APIs can't see its sockets from a user session,
-/// but the kernel connection table is world-readable.
+/// Detection is trigger-based so third-party remote services (Jump Desktop
+/// Connect, Sunshine) can arm the collapse. Clamshell's own sessions are
+/// tracked by the stream servers, not here; Apple Screen Sharing is not used.
 final class ConnectionMonitor {
     enum Trigger: String, CaseIterable {
-        case screenSharing // Apple Screen Sharing / any VNC client, port 5900
         case jumpDesktop   // Jump Desktop Connect (Fluid protocol)
         case sunshine      // Sunshine (Moonlight client streaming)
     }
@@ -74,15 +71,6 @@ final class ConnectionMonitor {
     // MARK: - Detection
 
     static func detectActiveSession() -> Trigger? {
-        let established = establishedConnections()
-        // Screen Sharing: any established connection with local port 5900.
-        // Exclude loopback so a local VNC viewer doesn't trip the collapse.
-        for conn in established {
-            if conn.localPort == 5900 && !conn.remoteAddress.hasPrefix("127.")
-                && conn.remoteAddress != "::1" {
-                return .screenSharing
-            }
-        }
         // Jump Desktop Connect: its helper holds the session sockets in-process,
         // so presence of an established connection owned by JumpConnect's
         // streaming child indicates a live session.
@@ -137,40 +125,6 @@ final class ConnectionMonitor {
             out.append(contentsOf: buf[0..<n])
         }
         return String(data: out, encoding: .utf8)
-    }
-
-    struct Connection {
-        let localAddress: String
-        let localPort: Int
-        let remoteAddress: String
-    }
-
-    /// Parses `netstat -an` for ESTABLISHED TCP connections. netstat prints
-    /// addresses as `192.168.1.5.5900` (port joined by the final dot).
-    static func establishedConnections() -> [Connection] {
-        guard let output = run("/usr/sbin/netstat", ["-an", "-p", "tcp"]) else { return [] }
-        var result: [Connection] = []
-        for line in output.split(separator: "\n") {
-            guard line.contains("ESTABLISHED") else { continue }
-            let cols = line.split(separator: " ", omittingEmptySubsequences: true)
-            guard cols.count >= 5 else { continue }
-            let local = String(cols[3])
-            let remote = String(cols[4])
-            guard let dot = local.lastIndex(of: "."),
-                  let port = Int(local[local.index(after: dot)...]) else { continue }
-            let remoteAddr: String
-            if let rdot = remote.lastIndex(of: ".") {
-                remoteAddr = String(remote[..<rdot])
-            } else {
-                remoteAddr = remote
-            }
-            result.append(Connection(
-                localAddress: String(local[..<dot]),
-                localPort: port,
-                remoteAddress: remoteAddr
-            ))
-        }
-        return result
     }
 
     /// Jump Desktop Connect exposes session state via its rendezvous child

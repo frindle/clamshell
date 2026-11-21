@@ -61,14 +61,16 @@ export class TestHost {
   }
 
   /** A signed AUTH_RESULT payload; busy and timeout cover an empty response. */
-  async result(status, response = this.device.response) {
-    const body = concat(Uint8Array.of(status), Uint8Array.of(0, 0));
+  async result(status, response = this.device.response, extensions = new Uint8Array(0)) {
+    const body = concat(Uint8Array.of(status), Uint8Array.of(extensions.length >> 8, extensions.length & 0xff), extensions);
     const covered = status === STATUS.busy || status === STATUS.timeout ? new Uint8Array(0) : response;
     const signature = await this.identity.sign(hostSignatureInput(this.payload, covered, body));
     return concat(body, signature);
   }
 
-  resultMessage(status, response) { return this.result(status, response).then((p) => frame(MSG.AUTH_RESULT, p)); }
+  resultMessage(status, response, extensions) {
+    return this.result(status, response, extensions).then((p) => frame(MSG.AUTH_RESULT, p));
+  }
 
   /** After the response was verified: a sealer (host to client) and an opener (client to host). */
   async startSession(onWrite) {

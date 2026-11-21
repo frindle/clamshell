@@ -11,7 +11,7 @@ import CryptoKit
 ///    small launchd daemon (`sync`) whenever the user's folder changes;
 /// 3. installs two plists copied from the app bundle: the agent (login window
 ///    session only) and the sync daemon.
-/// Nothing here touches Screen Sharing, SSH, FileVault or any other setting.
+/// Nothing here touches SSH, FileVault or any other setting.
 enum LoginWindowInstall {
     static let agentLabel = "com.frindle.clamshell.loginwindow-agent"
     static let syncLabel = "com.frindle.clamshell.loginwindow-sync"
@@ -41,6 +41,9 @@ enum LoginWindowInstall {
         var user: String
         var uid: UInt32
         var userStateDirectory: String
+        /// Where the user's own app lives, so a root job can notice an update.
+        /// Absent in files written by earlier builds.
+        var appPath: String?
     }
 
     // MARK: - plists
@@ -68,7 +71,8 @@ enum LoginWindowInstall {
     }
 
     static func syncValues(_ layout: Layout, _ config: Config) -> [String: String] {
-        ["APP_BINARY": layout.binary.path, "WATCH_PATH": config.userStateDirectory, "LOG": layout.log]
+        ["APP_BINARY": layout.binary.path, "WATCH_PATH": config.userStateDirectory, "LOG": layout.log,
+         "APP_WATCH_PATH": (config.appPath ?? defaultAppPath) + "/Contents/Info.plist"]
     }
 
     struct InstallError: Error, CustomStringConvertible {
@@ -159,9 +163,28 @@ enum LoginWindowInstall {
         /// Nil when the user's folder cannot be read by the caller.
         var mirrorMatchesUser: Bool?
         var syncLoaded: Bool?
+        /// Versions of the root-owned copy and of the app the user runs. A
+        /// copy older than the installed app serves the login window with old
+        /// code after an update.
+        var copyVersion: String?
+        var installedVersion: String?
 
         var installed: Bool { appCopy && config != nil && agentPlist && syncPlist }
-        var healthy: Bool { installed && mirrorHostKey && mirrorMatchesUser != false }
+        var outdated: Bool {
+            guard let copyVersion, let installedVersion else { return false }
+            return copyVersion != installedVersion
+        }
+        var healthy: Bool { installed && mirrorHostKey && mirrorMatchesUser != false && !outdated }
+    }
+
+    static let defaultAppPath = "/Applications/Clamshell.app"
+
+    static func version(ofApp path: String) -> String? {
+        let url = URL(fileURLWithPath: path).appendingPathComponent("Contents/Info.plist")
+        guard let dict = NSDictionary(contentsOf: url) else { return nil }
+        let short = dict["CFBundleShortVersionString"] as? String
+        let build = dict["CFBundleVersion"] as? String
+        return [short, build].compactMap { $0 }.joined(separator: " ")
     }
 
     static func status(_ layout: Layout = Layout(), launchdHas: (String) -> Bool? = { _ in nil }) -> Status {
@@ -176,6 +199,8 @@ enum LoginWindowInstall {
         }
         s.mirrorHostKey = fm.fileExists(atPath: layout.stateDirectory.appendingPathComponent(HostIdentity.fileName).path)
         if let config = s.config {
+            s.copyVersion = version(ofApp: layout.appCopy.path)
+            s.installedVersion = version(ofApp: config.appPath ?? defaultAppPath)
             s.mirrorMatchesUser = mirrorMatches(userDirectory: URL(fileURLWithPath: config.userStateDirectory),
                                                 userUID: uid_t(config.uid), mirror: layout.stateDirectory,
                                                 mirrorUID: layout.mirrorOwner)

@@ -31,7 +31,7 @@ echo "=== assembling ${APP} ==="
 rm -rf dist
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp "${BIN}" "${APP}/Contents/MacOS/Clamshell"
-# SwiftPM resource bundle (noVNC assets) — Bundle.module finds it in
+# SwiftPM resource bundle (web client assets) — Bundle.module finds it in
 # Contents/Resources when running from the .app.
 cp -R "${RES_DIR}/Clamshell_Clamshell.bundle" "${APP}/Contents/Resources/"
 cp AppIcon.icns "${APP}/Contents/Resources/"
@@ -43,6 +43,10 @@ cp scripts/loginwindow-probe/*.plist "${APP}/Contents/Resources/loginwindow-prob
 # `sudo clamshell loginwindow install` fills them in and copies them out.
 mkdir -p "${APP}/Contents/Resources/loginwindow-agent"
 cp scripts/loginwindow-agent/*.plist "${APP}/Contents/Resources/loginwindow-agent/"
+# launchd plist template for the VNC-port redirect daemon
+# (`sudo clamshell redirect install`).
+mkdir -p "${APP}/Contents/Resources/redirect-daemon"
+cp scripts/redirect-daemon/*.plist "${APP}/Contents/Resources/redirect-daemon/"
 # Login launch agent (restarts the app after a crash, not after a clean quit).
 # SMAppService.agent(plistName:) reads it from here; it must be in the bundle
 # before signing so the signature seals it.

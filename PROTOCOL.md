@@ -1,6 +1,6 @@
 # Clamshell Stream Protocol (v1)
 
-Custom LAN streaming protocol replacing browser VNC: ScreenCaptureKit capture →
+Custom LAN streaming protocol: ScreenCaptureKit capture →
 VideoToolbox hardware encode on the Mac → TCP → VideoToolbox hardware decode on
 the iPad. Every active display is served independently (one endpoint per
 display, see below); hardware encode is strongly preferred but the host falls
@@ -22,7 +22,7 @@ One WebSocket connection per display, client-initiated, default base port
 **5903** (plain `ws://`
 on LAN/Tailscale; `wss://` through a Cloudflare Tunnel for remote use — WS was
 chosen over raw TCP precisely so the tunnel's zero-config HTTP path carries it,
-matching how Clamshell's noVNC web access is already tunneled). No NAT
+matching how Clamshell's web client is already tunneled). No NAT
 traversal, no custom TLS. TCP head-of-line blocking is an accepted tradeoff
 for simplicity. One client at a time; a new connection replaces the old one
 (from host 0.12 on, only a connection that has passed "Device authentication
@@ -292,14 +292,14 @@ software, current Mbps) built from HELLO_ACK plus this message. Pre-status
 hosts simply never send it; the client shows no dot until the first one
 arrives.
 
-## Lock screen fallback (HOST_LOCK_STATE)
+## Lock state (HOST_LOCK_STATE)
 
-Native ScreenCaptureKit capture runs in the logged-in user session and stops
-delivering frames at the macOS lock screen; `CGEventPost`-injected input can't
+Native ScreenCaptureKit capture runs in the logged-in user session and may stop
+delivering frames at the macOS lock screen; `CGEventPost`-injected input may not
 cross it either (both are deliberate security boundaries, not bugs). The host
-therefore reports lock state so the client can fall back to the browser VNC
-bridge (noVNC on `http://<mac>:5901` → Apple's privileged `screensharingd`),
-which *can* reach and unlock a locked Mac.
+therefore reports lock state so the client can show that the Mac is locked. The
+lock screen and login window themselves are served by the login-window helper,
+which speaks this same protocol from the login-window session.
 
 The host observes the system `com.apple.screenIsLocked` /
 `com.apple.screenIsUnlocked` distributed notifications (seeding initial state
@@ -307,29 +307,21 @@ from the login session's `CGSSessionScreenIsLocked`) and sends HOST_LOCK_STATE
 (1-byte boolean, `1` = locked) on every change, to every connected display, and
 once right after HELLO_ACK — so a client connecting to an already-locked Mac
 knows immediately. On `locked = 1` the client shows a prominent banner over the
-video/trackpad ("Mac is locked — native video paused") with a one-tap link to
-the browser fallback. On `locked = 0` the banner clears and the native video
+video/trackpad ("Mac is locked — native video paused"). On `locked = 0` the banner clears and the native video
 resumes on its own through the existing reconnect/keyframe flow — no separate
 resume message. Pre-lock-state hosts simply never send it; the client shows no
 banner.
 
-When the browser fallback is closed after an unlock, the host keeps the
-`screensharingd` connection open and idle, because macOS re-locks a Mac whose
-unlocking Screen Sharing viewer disconnects. It closes that connection when the
-Mac locks again, when no viewer has been connected for about 30 seconds, after
-12 hours, or when a new fallback session opens.
-
-
 ### Native lock screen (optional trailing byte)
 
-The host setting `nativeLockScreen` (default off) adds a second payload byte to
-HOST_LOCK_STATE: `native = 1` when it is on. The host then keeps streaming and
-injecting while locked, so the client must keep showing the native stream, show
-a banner only ("Mac is locked, type the password to unlock") and never switch to
-the browser VNC fallback. With the setting off the payload is the original single
-byte, so the default and older clients are unchanged. A missing second byte or a
-value other than 1 means off. Turn it on only after the pre-login probe shows input
-works at the lock screen: `defaults write <bundle id> nativeLockScreen -bool true`.
+The host setting `nativeLockScreen` is on unless set otherwise (an unset value
+means on; `defaults write <bundle id> nativeLockScreen -bool false` turns it
+off). HOST_LOCK_STATE carries `native = 1` as a second payload byte when it is
+on. The host then keeps streaming and injecting while locked, so the client
+must keep showing the native stream, show a banner only ("Mac is locked, type
+the password to unlock"). A payload with no second byte comes from an older
+host; treat the lock as not carried by the stream there. Clients ignore bytes
+past the second.
 
 ## Cursor-follow auto-pan (CURSOR_POS)
 
@@ -462,8 +454,12 @@ names and public keys are visible to anyone on the path. Nothing else is.
 | signature | 64 | by the host identity key |
 
 Extension records are `type(1) len(2 BE) value`, repeated to fill `extLen`. A
-record of an unknown type is skipped. Version 1 defines none; type 0x01 is
-reserved for an account-signed device certificate.
+record of an unknown type is skipped. Type 0x01 is reserved for an
+account-signed device certificate. Type 0x02, in an AUTH_RESULT with status
+`busy` only, is a one-byte reason: 1 = the Mac needs someone to approve
+Clamshell's Keychain access, 2 = remote access is switched off on that Mac. A
+client shows it ("The Mac needs Keychain approval", "Remote access is off") and
+keeps its busy back-off; a missing record or an unknown value is plain busy.
 
 **What is signed.** Write `L(x)` for `u32be(length of x) ‖ x`, and call a
 message's payload without its trailing 64 signature bytes its *body*.

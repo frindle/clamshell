@@ -115,7 +115,7 @@ final class CollapseCoordinator {
     /// Defer the collapse until the screen unlocks. On a headless Mac,
     /// collapsing onto a lone virtual display while the screen is locked makes
     /// macOS re-lock ~1s after the user authenticates (an endless login loop);
-    /// letting the unlock land on the real/screensharingd framebuffer first
+    /// letting the unlock land on the real display first
     /// and collapsing afterward avoids it. One-shot, idempotent, and cancelled
     /// by clearUnlockObserver() if the session disconnects before unlock.
     private func deferCollapse() {
@@ -179,15 +179,9 @@ final class CollapseCoordinator {
             }
             guard let virtualID else {
                 clog("collapse aborted: virtual display creation failed")
-                
-                // Check if Screen Sharing is disabled and provide a specific message
-                let failureMessage: String
-                if !ScreenSharingChecker.isScreenSharingEnabled() {
-                    failureMessage = "Screen Sharing is disabled. Enable it in System Settings → General → Sharing → Screen Sharing."
-                } else {
-                    failureMessage = "Virtual display creation failed. Try restarting Clamshell."
-                }
-                
+
+                let failureMessage = "Virtual display creation failed. Try restarting Clamshell."
+
                 // Release the display wake assertion if it was created
                 if self.displayWakeAssertion != 0 {
                     IOPMAssertionRelease(self.displayWakeAssertion)
@@ -313,8 +307,7 @@ final class CollapseCoordinator {
     }
 
     /// Places virtual display A at the global origin and B immediately to its
-    /// right, so the spanning desktop (and the VNC framebuffer that Screen
-    /// Sharing serves) has a known, fixed layout: A at x=0, B at x=A.width.
+    /// right, so the spanning desktop has a known, fixed layout: A at x=0, B at x=A.width.
     /// CGConfigureDisplayOrigin works in points (global display space).
     private func positionSideBySide(a: CGDirectDisplayID, b: CGDirectDisplayID) {
         var config: CGDisplayConfigRef?

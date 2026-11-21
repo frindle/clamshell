@@ -6,7 +6,7 @@
 //
 // - Network first: a Mac that answers always wins, so updates apply at once.
 // - Only /client and /client/* GET requests are touched. The WebSocket, the
-//   clipboard bridge and noVNC never pass through here.
+//   clipboard bridge never passes through here.
 // - BUILD is filled in by the host when it serves this file (the app build),
 //   so a new app version gets a new cache and the old one is deleted.
 // - Kill switch: the host serves this file with KILL = true when

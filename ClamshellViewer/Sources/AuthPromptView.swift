@@ -48,6 +48,16 @@ struct AuthPromptView: View {
                  text: "\(hostName) could not accept this device's request. Nothing more was sent.",
                  rows: [],
                  buttons: [("Close", true, { client.disconnect() })])
+        case let .hostNeedsKeychain(retryIn)?:
+            card(title: "The Mac needs Keychain approval",
+                 text: "The Mac needs Keychain approval for Clamshell before it can accept devices. Approve it on the Mac. Trying again in \(retryIn) s.",
+                 rows: [],
+                 buttons: [("Cancel", true, { client.disconnect() })])
+        case let .remoteAccessOff(retryIn)?:
+            card(title: "Remote access is off",
+                 text: "Remote access is switched off in Clamshell on this Mac. Turn it on from Clamshell's menu there. Trying again in \(retryIn) s.",
+                 rows: [],
+                 buttons: [("Cancel", true, { client.disconnect() })])
         case let .busy(retryIn)?:
             card(title: "The Mac is busy",
                  text: "The Mac is busy. Trying again in \(retryIn) s.",

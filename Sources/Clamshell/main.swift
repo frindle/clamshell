@@ -69,10 +69,9 @@ if args.count > 1 {
         exit(0)
     case "test-web":
         let server = WebServer()
-        server.onSessionChange = { active in print("browser session active: \(active)") }
         server.start()
         guard server.isRunning else { print("FAILED to start web server"); exit(1) }
-        print("Serving noVNC on http://localhost:\(server.httpPort) — ctrl-C to stop")
+        print("Serving the web client on http://localhost:\(server.httpPort) — ctrl-C to stop")
         RunLoop.main.run()
     case "stream":
         // Clamshell stream [basePort] — serve the custom video stream protocol
@@ -127,7 +126,7 @@ if args.count > 1 {
         exit(EncoderResizeSelfTest.run())
     case "reboot-readiness":
         // Print the unattended-reboot pre-flight (autorestart / FileVault /
-        // Screen Sharing / login item). Same check as the menu item, usable
+        // Remote Login / login item). Same check as the menu item, usable
         // over SSH before you travel.
         print(RebootReadiness.summary(RebootReadiness.check()))
         exit(0)
@@ -258,6 +257,13 @@ if args.count > 1 {
     case "loginwindow":
         // install | uninstall | status | sync for the login-window agent.
         exit(LoginWindowCommands.run(Array(args.dropFirst(2))))
+    case "redirect":
+        // run | install | uninstall | status for the VNC-port redirect daemon.
+        exit(RedirectCommands.run(Array(args.dropFirst(2))))
+    case "remote-ready":
+        // Can this Mac be reached with no screen and nobody there? Exit 1
+        // when any check fails.
+        exit(RemoteReady.runCommand())
     case "restart":
         // Authenticated restart (skips the disk unlock once). See RestartService.
         exit(RestartService.runCommand())
@@ -270,11 +276,14 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | loginwindow | " +
+              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | loginwindow | redirect | remote-ready | " +
               "devices | approve | deny | revoke | forget | status | update | rollback]")
         exit(64)
     }
 }
+
+// One Clamshell per user; after an update the old copy may still be quitting.
+SingleInstance.waitForOthersOrExit()
 
 let app = NSApplication.shared
 let delegate = AppDelegate()

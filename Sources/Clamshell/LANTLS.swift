@@ -3,8 +3,7 @@ import Network
 import Security
 
 /// Optional TLS for the browser-facing LAN listeners (the web page on 5901,
-/// the VNC websocket and the three stream bridges). Inert until a PEM
-/// certificate and private key are configured; with nothing configured every
+/// the three stream bridges). Inert until a PEM certificate and private key are configured; with nothing configured every
 /// listener is plain exactly as before.
 ///
 /// Where the paths come from, first match wins:

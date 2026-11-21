@@ -92,6 +92,9 @@ final class StreamGate {
     /// and will type a saved login for a client (PROTOCOL.md "Login window").
     var advertisesLoginCredentials = false
 
+    /// Whether Clamshell's own remote-access switch is on. A test replaces it.
+    var remoteAccessEnabled: () -> Bool = { RemoteAccessSwitch.isEnabled() }
+
     private let auth: HostAuth
     private let queue: DispatchQueue
     private let label: String
@@ -112,6 +115,7 @@ final class StreamGate {
         observers = [
             center.addObserver(forName: DeviceTrustStore.didChange, object: auth.store, queue: nil, using: changed),
             center.addObserver(forName: HostAuth.approvalDidChange, object: auth, queue: nil, using: changed),
+            center.addObserver(forName: RemoteAccessSwitch.didChange, object: nil, queue: nil, using: changed),
         ]
     }
 
@@ -305,6 +309,18 @@ final class StreamGate {
         link.device = device
         let who = "\(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.from)"
 
+        if case .refuse(let reason) = RemoteAccessSwitch.decision(enabled: remoteAccessEnabled()) {
+            finish(link, .busy, why: "\(who) asked while remote access is switched off", busyReason: reason)
+            return
+        }
+
+        if auth.integrityKeyUnavailable {
+            // Nothing can be checked until someone approves the Keychain on
+            // this Mac: say so, instead of leaving the client to time out.
+            finish(link, .busy, why: "\(who) asked while the host needs Keychain approval", busyReason: .keychain)
+            return
+        }
+
         guard auth.requireApproval else {
             auth.store.noteConnected(id: device.id, name: device.name, address: link.address,
                                      reported: link.reported)
@@ -394,6 +410,7 @@ final class StreamGate {
             return
         }
         release(link)
+        DisplayWake.shared.connected(link)
         write(StreamMessage.frame(type: .authResult, payload: result), to: link)
         link.sealer = SecureSealer(key: keys.hostToClient)
         link.opener = SecureOpener(key: keys.clientToHost)
@@ -436,9 +453,13 @@ final class StreamGate {
         onAdmit(link)
     }
 
-    private func finish(_ link: StreamLink, _ status: AuthStatus, response: Data = Data(), why: String) {
+    private func finish(_ link: StreamLink, _ status: AuthStatus, response: Data = Data(), why: String,
+                        busyReason: HostBusyReason? = nil) {
         guard link.phase != .closed else { return }
-        let result = link.handshake.flatMap { try? $0.result(status, response: response, sign: auth.identity.sign) }
+        let extensions = (status == .busy ? busyReason?.authExtension : nil).map { [$0] } ?? []
+        let result = link.handshake.flatMap {
+            try? $0.result(status, response: response, extensions: extensions, sign: auth.identity.sign)
+        }
         close(link, why: "\(status): \(why)",
               lastWords: result.map { StreamMessage.frame(type: .authResult, payload: $0) })
     }
@@ -489,6 +510,7 @@ final class StreamGate {
             link.reachedReady = true
         }
         link.phase = .closed
+        DisplayWake.shared.disconnected(link)
         link.handshake = nil
         link.sealer = nil
         link.opener = nil
@@ -535,6 +557,20 @@ final class StreamGate {
     // MARK: - When the device list or the setting changes
 
     private func reconcile() {
+        if case .refuse(let reason) = RemoteAccessSwitch.decision(enabled: remoteAccessEnabled()) {
+            // The switch is off: nobody stays, whatever stage they are at.
+            for link in links {
+                switch link.phase {
+                case .pending, .awaitingResponse:
+                    finish(link, .busy, why: "remote access was switched off", busyReason: reason)
+                case .accepted, .open:
+                    close(link, why: "remote access was switched off")
+                case .closed:
+                    break
+                }
+            }
+            return
+        }
         let approval = auth.requireApproval
         for link in links {
             switch link.phase {

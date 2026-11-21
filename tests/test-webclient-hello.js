@@ -253,11 +253,12 @@ test('attachResizeReporter uses the preference factory when given', () => {
 });
 
 // ── HOST_LOCK_STATE: nativeLockScreen flag on and off ──────────────────
-test('parseLockState reads the optional native flag byte', () => {
+test('parseLockState reads the locked and native bytes and ignores extras', () => {
   assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1)), { locked: true, native: false });
   assert.deepStrictEqual(H.parseLockState(Uint8Array.of(0)), { locked: false, native: false });
   assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 1)), { locked: true, native: true });
   assert.deepStrictEqual(H.parseLockState(Uint8Array.of(0, 1)), { locked: false, native: true });
   assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 0)), { locked: true, native: false });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 1, 0)), { locked: true, native: true });
   assert.strictEqual(H.parseLockState(new Uint8Array(0)), null);
 });

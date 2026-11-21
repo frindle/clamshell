@@ -21,13 +21,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The Devices menu and the window that asks before a new device may
     /// connect (PROTOCOL.md "Approving a device").
     private let devices = DevicesController()
+    private let remoteAccessWatcher = RemoteAccessWatcher()
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
-    // Remote-session state is the OR of the two signals: polled VNC/Jump
-    // detection and live browser (noVNC) sessions. Either alone keeps the
-    // collapse active.
-    private var vncSessionActive = false
-    private var webSessionActive = false
+    // Remote-session state from the polled third-party detection (Jump
+    // Desktop, Sunshine). Clamshell's own sessions arm the collapse elsewhere.
+    private var thirdPartySessionActive = false
 
     /// The current collapse was commanded externally (Sunshine prep-command).
     /// The poller can't see a live Moonlight stream (Sunshine's serverinfo is
@@ -77,7 +76,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Start-at-login used to be a login item; it is a KeepAlive launch
         // agent now. Move anyone who had it on, once.
         if Bundle.main.bundleIdentifier != nil {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5) { LaunchAgentSetup.migrateFromLoginItem() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                LaunchAgentSetup.migrateFromLoginItem()
+                AutoReturnPolicy.installIfNeeded()
+            }
         }
 
         // Request notification authorization for collapse failure alerts
@@ -103,7 +105,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
            let presetB = DisplayPreset.all.first(where: { $0.name == presetBName }) {
             coordinator.presetB = presetB
         }
-        syncDualPresets()
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         updateIcon()
@@ -141,17 +142,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         devices.start()
         monitor.onChange = { [weak self] connected, _ in
             guard let self else { return }
-            self.vncSessionActive = connected
-            self.recomputeSessionState()
-        }
-        webServer.onSessionChange = { [weak self] active in
-            guard let self else { return }
-            self.webSessionActive = active
+            self.thirdPartySessionActive = connected
             self.recomputeSessionState()
         }
         monitor.start()
-        webServer.nativeViewerConnected = { [weak self] in
-            self?.streamFleet?.clientStatus.contains(where: { $0.connected }) == true
+        remoteAccessWatcher.start()
+        NotificationCenter.default.addObserver(forName: RemoteAccessSwitch.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.rebuildMenu()
         }
         webServer.bindHosts = UserDefaults.standard.stringArray(forKey: "bindHosts")
             ?? UserDefaults.standard.string(forKey: "bindHost").map { [$0] } // migrate pre-multi-select key
@@ -297,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func recomputeSessionState() {
         guard autoMode else { return }
-        let connected = vncSessionActive || webSessionActive
+        let connected = thirdPartySessionActive
         // An externally-commanded collapse owns its lifecycle; don't restore
         // out from under a stream the poller can't see.
         if !connected && externallyCollapsed { return }
@@ -411,6 +408,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let displayItem = NSMenuItem(title: "Display", action: nil, keyEquivalent: "")
         menu.addItem(displayItem)
         menu.setSubmenu(displayMenu, for: displayItem)
+
+        // Read-only: the macOS Screen Sharing switch is the one control, and it
+        // governs Clamshell's remote access too.
+        let remote = NSMenuItem(
+            title: remoteAccessWatcher.current
+                ? "Remote access on (System Settings > Sharing > Screen Sharing)"
+                : "Remote access OFF (turn on in System Settings > Sharing > Screen Sharing)",
+            action: nil, keyEquivalent: "")
+        remote.isEnabled = false
+        menu.addItem(remote)
 
         let streamingMenu = NSMenu()
         let web = NSMenuItem(
@@ -643,8 +650,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let tag = updateAvailable, !installingUpdate,
               UpdateInstaller.canInstall,
               coordinator.state == .idle,
-              !vncSessionActive, !webSessionActive else { return }
-        // The poller above only sees VNC and browser-VNC sessions. A native
+              !thirdPartySessionActive else { return }
+        // The poller above only sees Jump Desktop and Sunshine sessions. A native
         // stream viewer (or a streamed window) is a live session too, and
         // relaunching would drop it; try again on the next update check.
         let streamInUse = streamFleet?.clientStatus.contains(where: { $0.connected }) == true
@@ -694,14 +701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let preset = DisplayPreset.all.first(where: { $0.name == name }) else { return }
         coordinator.preset = preset
         UserDefaults.standard.set(preset.name, forKey: "preset")
-        syncDualPresets()
         rebuildMenu()
-    }
-
-    /// The web server needs the two display sizes to build the dual-mode
-    /// picker and cropped views; nil switches it back to the classic flow.
-    private func syncDualPresets() {
-        webServer.dualPresets = coordinator.dualMode ? (coordinator.preset, coordinator.presetB) : nil
     }
 
     @objc private func toggleAutoDual() {
@@ -713,7 +713,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleDual() {
         coordinator.dualMode.toggle()
         UserDefaults.standard.set(coordinator.dualMode, forKey: "dualMode")
-        syncDualPresets()
         rebuildMenu()
     }
 
@@ -722,7 +721,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
               let preset = DisplayPreset.all.first(where: { $0.name == name }) else { return }
         coordinator.presetB = preset
         UserDefaults.standard.set(preset.name, forKey: "presetB")
-        syncDualPresets()
         rebuildMenu()
     }
 
@@ -914,8 +912,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleLogin() {
         if LaunchAgentSetup.isEnabled {
+            AutoReturnPolicy.setOptedOut(true)
             LaunchAgentSetup.disable()
         } else if LaunchAgentSetup.enable() != nil {
+            AutoReturnPolicy.setOptedOut(false)
             // The agent starts its own copy; hand this instance over to it.
             LaunchAgentSetup.handOff()
         } else {
@@ -1029,7 +1029,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         coordinator.resizable = fromStream
         if let presetB { coordinator.presetB = presetB }
         coordinator.dualMode = dual
-        syncDualPresets()
         externallyCollapsed = true
         if fromStream { streamCollapsed = true }
         coordinator.collapse()
@@ -1061,6 +1060,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard coordinator.preset != saved || coordinator.dualMode != savedDual else { return }
         coordinator.preset = saved
         coordinator.dualMode = savedDual
-        syncDualPresets()
     }
 }

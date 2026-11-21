@@ -27,6 +27,27 @@ enum AuthStatus: UInt8 {
     var signsEmptyResponse: Bool { self == .busy || self == .timeout }
 }
 
+/// Why a host said `busy`, as extension type 0x02 of AUTH_RESULT (one byte).
+/// A client that does not know the type skips it and shows plain "busy". The
+/// record sits inside the host-signed body, so a network middlebox cannot
+/// swap one reason for another.
+enum HostBusyReason: UInt8, Equatable {
+    /// The Mac cannot read its trusted-device list until someone approves
+    /// Clamshell's Keychain access on that Mac.
+    case keychain = 1
+    /// Clamshell's own remote-access switch is off on this Mac (menu bar).
+    case remoteAccessOff = 2
+
+    static let extensionType: UInt8 = 0x02
+
+    var authExtension: AuthExtension { AuthExtension(type: Self.extensionType, value: Data([rawValue])) }
+
+    static func find(in extensions: [AuthExtension]) -> HostBusyReason? {
+        guard let e = extensions.first(where: { $0.type == extensionType }), e.value.count == 1 else { return nil }
+        return HostBusyReason(rawValue: e.value[e.value.startIndex])
+    }
+}
+
 enum AuthError: Error, Equatable {
     case malformed
     case unsupportedVersion
@@ -596,6 +617,11 @@ struct ClientHandshake {
     /// challenge's host key. One that does not verify is a failed connection,
     /// whatever its status says.
     func status(ofResult payload: Data) throws -> AuthStatus {
+        try verifiedResult(payload).status
+    }
+
+    /// As `status(ofResult:)`, with the reason a `busy` carries, if any.
+    func verifiedResult(_ payload: Data) throws -> (status: AuthStatus, busyReason: HostBusyReason?) {
         let result = try AuthResult.decode(payload)
         let covered = result.status.signsEmptyResponse ? Data() : response
         let input = AuthWire.hostSignatureInput(challenge: challenge.payload, response: covered,
@@ -603,7 +629,7 @@ struct ClientHandshake {
         guard AuthSignature.verify(result.signature, over: input, publicKey: hostIdentityKey) else {
             throw AuthError.badSignature
         }
-        return result.status
+        return (result.status, result.status == .busy ? HostBusyReason.find(in: result.extensions) : nil)
     }
 
     func sessionKeys() throws -> SessionKeys {

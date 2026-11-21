@@ -40,7 +40,8 @@ enum LoginWindowCommands {
         let home = String(cString: pw.pointee.pw_dir)
         let config = LoginWindowInstall.Config(
             user: user, uid: pw.pointee.pw_uid,
-            userStateDirectory: home + "/Library/Application Support/Clamshell")
+            userStateDirectory: home + "/Library/Application Support/Clamshell",
+            appPath: Bundle.main.bundleURL.path)
 
         let appURL = Bundle.main.bundleURL
         guard appURL.pathExtension == "app", let resources = Bundle.main.resourceURL else {
@@ -58,11 +59,8 @@ enum LoginWindowCommands {
 
             // 1. A root-owned copy of the app, put in place whole.
             try makeRootDirectory(layout.root)
-            let staged = layout.root.appendingPathComponent("Clamshell.app.new", isDirectory: true)
-            try? FileManager.default.removeItem(at: staged)
-            try runTool("/usr/bin/ditto", [appURL.path, staged.path])
-            try runTool("/usr/sbin/chown", ["-R", "root:wheel", staged.path])
-            try runTool("/bin/chmod", ["-R", "go-w", staged.path])
+            let staged = try LoginWindowInstall.stageRootCopy(of: appURL.path, root: layout.root)
+            defer { try? FileManager.default.removeItem(at: staged.deletingLastPathComponent()) }
             try? FileManager.default.removeItem(at: layout.appCopy)
             try FileManager.default.moveItem(at: staged, to: layout.appCopy)
 
@@ -84,7 +82,7 @@ enum LoginWindowCommands {
         }
         out("Installed. The agent starts the next time the login window appears (log out or restart).")
         out("Log: \(layout.log)")
-        out("Screen Sharing and SSH are untouched; keep them on until this has been through a real restart.")
+        out("SSH is untouched; keep it on for the pre-boot disk unlock.")
         out("Remove with: sudo clamshell loginwindow uninstall")
         return 0
     }
@@ -117,6 +115,7 @@ enum LoginWindowCommands {
         out("Root-owned app copy:   \(yn(s.appCopy))")
         out("Agent plist:           \(yn(s.agentPlist))")
         out("Sync daemon plist:     \(yn(s.syncPlist))" + (s.syncLoaded == true ? " (loaded)" : s.syncPlist ? " (not loaded)" : ""))
+        out("App copy version:      \(s.copyVersion ?? "unknown")" + (s.outdated ? " (OUTDATED: the installed app is \(s.installedVersion ?? "?")); reinstall with: sudo clamshell loginwindow install" : ""))
         out("Mirrored user:         \(s.config?.user ?? "none")")
         out("Copied host key:       \(s.mirrorHostKey ? "yes" : "not readable or missing (needs sudo to be sure)")")
         switch s.mirrorMatchesUser {
@@ -141,6 +140,13 @@ enum LoginWindowCommands {
             let outcome = try LoginWindowInstall.sync(userDirectory: URL(fileURLWithPath: config.userStateDirectory),
                                                       userUID: config.uid, mirror: layout.stateDirectory)
             if outcome != .unchanged { clog("LOGINWINDOW-SYNC: \(outcome)") }
+            switch LoginWindowInstall.refreshAppCopy(layout: layout, config: config) {
+            case .upToDate: break
+            case .refreshed(let from, let to):
+                clog("LOGINWINDOW-SYNC: the login-window copy of the app was updated (\(from) -> \(to)); it is used the next time the login window starts")
+            case .skipped(let why):
+                clog("LOGINWINDOW-SYNC: the login-window copy of the app was not updated: \(why); reinstall with the loginwindow install command")
+            }
             return 0
         } catch {
             clog("LOGINWINDOW-SYNC: \(error)")

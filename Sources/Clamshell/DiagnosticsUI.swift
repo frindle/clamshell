@@ -15,7 +15,7 @@ final class DiagnosticsWindowController: NSWindowController {
     init(appDelegate: AppDelegate) {
         self.appDelegate = appDelegate
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 320),
+            contentRect: NSRect(x: 0, y: 0, width: 560, height: 560),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.title = "Clamshell Diagnostics"
         window.center()
@@ -50,7 +50,7 @@ final class DiagnosticsWindowController: NSWindowController {
             stack.trailingAnchor.constraint(equalTo: content.trailingAnchor),
             stack.topAnchor.constraint(equalTo: content.topAnchor),
             stack.bottomAnchor.constraint(equalTo: content.bottomAnchor),
-            textView.widthAnchor.constraint(equalToConstant: 388),
+            textView.widthAnchor.constraint(equalToConstant: 528),
         ])
         window?.contentView = content
     }
@@ -74,6 +74,8 @@ final class DiagnosticsWindowController: NSWindowController {
     /// and go). hardwareCodec() is a real VT probe, cached after the first call
     /// since the answer can't change without a reboot.
     private static var cachedHWCodec: StreamCodec?? = nil
+    /// The wake test really wakes the display, so it runs once, not every refresh.
+    private static let cachedWakeWorks = SystemPowerAssertions().declareUserActivity("Clamshell diagnostics check")
     private static func report(fleet: StreamFleet?) -> String {
         func mark(_ ok: Bool) -> String { ok ? "✓" : "✗" }
         var lines: [String] = []
@@ -93,6 +95,9 @@ final class DiagnosticsWindowController: NSWindowController {
         } else {
             lines.append("Native streaming:  stopped")
         }
+        lines.append("")
+        lines.append("Remote-ready (clamshell remote-ready):")
+        lines.append(RemoteReady.render(RemoteReady.checks(RemoteReady.live(displayWake: { cachedWakeWorks }))))
         return lines.joined(separator: "\n")
     }
 }

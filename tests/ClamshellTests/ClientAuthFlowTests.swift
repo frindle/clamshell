@@ -448,6 +448,39 @@ final class ClientAuthFlowTests: XCTestCase {
         XCTAssertEqual(delays, [15, 30, 60, 120, 120])
     }
 
+    func testBusyWithAReasonShowsTheReason() throws {
+        let cases: [(HostBusyReason, (Int) -> FlowState)] = [
+            (.keychain, { .hostNeedsKeychain(retryIn: $0) }),
+            (.remoteAccessOff, { .remoteAccessOff(retryIn: $0) }),
+        ]
+        for (reason, expected) in cases {
+            var flow = ClientAuthFlow(config: config(), known: known(), carry: FlowCarry())
+            let h = try host()
+            let (_, response) = challenge(&flow, h)
+            let device = try h.verify(responsePayload: try XCTUnwrap(response))
+            let payload = try h.result(.busy, response: device.response, extensions: [reason.authExtension],
+                                       sign: hostSigner())
+            let a = flow.received(type: resultType, payload: payload)
+            guard case let .reconnect(after, _)? = end(a) else { return XCTFail("expected a reconnect") }
+            XCTAssertEqual(states(a), [expected(Int(after))])
+        }
+    }
+
+    func testBusyReasonIsIgnoredOnOtherStatusesAndWhenUnknown() throws {
+        var flow = ClientAuthFlow(config: config(), known: known(), carry: FlowCarry())
+        let h = try host()
+        let (_, response) = challenge(&flow, h)
+        let device = try h.verify(responsePayload: try XCTUnwrap(response))
+        // A reason value this client does not know is plain busy.
+        let unknown = AuthExtension(type: HostBusyReason.extensionType, value: Data([0x7f]))
+        let a = flow.received(type: resultType, payload: try h.result(.busy, response: device.response,
+                                                                      extensions: [unknown], sign: hostSigner()))
+        guard case let .reconnect(after, _)? = end(a) else { return XCTFail("expected a reconnect") }
+        XCTAssertEqual(states(a), [.busy(retryIn: Int(after))])
+        XCTAssertNil(HostBusyReason.find(in: []))
+        XCTAssertEqual(HostBusyReason.find(in: [HostBusyReason.keychain.authExtension]), .keychain)
+    }
+
     func testTimeoutReconnectsAtOnceOnceThenLikeBusy() throws {
         var carry = FlowCarry()
         var delays: [Double] = []

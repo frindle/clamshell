@@ -157,7 +157,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// Whether the Mac's screen is currently locked (fed by StreamFleet's
     /// lock-notification observer). Pushed to the client as HOST_LOCK_STATE on
     /// every change and once right after HELLO_ACK, so a client that connects to
-    /// an already-locked Mac immediately shows the browser-VNC fallback banner.
+    /// an already-locked Mac immediately shows the lock banner.
     private var hostLocked = false
 
     // Adaptive bitrate (see PROTOCOL.md "Adaptive bitrate"): reactive, driven
@@ -646,22 +646,25 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 let capturedDisplayID: CGDirectDisplayID?
                 switch source {
                 case .display(let displayID):
-                    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                    
-                    // Resolve the current target display ID with fallback logic
-                    guard let resolvedDisplayID = self.resolveCurrentTargetDisplayID(content: content, originalDisplayID: displayID) else {
-                        clog("STREAM: no suitable display found for capture")
+                    // A display that is still waking is not in the shareable
+                    // content yet: wake it again and look a few times.
+                    let found = try await DisplayWakeRetry.run(
+                        wake: { DisplayWake.shared.wake("Clamshell capture found no display") },
+                        sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
+                        attempt: { () async throws -> (SCDisplay, CGDirectDisplayID)? in
+                            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                            guard let id = self.resolveCurrentTargetDisplayID(content: content, originalDisplayID: displayID),
+                                  let sc = content.displays.first(where: { $0.displayID == id }) else { return nil }
+                            return (sc, id)
+                        })
+                    guard let found else {
+                        clog("STREAM: no suitable display found for capture, even after waking it")
                         self.failSession(sessionConn)
                         return
                     }
-                    
-                    // Use the resolved display ID to find the actual SCDisplay object
-                    guard let scDisplay = content.displays.first(where: { $0.displayID == resolvedDisplayID }) else {
-                        clog("STREAM: resolved display \(resolvedDisplayID) not found in shareable content")
-                        self.failSession(sessionConn)
-                        return
-                    }
-                    
+                    let scDisplay = found.0
+                    let resolvedDisplayID = found.1
+
                     // Native pixel resolution and refresh rate — no scaling in
                     // the capture path; the encoder sees exactly what the
                     // display shows.
@@ -1092,7 +1095,7 @@ final class StreamFleet {
 
     /// `reportLockState: false` keeps HOST_LOCK_STATE at "unlocked" for good —
     /// for the login-window agent, where the lock screen is what's being
-    /// served and the client must not fall back to VNC.
+    /// served and the client keeps the native stream.
     ///
     /// `announce` is off unless asked for: a test rig or the login-window
     /// agent should not put this Mac in the clients' list of nearby hosts.
@@ -1115,7 +1118,7 @@ final class StreamFleet {
     }
 
     /// Observe the system lock/unlock distributed notifications (the same
-    /// mechanism `screensharingd` and the login window use) and fan the state
+    /// mechanism the login window uses) and fan the state
     /// out to every server so connected clients get HOST_LOCK_STATE. Main-queue
     /// confined, matching the rest of this class.
     private func observeLockState() {
@@ -1124,7 +1127,7 @@ final class StreamFleet {
             let obs = dnc.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
                 // Debounce lock state changes to handle the transient unlock->lock flap during login-window -> user-session handoff
-                // The ~600ms delay allows for the screensharingd handoff flap to settle before propagating the final state
+                // The ~600ms delay allows for the login-window handoff flap to settle before propagating the final state
                 self.pendingLockSettle?.cancel()
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }

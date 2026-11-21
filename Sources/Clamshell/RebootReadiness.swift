@@ -4,7 +4,7 @@ import ServiceManagement
 /// Pre-flight check for "will this Mac come back and be remotely reachable
 /// after a reboot while I'm away".
 ///
-/// The chain with FileVault on (and Screen Sharing off):
+/// The chain with FileVault on:
 ///
 /// * Planned restart: Clamshell's "Restart" runs `fdesetup authrestart`, which skips
 ///   the pre-boot disk unlock once. Needs authrestart support.

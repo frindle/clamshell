@@ -223,20 +223,20 @@ enum StreamMessage {
         frame(type: .clipboard, payload: Data(text.utf8))
     }
 
-    /// Host screen lock state — native capture can't survive the macOS lock
-    /// screen, so the client shows the browser-VNC fallback banner when locked.
-    ///
-    /// `native` is the host's `nativeLockScreen` setting. When on, a second
-    /// payload byte of 1 tells the client to keep showing the native stream
-    /// (banner only, never the browser VNC fallback). When off the payload is
-    /// the original single byte, so older clients and the default are unchanged.
+    /// Host screen lock state. Payload `[locked, native]`; `native` is the
+    /// host's `nativeLockScreen` setting. The native stream is the only path
+    /// through the lock screen, so a locked host shows a banner and the stream
+    /// keeps running. A single-byte payload (older hosts) still parses.
     static func hostLockState(_ locked: Bool, native: Bool = false) -> Data {
-        frame(type: .hostLockState, payload: native ? Data([locked ? 1 : 0, 1]) : Data([locked ? 1 : 0]))
+        let l: UInt8 = locked ? 1 : 0
+        let payload = native ? Data([l, 1]) : Data([l])
+        return frame(type: .hostLockState, payload: payload)
     }
 
-    /// The host setting `nativeLockScreen` (UserDefaults, default off).
+    /// The host setting `nativeLockScreen` (UserDefaults). Unset means ON: the
+    /// native path is the default and an explicit off is still honoured.
     static func nativeLockScreenEnabled(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: "nativeLockScreen")
+        defaults.object(forKey: "nativeLockScreen") == nil ? true : defaults.bool(forKey: "nativeLockScreen")
     }
 
     /// Remote cursor position, normalized 0..1 in this display's source-frame

@@ -1,7 +1,6 @@
 import SwiftUI
 import AVFoundation
 import CoreMedia
-import WebKit
 
 // Video rendering + direct input capture, shared by both iOS targets.
 // VideoUIView hardware-decodes and renders via AVSampleBufferDisplayLayer;
@@ -273,60 +272,6 @@ struct VideoStalledBanner: View {
             .foregroundStyle(.white)
             .padding(.horizontal, 12).padding(.vertical, 6)
             .background((gaveUp ? Color.red : Color.orange).opacity(0.9), in: Capsule())
-    }
-}
-
-/// Shown while the host reports its screen is locked (HOST_LOCK_STATE). Native
-/// ScreenCaptureKit capture and CGEventPost input can't cross the macOS lock
-/// screen, so the video freezes — this embeds the browser VNC bridge (Apple's
-/// privileged screensharingd, which CAN reach and unlock a locked Mac)
-/// directly in-app and loads it automatically, no manual "open in Safari"
-/// tap. Requires the Mac's Web Access setting to be on (see WebServer.swift);
-/// falls back to plain text if no URL can be derived (e.g. a wss:// tunnel
-/// host, which can't be remapped to the web-bridge port).
-struct LockedHostView: View {
-    let url: URL?
-
-    var body: some View {
-        ZStack {
-            if let url {
-                EmbeddedWebView(url: url).ignoresSafeArea()
-            } else {
-                Color.black.ignoresSafeArea()
-            }
-            VStack {
-                Label("Mac is locked — unlocking via Screen Sharing", systemImage: "lock.fill")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-                    .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.yellow.opacity(0.7), lineWidth: 1))
-                    .padding(.top, 8)
-                Spacer()
-                if url == nil {
-                    Text("Can't auto-derive the Mac's web-access URL for a tunnel host — open its http://…:5901 in a browser to unlock.")
-                        .font(.caption2).foregroundStyle(.white).multilineTextAlignment(.center)
-                        .padding()
-                        .background(.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
-                        .padding()
-                }
-            }
-        }
-        // Once unlocked, ContentView's body switches back to VideoView on
-        // its own (client.hostLocked flips via HOST_LOCK_STATE) — native
-        // video was never disconnected, so it resumes with no extra step.
-    }
-}
-
-struct EmbeddedWebView: UIViewRepresentable {
-    let url: URL
-    func makeUIView(context: Context) -> WKWebView {
-        let view = WKWebView()
-        view.load(URLRequest(url: url))
-        return view
-    }
-    func updateUIView(_ uiView: WKWebView, context: Context) {
-        if uiView.url != url { uiView.load(URLRequest(url: url)) }
     }
 }
 

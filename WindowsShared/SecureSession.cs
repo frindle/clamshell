@@ -288,7 +288,10 @@ public sealed class ClientHandshake
     /// <summary>The status of an AUTH_RESULT whose signature verifies against the
     /// challenge's host key. One that does not verify is a failed connection,
     /// whatever its status says.</summary>
-    public AuthStatus StatusOfResult(byte[] payload)
+    public AuthStatus StatusOfResult(byte[] payload) => VerifiedResult(payload).Status;
+
+    /// <summary>As <see cref="StatusOfResult"/>, with the reason a busy carries.</summary>
+    public (AuthStatus Status, HostBusyReason BusyReason) VerifiedResult(byte[] payload)
     {
         var result = AuthResult.Decode(payload);
         var covered = AuthStatusInfo.SignsEmptyResponse(result.Status) ? Array.Empty<byte>() : Response;
@@ -297,7 +300,8 @@ public sealed class ClientHandshake
         {
             throw new AuthException(AuthError.BadSignature);
         }
-        return result.Status;
+        return (result.Status, result.Status == AuthStatus.Busy
+            ? HostBusyReasons.Find(result.Extensions) : HostBusyReason.None);
     }
 
     public SessionKeys DeriveSessionKeys()

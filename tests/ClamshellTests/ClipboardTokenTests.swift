@@ -99,7 +99,6 @@ final class ClipboardTokenTests: XCTestCase {
         server.clipboardToken = ""
         XCTAssertEqual(server.clipboardToken.count, 32)
         XCTAssertNotEqual(server.clipboardToken, first)
-        XCTAssertTrue(server.clipboardScript.contains("/clipboard?token=\(server.clipboardToken)'"))
     }
 }
 

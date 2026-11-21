@@ -64,7 +64,7 @@ enum LoginWindowAgent {
             let web = WebServer()
             web.start()
             // The login window is this agent's whole job, so it never tells the
-            // client the host is "locked" (which makes the client fall back to VNC).
+            // client the host is "locked" (the login window is not a locked session).
             let fleet = StreamFleet(basePort: streamDefaultPort, reportLockState: false, auth: auth)
             fleet.acceptsLoginCredentials = true
             fleet.rebuild()
@@ -122,7 +122,12 @@ enum LoginWindowAgent {
         }
         RunLoop.main.add(timer, forMode: .default)
 
-        withExtendedLifetime((web, fleet)) { RunLoop.main.run() }
+        // The Screen Sharing switch governs the login window too: turning it
+        // off drops an open session here just as it does in the user's app.
+        let switchWatcher = RemoteAccessWatcher()
+        switchWatcher.start()
+
+        withExtendedLifetime((web, fleet, switchWatcher)) { RunLoop.main.run() }
         return 0
     }
 }

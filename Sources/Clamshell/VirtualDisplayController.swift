@@ -17,7 +17,7 @@ struct DisplayPreset: Equatable {
     var pixelsHigh: UInt32 { pointsHigh * scale }
 
     /// iPad Air 13" is 1366x1024 points (4:3). Rendering the virtual display
-    /// at exactly that shape means the Screen Sharing client fills the iPad
+    /// at exactly that shape means the client fills the iPad
     /// edge-to-edge with no letterboxing.
     static let iPadAir13 = DisplayPreset(name: "iPad Air 13\"", pointsWide: 1366, pointsHigh: 1024)
     static let iPadPro11 = DisplayPreset(name: "iPad Pro 11\"", pointsWide: 1194, pointsHigh: 834)
