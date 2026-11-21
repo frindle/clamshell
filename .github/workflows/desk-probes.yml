@@ -1,0 +1,37 @@
+name: DeskProbes
+on:
+  push:
+    branches: [main]
+    paths: ['DeskProbes/**', '.github/workflows/desk-probes.yml']
+  pull_request:
+    paths: ['DeskProbes/**', '.github/workflows/desk-probes.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e7:
+    name: E7 probe (build, sign, smoke run)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: DeskProbes/E7/build.sh "$RUNNER_TEMP/e7"
+      # No Full Disk Access or Accessibility on the runner: it must start, report both as missing, and exit on time.
+      - name: Smoke run
+        run: |
+          rm -f ~/Library/Logs/NotifProbe/probe.log
+          # macOS has no timeout(1); perl alarm kills it if it hangs.
+          perl -e 'alarm 30; exec @ARGV' "$RUNNER_TEMP/e7/NotifProbe.app/Contents/MacOS/NotifProbe" 3
+          cat ~/Library/Logs/NotifProbe/probe.log
+          grep -q ' start: run 3s' ~/Library/Logs/NotifProbe/probe.log
+          grep -q ' end: notifications=' ~/Library/Logs/NotifProbe/probe.log
+      - name: Package
+        run: cd "$RUNNER_TEMP/e7" && ditto -c -k --keepParent NotifProbe.app NotifProbe.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NotifProbe
+          path: ${{ runner.temp }}/e7/NotifProbe.zip
+          retention-days: 14
