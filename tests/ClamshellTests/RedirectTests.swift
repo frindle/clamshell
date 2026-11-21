@@ -95,8 +95,8 @@ final class RedirectTests: XCTestCase {
         XCTAssertFalse(pf.enabled)
     }
 
-    func testThisBuildHasNoRFBServerSoTheGateIsClosed() {
-        XCTAssertFalse(RFBServerGate.present)
-        XCTAssertFalse(RFBServerGate.selfTest())
+    func testThisBuildCarriesAnRFBServerSoTheGateCanOpen() {
+        XCTAssertTrue(RFBServerGate.present)
+        XCTAssertTrue(RFBServerGate.selfTest())
     }
 }

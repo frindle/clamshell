@@ -147,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         monitor.start()
         remoteAccessWatcher.start()
+        RFBRuntime.shared.start()
         NotificationCenter.default.addObserver(forName: RemoteAccessSwitch.didChange, object: nil, queue: .main) { [weak self] _ in
             self?.rebuildMenu()
         }

@@ -126,6 +126,9 @@ enum LoginWindowAgent {
         // off drops an open session here just as it does in the user's app.
         let switchWatcher = RemoteAccessWatcher()
         switchWatcher.start()
+        // Clamshell's own RFB server, for clients arriving on port 5900 via
+        // the redirect. It shares this agent's login-window session.
+        RFBRuntime.shared.start()
 
         withExtendedLifetime((web, fleet, switchWatcher)) { RunLoop.main.run() }
         return 0

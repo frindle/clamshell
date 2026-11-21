@@ -503,8 +503,8 @@ that independently of this codebase).
 ## Remote client notes
 
 - **Plain VNC (Screen Sharing.app, Screens, `vnc://` links)**: reaches
-  Clamshell once the cutover in "Replacing Screen Sharing" is applied and this
-  build carries the RFB server; no audio over VNC, and resolution comes from
+  Clamshell once the cutover in "Replacing Screen Sharing" is applied (this
+  build carries the RFB server); no audio over VNC, and resolution comes from
   the preset (VNC can't negotiate it).
 - **Jump Desktop (Fluid)**: pairs well — Jump provides fluid streaming,
   audio, and dynamic resolution; Clamshell provides the collapse + restore.
@@ -649,6 +649,21 @@ form.
   `scripts/cutover-screen-sharing.sh` (--check, --apply, --revert) keep a
   packet-filter redirect from port 5900 to Clamshell's own RFB server. They
   refuse to apply in builds without that server.
+- **Clamshell's own RFB server.** An RFB 3.8 server listens on 127.0.0.1:5950
+  only (the redirect is what makes it answer on 5900), inside the Clamshell app
+  and, at the login window, inside the login-window agent; no extra process.
+  It offers only Apple Remote Desktop authentication (security type 30): the
+  user name and password are checked against the Mac's own accounts and the
+  Screen Sharing access list ("Allow access for: Only these users"), there is
+  no VNC password and no "none", at most 3 failed logins per address per
+  minute (20 across all addresses), at most 3 logins in progress per address,
+  20 seconds to finish one, and passwords are never logged. It follows
+  the Screen Sharing switch: off refuses new clients and drops open ones. A
+  client that logs in with a valid account is allowed what that account could
+  do at the keyboard: it does not need a trusted device (the account password
+  is the credential), but nothing else is reachable through it. Raw and ZRLE
+  encodings, DesktopSize; `clamshell rfb-selftest` exercises it on a scratch
+  port. Clipboard sharing and CopyRect are not implemented.
 - **A keychain question can no longer freeze Clamshell at launch.** The web
   page on port 5901 and the streams now start even when the Mac's keychain is
   waiting for someone to click "Allow". Devices that need the protection key
