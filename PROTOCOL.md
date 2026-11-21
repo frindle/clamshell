@@ -313,6 +313,12 @@ resumes on its own through the existing reconnect/keyframe flow — no separate
 resume message. Pre-lock-state hosts simply never send it; the client shows no
 banner.
 
+When the browser fallback is closed after an unlock, the host keeps the
+`screensharingd` connection open and idle, because macOS re-locks a Mac whose
+unlocking Screen Sharing viewer disconnects. It closes that connection when the
+Mac locks again, when no viewer has been connected for about 30 seconds, after
+12 hours, or when a new fallback session opens.
+
 
 ### Native lock screen (optional trailing byte)
 
