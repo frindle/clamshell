@@ -1,4 +1,6 @@
-// E7 probe: can a host agent read new notifications and Dock badges on this Mac?
+// E7 probe: can a host agent read new notifications and Dock badges on this Mac, and how fast?
+// Two paths for notifications: the store (Full Disk Access, about 5 s late) and the on-screen
+// banner (Accessibility).
 //
 // Read-only. It never posts, clears or changes a notification, and never touches the Dock.
 // Privacy: the log holds metadata only (app id, field lengths, latency). The full title and body
@@ -35,6 +37,11 @@ let marker = "E7 probe"
 let dbPath = home.appendingPathComponent("Library/Group Containers/group.com.apple.usernoted/db2/db").path
 var db: OpaquePointer?
 var lastRec: Int64 = -1
+// rec_id is a plain rowid, so clearing history lets new rows reuse ids below lastRec.
+// The delivery time is the second watermark; seenKeys stops a row being logged twice.
+var lastDate: Double = 0
+var seenKeys: Set<String> = []
+var dateCol = "NULL"
 var recordCols: Set<String> = []
 var seen = 0
 
@@ -67,9 +74,12 @@ func openStore() -> Bool {
   say("store: open (Full Disk Access works). tables=\(tables.joined(separator: ","))")
   _ = rows("PRAGMA table_info(record)") { recordCols.insert(text($0, 1)) }
   say("store: record columns=\(recordCols.sorted().joined(separator: ","))")
+  dateCol = recordCols.contains("delivered_date") ? "delivered_date" : (recordCols.contains("request_date") ? "request_date" : "NULL")
   var count: Int64 = 0
-  _ = rows("SELECT count(*), coalesce(max(rec_id), 0) FROM record") { count = sqlite3_column_int64($0, 0); lastRec = sqlite3_column_int64($0, 1) }
-  say("store: \(count) rows; watching for rec_id > \(lastRec)")
+  _ = rows("SELECT count(*), coalesce(max(rec_id), 0), coalesce(max(\(dateCol)), 0) FROM record") {
+    count = sqlite3_column_int64($0, 0); lastRec = sqlite3_column_int64($0, 1); lastDate = sqlite3_column_double($0, 2)
+  }
+  say("store: \(count) rows; watching for rec_id > \(lastRec) or \(dateCol) > \(lastDate)")
   return true
 }
 
@@ -82,8 +92,8 @@ func appID(_ id: Int64) -> String {
 func pollStore() {
   guard openStore(), recordCols.contains("rec_id"), recordCols.contains("data") else { return }
   let hasApp = recordCols.contains("app_id")
-  let dateCol = recordCols.contains("delivered_date") ? "delivered_date" : (recordCols.contains("request_date") ? "request_date" : "NULL")
-  let sql = "SELECT rec_id, \(hasApp ? "app_id" : "0"), \(dateCol), data FROM record WHERE rec_id > ? ORDER BY rec_id"
+  let byDate = dateCol == "NULL" ? "" : " OR \(dateCol) > \(lastDate)"
+  let sql = "SELECT rec_id, \(hasApp ? "app_id" : "0"), \(dateCol), data FROM record WHERE rec_id > ?\(byDate) ORDER BY rec_id"
   var fresh: [(Int64, Int64, Double?, Data)] = []
   _ = rows(sql, [lastRec]) { s in
     let date: Double? = sqlite3_column_type(s, 2) == SQLITE_NULL ? nil : sqlite3_column_double(s, 2)
@@ -94,6 +104,8 @@ func pollStore() {
   let now = Date().timeIntervalSinceReferenceDate
   for (rec, app, date, blob) in fresh {
     lastRec = max(lastRec, rec)
+    if let d = date { lastDate = max(lastDate, d) }
+    guard seenKeys.insert("\(rec)@\(date ?? 0)").inserted else { continue }
     seen += 1
     let lag = date.map { String(format: "%.2fs", now - $0) } ?? "n/a"
     guard let top = try? PropertyListSerialization.propertyList(from: blob, format: nil) as? [String: Any] else {
@@ -107,9 +119,72 @@ func pollStore() {
     let bundle = top["app"] as? String ?? appID(app)
     var line = "notif rec=\(rec) app=\(bundle) lag=\(lag) title=\(title.count)ch subtitle=\(sub.count)ch body=\(body.count)ch"
     if req.isEmpty { line += " keys=\(top.keys.sorted().joined(separator: ","))" }
-    if title.hasPrefix(marker) { line += " TEXT title=\"\(title)\" body=\"\(body)\"" }
+    if title.hasPrefix(marker) {
+      let delivered = date.map { stamp.string(from: Date(timeIntervalSinceReferenceDate: $0)) } ?? "n/a"
+      line += " delivered=\(delivered) TEXT title=\"\(title)\" body=\"\(body)\""
+    }
     say(line)
   }
+}
+
+// MARK: banners (Accessibility)
+//
+// The store is written about 5 s after delivery. The banner is on screen at once, as part of the
+// Notification Center process, so reading its text through Accessibility should be much faster.
+// Shown only when the banner is: Focus, Do Not Disturb or the "None" style hide it.
+
+var ncPid: pid_t = 0
+var ncObserver: AXObserver?
+var bannerTexts: Set<String> = []
+
+func collectTexts(_ e: AXUIElement, depth: Int, into out: inout [String]) {
+  guard depth < 14, out.count < 300 else { return }
+  for name in [kAXValueAttribute, kAXTitleAttribute, kAXDescriptionAttribute] {
+    var v: CFTypeRef?
+    if AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success, let s = v as? String, !s.isEmpty { out.append(s) }
+  }
+  var kids: CFTypeRef?
+  if AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &kids) == .success, let ks = kids as? [AXUIElement] {
+    for k in ks { collectTexts(k, depth: depth + 1, into: &out) }
+  }
+}
+
+func scanBanners(_ why: String) {
+  guard axTrusted else { return }
+  if ncPid == 0 || NSRunningApplication(processIdentifier: ncPid) == nil { attachNotificationCenter() }
+  guard ncPid != 0 else { return }
+  let t = Date()
+  var out: [String] = []
+  collectTexts(AXUIElementCreateApplication(ncPid), depth: 0, into: &out)
+  let now = Set(out)
+  let fresh = now.subtracting(bannerTexts)
+  bannerTexts = now
+  guard !fresh.isEmpty else { return }
+  var line = "banner(\(why)): \(fresh.count) new text(s), lengths=\(fresh.map { $0.count }.sorted())"
+    + String(format: " walk=%.0f ms", Date().timeIntervalSince(t) * 1000)
+  let marked = fresh.filter { $0.contains(marker) }.sorted()
+  if !marked.isEmpty { line += " TEXT " + marked.map { "\"\($0)\"" }.joined(separator: " ") }
+  say(line)
+}
+
+func attachNotificationCenter() {
+  guard let nc = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.notificationcenterui").first else {
+    return
+  }
+  ncPid = nc.processIdentifier
+  var obs: AXObserver?
+  guard AXObserverCreate(ncPid, { _, _, note, _ in scanBanners(note as String) }, &obs) == .success, let o = obs else {
+    say("banners: observer could not be made")
+    return
+  }
+  let app = AXUIElementCreateApplication(ncPid)
+  var results: [String] = []
+  for n in [kAXWindowCreatedNotification, kAXCreatedNotification, kAXLayoutChangedNotification, kAXUIElementDestroyedNotification] {
+    results.append("\(n)=\(AXObserverAddNotification(o, app, n as CFString, nil).rawValue)")
+  }
+  CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(o), .defaultMode)
+  ncObserver = o
+  say("banners: watching Notification Center pid \(ncPid) (\(results.joined(separator: " ")); 0 is success)")
 }
 
 // MARK: Dock badges
@@ -173,6 +248,8 @@ let started = Date()
 var lastStoreTry = Date.distantPast
 var lastBeat = Date()
 Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { _ in
+  // The observer should see a banner first; the poll shows how much it gains.
+  scanBanners("poll")
   if db != nil { pollStore() } else if Date().timeIntervalSince(lastStoreTry) > 2 {
     lastStoreTry = Date()
     _ = openStore()
