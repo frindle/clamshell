@@ -147,6 +147,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.recomputeSessionState()
         }
         monitor.start()
+        webServer.nativeViewerConnected = { [weak self] in
+            self?.streamFleet?.clientStatus.contains(where: { $0.connected }) == true
+        }
         webServer.bindHosts = UserDefaults.standard.stringArray(forKey: "bindHosts")
             ?? UserDefaults.standard.string(forKey: "bindHost").map { [$0] } // migrate pre-multi-select key
             ?? []

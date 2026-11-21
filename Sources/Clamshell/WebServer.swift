@@ -195,6 +195,21 @@ final class WebServer {
     private var streamBridgeListeners: [NWListener] = []
     private let queue = DispatchQueue(label: "clamshell.web")
     private var activeSessions = 0
+    private var streamBridgeSessions = 0
+
+    /// Asked (on the main queue) whether a native stream client is connected.
+    /// Together with the browser stream bridges it decides when a parked VNC
+    /// connection has lost its last viewer.
+    var nativeViewerConnected: (() -> Bool)?
+
+    private struct ParkedVNC {
+        let id = UUID()
+        let conn: NWConnection
+        let since: TimeInterval
+    }
+    private var parked: [ParkedVNC] = []
+    private var parkPolicy = VNCParkPolicy()
+    private var parkTimer: DispatchSourceTimer?
 
     /// Browser-facing WS bridge ports for the /client web streaming client —
     /// one per display, each proxying to the matching local StreamServer WS
@@ -248,6 +263,7 @@ final class WebServer {
         rebindWork = nil
         rebindAttempts = 0
         closeListeners()
+        queue.async { [weak self] in self?.closeParked(reason: "web access off") }
         isRunning = false
         clog("web access OFF")
     }
@@ -764,13 +780,27 @@ final class WebServer {
     }
 
     private func bridge(_ ws: NWConnection) {
+        // A fresh session replaces any parked one.
+        closeParked(reason: "new session")
         let vnc = NWConnection(host: "127.0.0.1", port: 5900, using: .tcp)
         var closed = false
+        var vncReady = false
+        var vncDead = false
+        var isParked = false
         let close: () -> Void = { [weak self] in
             guard !closed else { return }
             closed = true
             ws.cancel()
-            vnc.cancel()
+            // screensharingd re-locks a Mac that its unlocking viewer
+            // abandons, so while the Mac is unlocked keep the connection
+            // open and idle instead of closing it.
+            if let self, vncReady, !vncDead,
+               VNCParkPolicy.shouldPark(hostLocked: Self.hostLocked(), upstreamAlive: true) {
+                isParked = true
+                self.park(vnc)
+            } else {
+                vnc.cancel()
+            }
             self?.sessionEnded()
         }
 
@@ -782,8 +812,9 @@ final class WebServer {
             if case .cancelled = state { close() }
         }
         vnc.stateUpdateHandler = { state in
-            if case .failed = state { close() }
-            if case .cancelled = state { close() }
+            if case .ready = state { vncReady = true }
+            if case .failed = state { vncDead = true; close() }
+            if case .cancelled = state { vncDead = true; close() }
         }
 
         func pumpWSToVNC() {
@@ -800,7 +831,12 @@ final class WebServer {
         }
         func pumpVNCToWS() {
             vnc.receive(minimumIncompleteLength: 1, maximumLength: 262144) { data, _, isComplete, error in
-                guard error == nil, !isComplete else { close(); return }
+                if isParked {
+                    // Parked: read and discard so nothing backs up.
+                    if error != nil || isComplete { vncDead = true; vnc.cancel() } else { pumpVNCToWS() }
+                    return
+                }
+                guard error == nil, !isComplete else { vncDead = true; close(); return }
                 if let data, !data.isEmpty {
                     let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
                     let ctx = NWConnection.ContentContext(identifier: "vnc", metadata: [meta])
@@ -893,9 +929,11 @@ final class WebServer {
             }
             browserWS.cancel()
             innerTask?.cancel(with: .goingAway, reason: nil)
+            self?.streamBridgeSessions = max(0, (self?.streamBridgeSessions ?? 1) - 1)
             self?.sessionEnded()
         }
 
+        streamBridgeSessions += 1
         sessionStarted()
         clog("browser stream session opened -> 127.0.0.1:\(targetPort)")
 
@@ -958,6 +996,62 @@ final class WebServer {
         }
 
         browserWS.start(queue: queue)
+    }
+
+    // MARK: - Parked VNC connections
+
+    /// Whether the login session's screen is locked right now.
+    private static func hostLocked() -> Bool {
+        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Int == 1
+    }
+
+    private func park(_ vnc: NWConnection) {
+        // Only the connection that unlocked the Mac matters; one is kept.
+        closeParked(reason: "replaced")
+        parked.append(ParkedVNC(conn: vnc, since: ProcessInfo.processInfo.systemUptime))
+        parkPolicy.reset()
+        clog("VNC session parked (Mac unlocked)")
+        guard parkTimer == nil else { return }
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now() + 5, repeating: 5)
+        t.setEventHandler { [weak self] in self?.checkParked() }
+        parkTimer = t
+        t.resume()
+    }
+
+    private func checkParked() {
+        guard !parked.isEmpty else { stopParkTimer(); return }
+        DispatchQueue.main.async { [weak self] in
+            let native = self?.nativeViewerConnected?() ?? false
+            self?.queue.async { self?.evaluateParked(nativeViewer: native) }
+        }
+    }
+
+    private func evaluateParked(nativeViewer: Bool) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let locked = Self.hostLocked()
+        let viewer = nativeViewer || streamBridgeSessions > 0
+        for p in parked {
+            if let why = parkPolicy.closeReason(parkedAt: p.since, now: now,
+                                                hostLocked: locked, viewerConnected: viewer) {
+                closeParked(reason: "\(why)")
+                return
+            }
+        }
+    }
+
+    private func closeParked(reason: String) {
+        guard !parked.isEmpty else { return }
+        for p in parked { p.conn.cancel() }
+        parked.removeAll()
+        parkPolicy.reset()
+        stopParkTimer()
+        clog("parked VNC session closed (\(reason))")
+    }
+
+    private func stopParkTimer() {
+        parkTimer?.cancel()
+        parkTimer = nil
     }
 
     private func sessionStarted() {
