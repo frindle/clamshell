@@ -642,6 +642,17 @@ form.
 - **Start at Login is a launch agent that restarts the app after a crash**
   (not after a quit). Anyone who had it on is moved over once.
 
+### 0.9.26 — 2026-11-20
+- **Resizing from the browser works again, and an old error no longer sticks.**
+- The browser client sets the Mac's screen to your window size once. Before,
+  it went to the default size first and then to yours, mirroring could fail
+  in between, and the whole ultrawide was streamed. If mirroring fails now,
+  it tries again every second for up to 20 seconds.
+- "The saved Macs could not be read" now says why, and it goes away once the
+  Mac you just checked has been saved, instead of staying through every
+  reconnect.
+- The Mac's log no longer gets a line for every packet.
+
 ### 0.9.25 — 2026-11-13
 - **Quieter on the Mac: fewer background processes, fewer keyframes, cheaper logging.**
 - Session detection no longer starts `curl` and `ps` every 2 seconds; it asks
