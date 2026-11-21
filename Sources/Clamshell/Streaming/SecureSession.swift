@@ -35,8 +35,7 @@ enum HostBusyReason: UInt8, Equatable {
     /// The Mac cannot read its trusted-device list until someone approves
     /// Clamshell's Keychain access on that Mac.
     case keychain = 1
-    /// Remote access is switched off on this Mac (Screen Sharing is off, or
-    /// the owner paused it from the menu bar).
+    /// Clamshell's own remote-access switch is off on this Mac (menu bar).
     case remoteAccessOff = 2
 
     static let extensionType: UInt8 = 0x02

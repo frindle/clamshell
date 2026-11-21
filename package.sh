@@ -31,7 +31,7 @@ echo "=== assembling ${APP} ==="
 rm -rf dist
 mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
 cp "${BIN}" "${APP}/Contents/MacOS/Clamshell"
-# SwiftPM resource bundle (noVNC assets) — Bundle.module finds it in
+# SwiftPM resource bundle (web client assets) — Bundle.module finds it in
 # Contents/Resources when running from the .app.
 cp -R "${RES_DIR}/Clamshell_Clamshell.bundle" "${APP}/Contents/Resources/"
 cp AppIcon.icns "${APP}/Contents/Resources/"

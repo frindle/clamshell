@@ -84,7 +84,7 @@ enum LoginWindowCommands {
         }
         out("Installed. The agent starts the next time the login window appears (log out or restart).")
         out("Log: \(layout.log)")
-        out("Screen Sharing and SSH are untouched; keep them on until this has been through a real restart.")
+        out("SSH is untouched; keep it on for the pre-boot disk unlock.")
         out("Remove with: sudo clamshell loginwindow uninstall")
         return 0
     }

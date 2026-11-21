@@ -64,7 +64,7 @@ enum LoginWindowAgent {
             let web = WebServer()
             web.start()
             // The login window is this agent's whole job, so it never tells the
-            // client the host is "locked" (which makes the client fall back to VNC).
+            // client the host is "locked" (the login window is not a locked session).
             let fleet = StreamFleet(basePort: streamDefaultPort, reportLockState: false, auth: auth)
             fleet.acceptsLoginCredentials = true
             fleet.rebuild()

@@ -11,7 +11,7 @@ import CryptoKit
 ///    small launchd daemon (`sync`) whenever the user's folder changes;
 /// 3. installs two plists copied from the app bundle: the agent (login window
 ///    session only) and the sync daemon.
-/// Nothing here touches Screen Sharing, SSH, FileVault or any other setting.
+/// Nothing here touches SSH, FileVault or any other setting.
 enum LoginWindowInstall {
     static let agentLabel = "com.frindle.clamshell.loginwindow-agent"
     static let syncLabel = "com.frindle.clamshell.loginwindow-sync"

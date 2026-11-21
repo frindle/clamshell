@@ -84,7 +84,6 @@ test('with nothing cached and the Mac down, the error passes through', async () 
 test('only /client is handled: other paths, origins and methods are left alone', async () => {
   const w = makeWorker();
   assert.strictEqual(await w.fire(w.request('/clipboard?token=x')), null);
-  assert.strictEqual(await w.fire(w.request('/vnc.html')), null);
   assert.strictEqual(await w.fire(w.request('/clientele')), null);
   assert.strictEqual(await w.fire({ url: 'http://other.test/client', method: 'GET' }), null);
   assert.strictEqual(await w.fire(w.request('/client', { method: 'POST' })), null);

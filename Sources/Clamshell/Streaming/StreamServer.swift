@@ -157,7 +157,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     /// Whether the Mac's screen is currently locked (fed by StreamFleet's
     /// lock-notification observer). Pushed to the client as HOST_LOCK_STATE on
     /// every change and once right after HELLO_ACK, so a client that connects to
-    /// an already-locked Mac immediately shows the browser-VNC fallback banner.
+    /// an already-locked Mac immediately shows the lock banner.
     private var hostLocked = false
 
     // Adaptive bitrate (see PROTOCOL.md "Adaptive bitrate"): reactive, driven
@@ -320,8 +320,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         queue.async { [self] in
             hostLocked = locked
             guard connection != nil else { return }
-            send(StreamMessage.hostLockState(locked, native: StreamMessage.nativeLockScreenEnabled(),
-                                             vncAvailable: VNCAvailability.current()))
+            send(StreamMessage.hostLockState(locked, native: StreamMessage.nativeLockScreenEnabled()))
         }
     }
 
@@ -762,8 +761,7 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                                                      width: UInt32(pxWidth), height: UInt32(pxHeight),
                                                      hardwareEncoder: encoder.isHardware))
                     self.sendStreamStatus() // initial bitrate for the quality indicator
-                    self.send(StreamMessage.hostLockState(self.hostLocked, native: StreamMessage.nativeLockScreenEnabled(),
-                                                          vncAvailable: VNCAvailability.current())) // so a client joining a locked Mac knows now
+                    self.send(StreamMessage.hostLockState(self.hostLocked, native: StreamMessage.nativeLockScreenEnabled())) // so a client joining a locked Mac knows now
                     // Cursor-follow auto-pan is a display concept (see
                     // PROTOCOL.md) — a remoted window has no "different
                     // display" to report positions relative to.
@@ -1094,7 +1092,7 @@ final class StreamFleet {
 
     /// `reportLockState: false` keeps HOST_LOCK_STATE at "unlocked" for good —
     /// for the login-window agent, where the lock screen is what's being
-    /// served and the client must not fall back to VNC.
+    /// served and the client keeps the native stream.
     ///
     /// `announce` is off unless asked for: a test rig or the login-window
     /// agent should not put this Mac in the clients' list of nearby hosts.
@@ -1117,7 +1115,7 @@ final class StreamFleet {
     }
 
     /// Observe the system lock/unlock distributed notifications (the same
-    /// mechanism `screensharingd` and the login window use) and fan the state
+    /// mechanism the login window uses) and fan the state
     /// out to every server so connected clients get HOST_LOCK_STATE. Main-queue
     /// confined, matching the rest of this class.
     private func observeLockState() {
@@ -1126,7 +1124,7 @@ final class StreamFleet {
             let obs = dnc.addObserver(forName: Notification.Name(name), object: nil, queue: .main) { [weak self] _ in
                 guard let self else { return }
                 // Debounce lock state changes to handle the transient unlock->lock flap during login-window -> user-session handoff
-                // The ~600ms delay allows for the screensharingd handoff flap to settle before propagating the final state
+                // The ~600ms delay allows for the login-window handoff flap to settle before propagating the final state
                 self.pendingLockSettle?.cancel()
                 let work = DispatchWorkItem { [weak self] in
                     guard let self else { return }

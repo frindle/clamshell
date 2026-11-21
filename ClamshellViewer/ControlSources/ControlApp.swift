@@ -263,16 +263,7 @@ struct ControlContentView: View {
             switch client.status {
             case .idle, .failed: connectForm
             case .connecting, .streaming:
-                // Same auto-forward as ClamshellViewer: the phone's trackpad
-                // surface can't do anything useful while the Mac is locked
-                // anyway (native input injection is blocked), so show the
-                // embedded VNC bridge instead — reverts to controlSurface on
-                // its own once client.hostLocked flips false.
-                if client.hostLocked {
-                    LockedHostView(url: client.browserFallbackURL)
-                } else {
-                    controlSurface
-                }
+                controlSurface
             }
         }
         .statusBarHidden(true)

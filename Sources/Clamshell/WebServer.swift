@@ -2,19 +2,14 @@ import AppKit
 import Foundation
 import Network
 
-/// Browser-based remote desktop: serves the vendored noVNC client over HTTP
-/// and bridges WebSocket frames to the Mac's own Screen Sharing service
-/// (localhost:5900). No transport is reimplemented — screensharingd does the
-/// VNC work; this is a static file server plus a byte pump.
+/// Serves Clamshell's own browser client (Resources/webclient) over HTTP and
+/// bridges its WebSocket to the native stream servers. Nothing here depends on
+/// Apple's Screen Sharing: the lock screen and login window are carried by the
+/// same native stream.
 ///
-///   http://<mac>:5901  → noVNC UI → ws://<mac>:5902 → tcp://127.0.0.1:5900
-///
-/// Requires "VNC viewers may control screen with password" enabled in the
-/// Mac's Screen Sharing settings (noVNC speaks standard VNC auth, not
-/// Apple's proprietary auth).
+///   http://<mac>:5901/client  -> ws://<mac>:5906..5908 -> local stream servers
 final class WebServer {
     let httpPort: NWEndpoint.Port = 5901
-    let wsPort: NWEndpoint.Port = 5902
 
     /// Specific LAN IPs to bind to; empty = all interfaces. Multiple entries
     /// mean "these interfaces and no others" (e.g. Ethernet + Tailscale but
@@ -155,11 +150,6 @@ final class WebServer {
         return out
     }
 
-    /// Non-nil when dual display mode is on: the point sizes of virtual
-    /// displays A and B. Drives the "/" picker page and the /display-a and
-    /// /display-b cropped views. nil keeps the classic single-display flow.
-    var dualPresets: (a: DisplayPreset, b: DisplayPreset)?
-
     /// The address to advertise in URLs: the first bound IP if set, else the
     /// first LAN IPv4.
     var displayHost: String {
@@ -186,30 +176,10 @@ final class WebServer {
         return result
     }
 
-    /// Fires on the main queue when the count of live browser sessions
-    /// transitions between zero and non-zero.
-    var onSessionChange: ((Bool) -> Void)?
-
     private var httpListeners: [NWListener] = []
-    private var wsListeners: [NWListener] = []
     private var streamBridgeListeners: [NWListener] = []
     private let queue = DispatchQueue(label: "clamshell.web")
-    private var activeSessions = 0
     private var streamBridgeSessions = 0
-
-    /// Asked (on the main queue) whether a native stream client is connected.
-    /// Together with the browser stream bridges it decides when a parked VNC
-    /// connection has lost its last viewer.
-    var nativeViewerConnected: (() -> Bool)?
-
-    private struct ParkedVNC {
-        let id = UUID()
-        let conn: NWConnection
-        let since: TimeInterval
-    }
-    private var parked: [ParkedVNC] = []
-    private var parkPolicy = VNCParkPolicy()
-    private var parkTimer: DispatchSourceTimer?
 
     /// Browser-facing WS bridge ports for the /client web streaming client —
     /// one per display, each proxying to the matching local StreamServer WS
@@ -231,14 +201,10 @@ final class WebServer {
         startTLSWatch()
         do {
             try startHTTP()
-            // The noVNC bridge is a legacy path, off unless `legacyVNCBridge`
-            // is set. Nothing in the clients needs it any more.
-            let legacy = StreamMessage.legacyVNCBridgeEnabled()
-            if legacy { try startWS() }
             try startStreamBridges()
             isRunning = true
             let bound = bindHosts.isEmpty ? "all interfaces" : bindHosts.joined(separator: ", ")
-            clog("web access ON: http\(LANTLS.identity != nil ? "s" : "")://\(displayHost):\(httpPort) (legacy ws bridge \(legacy ? ":\(wsPort)" : "off"), bound to \(bound))")
+            clog("web access ON: http\(LANTLS.identity != nil ? "s" : "")://\(displayHost):\(httpPort) (bound to \(bound))")
         } catch {
             clog("web access failed to start: \(error)")
             stop()
@@ -266,7 +232,6 @@ final class WebServer {
         rebindWork = nil
         rebindAttempts = 0
         closeListeners()
-        queue.async { [weak self] in self?.closeParked(reason: "web access off") }
         isRunning = false
         clog("web access OFF")
     }
@@ -275,8 +240,6 @@ final class WebServer {
         readyListeners = 0
         for l in httpListeners { l.cancel() }
         httpListeners = []
-        for l in wsListeners { l.cancel() }
-        wsListeners = []
         for l in streamBridgeListeners { l.cancel() }
         streamBridgeListeners = []
     }
@@ -302,7 +265,7 @@ final class WebServer {
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.readyListeners += 1
-                    let total = self.httpListeners.count + self.wsListeners.count + self.streamBridgeListeners.count
+                    let total = self.httpListeners.count + self.streamBridgeListeners.count
                     if self.readyListeners >= total, self.rebindWork == nil { self.rebindAttempts = 0 }
                 }
             case .failed(let error):
@@ -341,7 +304,7 @@ final class WebServer {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
     }
 
-    // MARK: - HTTP static server (noVNC assets)
+    // MARK: - HTTP static server
 
     /// One listener when binding all interfaces, else one per selected IP.
     /// `makeParams` is a factory because NWParameters is a reference type —
@@ -436,10 +399,7 @@ final class WebServer {
             return
         }
 
-        // Web streaming client (Step 3/4): serves Resources/webclient at
-        // /client, separate from the noVNC bridge at "/" — native clients
-        // hardcode http://<host>:5901 as the lock-screen fallback URL, so "/"
-        // itself must keep behaving exactly as it does today.
+        // Web streaming client: serves Resources/webclient at /client.
         if path == "/client" || path == "/client/" {
             guard let root = Self.webclientRoot,
                   let html = try? Data(contentsOf: root.appendingPathComponent("index.html")) else {
@@ -475,59 +435,14 @@ final class WebServer {
             return
         }
 
-        // Dual display mode: picker at "/", cropped per-display views.
-        if let dual = dualPresets {
-            switch path {
-            case "/":
-                send(conn, status: "200 OK", contentType: "text/html; charset=utf-8",
-                     body: Data(Self.pickerPage(dual: dual).utf8))
-                return
-            case "/display-a":
-                send(conn, status: "200 OK", contentType: "text/html; charset=utf-8",
-                     body: Data(cropPage(dual: dual, slot: .a, wsPort: wsPort.rawValue).utf8))
-                return
-            case "/display-b":
-                send(conn, status: "200 OK", contentType: "text/html; charset=utf-8",
-                     body: Data(cropPage(dual: dual, slot: .b, wsPort: wsPort.rawValue).utf8))
-                return
-            default:
-                break // static noVNC assets below
-            }
-        }
-
         if path == "/" {
-            // Land directly in Clamshell's own client — noVNC is only the
-            // lock-screen fallback /client falls back to internally (and
-            // reverts from once unlocked), not the default landing page.
+            // Land directly in Clamshell's own client.
             let head = "HTTP/1.1 302 Found\r\nLocation: /client\r\nConnection: close\r\n\r\n"
             conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in conn.cancel() })
             return
         }
 
-        guard let root = Self.novncRoot else {
-            send(conn, status: "500 Internal Server Error", contentType: "text/plain",
-                 body: Data("noVNC resources missing from bundle".utf8))
-            return
-        }
-        // Resolve against the vendored noVNC tree; refuse traversal by
-        // checking the fully resolved path stays inside the root (catches
-        // percent-encoded ".." and symlinks, unlike string-stripping).
-        guard let fileURL = Self.resolveSafely(root: root, relativePath: String(path.dropFirst())) else {
-            send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
-            return
-        }
-        guard var fileBody = try? Data(contentsOf: fileURL) else {
-            send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
-            return
-        }
-        // Inject the clipboard-sync script into the single-display noVNC page
-        // at serve time so the vendored tree stays untouched.
-        if fileURL.lastPathComponent == "vnc.html",
-           let html = String(data: fileBody, encoding: .utf8),
-           let range = html.range(of: "</body>") {
-            fileBody = Data(html.replacingCharacters(in: range, with: clipboardScript + "</body>").utf8)
-        }
-        send(conn, status: "200 OK", contentType: Self.contentType(for: fileURL.pathExtension), body: fileBody)
+        send(conn, status: "404 Not Found", contentType: "text/plain", body: Data("not found".utf8))
     }
 
     // MARK: - Clipboard bridge
@@ -563,48 +478,6 @@ final class WebServer {
         }
     }
 
-    /// Browser-side clipboard sync. Event-driven (focus pulls, hide pushes) —
-    /// no polling, and the events themselves debounce echo loops. Requires a
-    /// secure context (HTTPS via the tunnel, or localhost); over plain LAN
-    /// HTTP `navigator.clipboard` is unavailable and the script is a no-op.
-    /// The push on hide is best-effort: browsers may refuse clipboard reads
-    /// once the page loses focus.
-    var clipboardScript: String {
-        // The injected pages get the token so browser sync keeps working;
-        // the token's job is blocking direct API access from clients that
-        // never legitimately loaded a page.
-        let q = "?token=\(Self.encodedToken(clipboardToken))"
-        return """
-    <script>
-    (() => {
-      if (!navigator.clipboard) return;
-      let last = -1;
-      window.addEventListener('focus', async () => {
-        try {
-          const r = await fetch('/clipboard\(q)');
-          const j = await r.json();
-          if (j.changeCount !== last) {
-            last = j.changeCount;
-            if (j.text) await navigator.clipboard.writeText(j.text);
-          }
-        } catch (e) {}
-      });
-      document.addEventListener('visibilitychange', async () => {
-        if (!document.hidden) return;
-        try {
-          const t = await navigator.clipboard.readText();
-          if (t) await fetch('/clipboard\(q)', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({text: t})
-          });
-        } catch (e) {}
-      });
-    })();
-    </script>
-    """
-    }
-
     private func send(_ conn: NWConnection, status: String, contentType: String, body: Data, extraHeaders: [String] = []) {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(contentType)\r\n"
@@ -616,24 +489,16 @@ final class WebServer {
         conn.send(content: payload, completion: .contentProcessed { _ in conn.cancel() })
     }
 
-    static var novncRoot: URL? {
-        // SwiftPM resource bundle (works for both bare binary and .app —
-        // package.sh copies the bundle into Contents/Resources).
-        Bundle.module.url(forResource: "novnc", withExtension: nil)
-    }
-
-    /// The web streaming client's static assets — bundled the same way as
-    /// novncRoot (declared as a resource in Package.swift, so package.sh's
-    /// wholesale copy of the SwiftPM resource bundle into Contents/Resources
-    /// picks it up automatically; no packaging changes needed).
+    /// The web streaming client's static assets, bundled as a SwiftPM
+    /// resource (package.sh copies the resource bundle into Contents/Resources).
     static var webclientRoot: URL? {
         Bundle.module.url(forResource: "webclient", withExtension: nil)
     }
 
     /// Resolves `relativePath` against `root`, refusing traversal by checking
     /// the fully resolved path stays inside the root (catches percent-encoded
-    /// ".." and symlinks, unlike string-stripping). Shared by both the noVNC
-    /// static file server and the web client's.
+    /// ".." and symlinks, unlike string-stripping). Used by the web client's
+    /// static file server.
     static func resolveSafely(root: URL, relativePath: String) -> URL? {
         let decoded = relativePath.removingPercentEncoding ?? relativePath
         let fileURL = root.appendingPathComponent(decoded).standardizedFileURL
@@ -655,208 +520,6 @@ final class WebServer {
         case "woff", "woff2": return "font/woff2"
         default: return "application/octet-stream"
         }
-    }
-
-    // MARK: - Dual display pages
-
-    /// Landing page when dual mode is on: pick which virtual display to view.
-    static func pickerPage(dual: (a: DisplayPreset, b: DisplayPreset)) -> String {
-        """
-        <!DOCTYPE html><html><head><meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Clamshell — Dual Display</title>
-        <style>
-        body{font-family:-apple-system,sans-serif;background:#111;color:#eee;margin:0;
-             display:flex;flex-direction:column;align-items:center;justify-content:center;
-             min-height:100vh;gap:1.5em;text-align:center}
-        a{display:block;background:#2a6df4;color:#fff;text-decoration:none;
-          padding:1em 2em;border-radius:12px;font-size:1.3em;min-width:16em}
-        small{color:#999;max-width:34em;padding:0 1em}
-        </style></head><body>
-        <h1>Clamshell — Dual Display Mode</h1>
-        <a href="/display-a">Display A — \(dual.a.name) (\(dual.a.pointsWide)×\(dual.a.pointsHigh))</a>
-        <a href="/display-b">Display B — \(dual.b.name) (\(dual.b.pointsWide)×\(dual.b.pointsHigh))</a>
-        <small>Open each link in its own browser window (e.g. one on the iPad screen,
-        one on the external monitor). The views assume the Mac is collapsed in dual
-        display mode; otherwise the crop geometry won't match.</small>
-        </body></html>
-        """
-    }
-
-    /// A minimal noVNC-core page showing only one virtual display's region of
-    /// the spanning Screen Sharing framebuffer. Display A sits at x=0, B at
-    /// x=A.width (CollapseCoordinator.positionSideBySide), so the crop is a
-    /// fixed pan of noVNC's clipped viewport. Vendored noVNC files are used
-    /// untouched; only rfb._display's public-shaped pan/size methods are
-    /// reached into (input mapping stays correct because Display.absX/absY
-    /// account for the viewport offset).
-    func cropPage(dual: (a: DisplayPreset, b: DisplayPreset), slot: VirtualSlot, wsPort: UInt16) -> String {
-        """
-        <!DOCTYPE html><html><head><meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Clamshell — Display \(slot.rawValue)</title>
-        <style>
-        html,body{margin:0;background:#000}
-        #screen{overflow:hidden;background:#000}
-        #status{color:#888;font-family:-apple-system,sans-serif;padding:1em}
-        </style></head><body>
-        <div id="status">Connecting to Display \(slot.rawValue)…</div>
-        <div id="screen"></div>
-        <script type="module">
-        import RFB from '/core/rfb.js';
-
-        // Virtual display sizes in points; the framebuffer unit (px per point)
-        // is derived at runtime so it works whether Screen Sharing serves the
-        // desktop in pixels (HiDPI 2x) or points.
-        const A = {w: \(dual.a.pointsWide), h: \(dual.a.pointsHigh)};
-        const B = {w: \(dual.b.pointsWide), h: \(dual.b.pointsHigh)};
-        const IS_B = \(slot == .b);
-        // https with a port = LAN TLS: the bridge itself speaks wss on wsPort.
-        // https without a port = the tunnel, which routes /websockify.
-        const wsUrl = location.protocol === 'https:'
-            ? (location.port
-                ? 'wss://' + location.hostname + ':\(wsPort)'
-                : 'wss://' + location.host + '/websockify')
-            : 'ws://' + location.hostname + ':\(wsPort)';
-
-        const screen = document.getElementById('screen');
-        const status = document.getElementById('status');
-        let rfb = null;
-
-        function layout() {
-            if (!rfb || !rfb._display || rfb._display.width === 0) { return; }
-            const d = rfb._display;
-            const unit = d.width / (A.w + B.w); // px per point across the spanning desktop
-            const w = Math.round((IS_B ? B.w : A.w) * unit);
-            const h = Math.round((IS_B ? B.h : A.h) * unit);
-            const x = IS_B ? Math.round(A.w * unit) : 0;
-            screen.style.width = w + 'px';
-            screen.style.height = h + 'px';
-            // iPadOS scales the page so the region fills the screen edge-to-edge.
-            document.querySelector('meta[name=viewport]').content = 'width=' + w;
-            d.viewportChangeSize(w, h);
-            // viewportChangePos is delta-based; absX(0) is the current offset.
-            d.viewportChangePos(x - d.absX(0), 0 - d.absY(0));
-        }
-
-        function connect() {
-            rfb = new RFB(screen, wsUrl, {});
-            rfb.clipViewport = true;
-            rfb.addEventListener('credentialsrequired', () => {
-                rfb.sendCredentials({password: prompt('VNC password')});
-            });
-            rfb.addEventListener('connect', () => {
-                status.style.display = 'none';
-                layout();
-            });
-            rfb.addEventListener('disconnect', () => {
-                status.style.display = 'block';
-                status.textContent = 'Disconnected — reconnecting…';
-                setTimeout(connect, 2000);
-            });
-        }
-        connect();
-        // Re-assert crop geometry if the framebuffer changes size (collapse /
-        // restore while the page is open). Idempotent, so a cheap poll is fine.
-        setInterval(layout, 2000);
-        </script>\(clipboardScript)</body></html>
-        """
-    }
-
-    // MARK: - WebSocket → VNC bridge
-
-    private func startWS() throws {
-        let listeners = try makeListeners(port: wsPort) {
-            let wsParams = LANTLS.parameters()
-            let wsOptions = NWProtocolWebSocket.Options()
-            wsOptions.autoReplyPing = true
-            wsParams.defaultProtocolStack.applicationProtocols.insert(wsOptions, at: 0)
-            return wsParams
-        }
-        for listener in listeners {
-            listener.newConnectionHandler = { [weak self] ws in
-                self?.bridge(ws)
-            }
-            watch(listener)
-            listener.start(queue: queue)
-        }
-        wsListeners = listeners
-    }
-
-    private func bridge(_ ws: NWConnection) {
-        // A fresh session replaces any parked one.
-        closeParked(reason: "new session")
-        let vnc = NWConnection(host: "127.0.0.1", port: 5900, using: .tcp)
-        var closed = false
-        var vncReady = false
-        var vncDead = false
-        var isParked = false
-        let close: () -> Void = { [weak self] in
-            guard !closed else { return }
-            closed = true
-            ws.cancel()
-            // screensharingd re-locks a Mac that its unlocking viewer
-            // abandons, so while the Mac is unlocked keep the connection
-            // open and idle instead of closing it.
-            if let self, vncReady, !vncDead,
-               VNCParkPolicy.shouldPark(hostLocked: Self.hostLocked(), upstreamAlive: true) {
-                isParked = true
-                self.park(vnc)
-            } else {
-                vnc.cancel()
-            }
-            self?.sessionEnded()
-        }
-
-        sessionStarted()
-        clog("browser VNC session opened")
-
-        ws.stateUpdateHandler = { state in
-            if case .failed = state { close() }
-            if case .cancelled = state { close() }
-        }
-        vnc.stateUpdateHandler = { state in
-            if case .ready = state { vncReady = true }
-            if case .failed = state { vncDead = true; close() }
-            if case .cancelled = state { vncDead = true; close() }
-        }
-
-        func pumpWSToVNC() {
-            ws.receiveMessage { data, _, _, error in
-                guard error == nil else { close(); return }
-                if let data, !data.isEmpty {
-                    vnc.send(content: data, completion: .contentProcessed { sendErr in
-                        if sendErr != nil { close() } else { pumpWSToVNC() }
-                    })
-                } else {
-                    pumpWSToVNC()
-                }
-            }
-        }
-        func pumpVNCToWS() {
-            vnc.receive(minimumIncompleteLength: 1, maximumLength: 262144) { data, _, isComplete, error in
-                if isParked {
-                    // Parked: read and discard so nothing backs up.
-                    if error != nil || isComplete { vncDead = true; vnc.cancel() } else { pumpVNCToWS() }
-                    return
-                }
-                guard error == nil, !isComplete else { vncDead = true; close(); return }
-                if let data, !data.isEmpty {
-                    let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
-                    let ctx = NWConnection.ContentContext(identifier: "vnc", metadata: [meta])
-                    ws.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
-                        if sendErr != nil { close() } else { pumpVNCToWS() }
-                    })
-                } else {
-                    pumpVNCToWS()
-                }
-            }
-        }
-
-        ws.start(queue: queue)
-        vnc.start(queue: queue)
-        pumpWSToVNC()
-        pumpVNCToWS()
     }
 
     // MARK: - WebSocket → StreamServer WS bridge (web streaming client)
@@ -896,8 +559,7 @@ final class WebServer {
 
     /// Browser WS (accepted on a `streamBridgePorts` listener) <-> a WS
     /// *client* connection this process dials to StreamServer's own WS
-    /// listener on 127.0.0.1. Both ends speak binary WS messages (unlike
-    /// `bridge()`'s WS<->raw-TCP VNC pump), since StreamServer natively
+    /// listener on 127.0.0.1. Both ends speak binary WS messages since StreamServer natively
     /// speaks NWProtocolWebSocket rather than raw TCP — Network.framework
     /// performs the client-side WS handshake automatically when a connection
     /// is created with WS options in its parameters, same as any WS client.
@@ -937,7 +599,7 @@ final class WebServer {
             clog("browser stream session closed")
         }
 
-        // Not counted as a browser VNC session (sessionStarted): the stream
+        // Not counted separately: the stream
         // server collapses to the size the client reports in HELLO. Counting it
         // also collapsed to the default preset first, and the rebuild a moment
         // later raced WindowServer, so mirroring failed and the virtual display
@@ -1005,74 +667,10 @@ final class WebServer {
         browserWS.start(queue: queue)
     }
 
-    // MARK: - Parked VNC connections
+    // MARK: - Host lock state
 
     /// Whether the login session's screen is locked right now.
     static func hostLocked() -> Bool {
         (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Int == 1
-    }
-
-    private func park(_ vnc: NWConnection) {
-        // Only the connection that unlocked the Mac matters; one is kept.
-        closeParked(reason: "replaced")
-        parked.append(ParkedVNC(conn: vnc, since: ProcessInfo.processInfo.systemUptime))
-        parkPolicy.reset()
-        clog("VNC session parked (Mac unlocked)")
-        guard parkTimer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + 5, repeating: 5)
-        t.setEventHandler { [weak self] in self?.checkParked() }
-        parkTimer = t
-        t.resume()
-    }
-
-    private func checkParked() {
-        guard !parked.isEmpty else { stopParkTimer(); return }
-        DispatchQueue.main.async { [weak self] in
-            let native = self?.nativeViewerConnected?() ?? false
-            self?.queue.async { self?.evaluateParked(nativeViewer: native) }
-        }
-    }
-
-    private func evaluateParked(nativeViewer: Bool) {
-        let now = ProcessInfo.processInfo.systemUptime
-        let locked = Self.hostLocked()
-        let viewer = nativeViewer || streamBridgeSessions > 0
-        for p in parked {
-            if let why = parkPolicy.closeReason(parkedAt: p.since, now: now,
-                                                hostLocked: locked, viewerConnected: viewer) {
-                closeParked(reason: "\(why)")
-                return
-            }
-        }
-    }
-
-    private func closeParked(reason: String) {
-        guard !parked.isEmpty else { return }
-        for p in parked { p.conn.cancel() }
-        parked.removeAll()
-        parkPolicy.reset()
-        stopParkTimer()
-        clog("parked VNC session closed (\(reason))")
-    }
-
-    private func stopParkTimer() {
-        parkTimer?.cancel()
-        parkTimer = nil
-    }
-
-    private func sessionStarted() {
-        activeSessions += 1
-        if activeSessions == 1 {
-            DispatchQueue.main.async { self.onSessionChange?(true) }
-        }
-    }
-
-    private func sessionEnded() {
-        activeSessions = max(0, activeSessions - 1)
-        clog("browser VNC session closed (\(activeSessions) remaining)")
-        if activeSessions == 0 {
-            DispatchQueue.main.async { self.onSessionChange?(false) }
-        }
     }
 }

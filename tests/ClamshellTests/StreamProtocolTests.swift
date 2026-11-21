@@ -301,30 +301,8 @@ final class StreamProtocolTests: XCTestCase {
         XCTAssertTrue(StreamMessage.nativeLockScreenEnabled(d))
     }
 
-    func testLegacyVNCBridgeDefaultsOff() {
-        let suite = "legacyVNCTest-\(UUID().uuidString)"
-        let d = UserDefaults(suiteName: suite)!
-        defer { d.removePersistentDomain(forName: suite) }
-        XCTAssertFalse(StreamMessage.legacyVNCBridgeEnabled(d))
-        d.set(true, forKey: "legacyVNCBridge")
-        XCTAssertTrue(StreamMessage.legacyVNCBridgeEnabled(d))
-    }
-
-    func testHostLockStateCarriesVNCAvailability() {
-        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(true, native: true, vncAvailable: false)).messages[0].1), [1, 1, 0])
-        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(true, native: true, vncAvailable: true)).messages[0].1), [1, 1, 1])
-        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(false, native: false, vncAvailable: false)).messages[0].1), [0, 0, 0])
-    }
-
-    func testVNCAvailabilityNeedsBridgeAndListener() {
-        let listening = "tcp46      0      0  *.5900                 *.*                    LISTEN\n"
-        let other = "tcp4       0      0  127.0.0.1.5901         *.*                    LISTEN\ntcp4  0  0  10.0.0.2.5900  10.0.0.9.50000  ESTABLISHED\n"
-        XCTAssertTrue(VNCAvailability.isListening(netstat: listening))
-        XCTAssertFalse(VNCAvailability.isListening(netstat: other))
-        XCTAssertFalse(VNCAvailability.isListening(netstat: ""))
-        XCTAssertTrue(VNCAvailability.available(bridgeEnabled: true, listening: true))
-        XCTAssertFalse(VNCAvailability.available(bridgeEnabled: true, listening: false))
-        XCTAssertFalse(VNCAvailability.available(bridgeEnabled: true, listening: nil))
-        XCTAssertFalse(VNCAvailability.available(bridgeEnabled: false, listening: true))
+    func testHostLockStateIsTwoBytesAtMost() {
+        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(true, native: true)).messages[0].1), [1, 1])
+        XCTAssertEqual([UInt8](parse(StreamMessage.hostLockState(false)).messages[0].1), [0])
     }
 }

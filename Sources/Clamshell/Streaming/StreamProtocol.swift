@@ -223,26 +223,13 @@ enum StreamMessage {
         frame(type: .clipboard, payload: Data(text.utf8))
     }
 
-    /// Host screen lock state — native capture can't survive the macOS lock
-    /// screen, so the client shows the browser-VNC fallback banner when locked.
-    ///
-    /// `native` is the host's `nativeLockScreen` setting. When on, a second
-    /// payload byte of 1 tells the client to keep showing the native stream
-    /// (banner only, never the browser VNC fallback). When off the payload is
-    /// the original single byte, so older clients and the default are unchanged.
-    ///
-    /// An optional third byte says whether the legacy VNC link can work at all
-    /// (1 = the optional bridge is on and port 5900 is listening). A client
-    /// that sees no third byte treats VNC as available, as before. `nil`
-    /// keeps the older one- and two-byte forms.
-    static func hostLockState(_ locked: Bool, native: Bool = false, vncAvailable: Bool? = nil) -> Data {
+    /// Host screen lock state. Payload `[locked, native]`; `native` is the
+    /// host's `nativeLockScreen` setting. The native stream is the only path
+    /// through the lock screen, so a locked host shows a banner and the stream
+    /// keeps running. A single-byte payload (older hosts) still parses.
+    static func hostLockState(_ locked: Bool, native: Bool = false) -> Data {
         let l: UInt8 = locked ? 1 : 0
-        let payload: Data
-        if let vnc = vncAvailable {
-            payload = Data([l, native ? 1 : 0, vnc ? 1 : 0])
-        } else {
-            payload = native ? Data([l, 1]) : Data([l])
-        }
+        let payload = native ? Data([l, 1]) : Data([l])
         return frame(type: .hostLockState, payload: payload)
     }
 
@@ -250,12 +237,6 @@ enum StreamMessage {
     /// native path is the default and an explicit off is still honoured.
     static func nativeLockScreenEnabled(_ defaults: UserDefaults = .standard) -> Bool {
         defaults.object(forKey: "nativeLockScreen") == nil ? true : defaults.bool(forKey: "nativeLockScreen")
-    }
-
-    /// The optional noVNC bridge (port 5902 to Apple's 5900). Off unless the
-    /// owner turns `legacyVNCBridge` on.
-    static func legacyVNCBridgeEnabled(_ defaults: UserDefaults = .standard) -> Bool {
-        defaults.bool(forKey: "legacyVNCBridge")
     }
 
     /// Remote cursor position, normalized 0..1 in this display's source-frame

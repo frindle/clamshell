@@ -528,23 +528,13 @@ struct ContentView: View {
                 )
             if targetType == .rdp, rdpSession.status != .idle {
                 RDPStreamView(session: rdpSession, onClose: { rdpSession.disconnect() })
-            } else if case .streaming = client.status, client.showsVNCFallback {
-                // Auto-forward into the embedded browser VNC bridge while
-                // locked — was a manual "tap to open Safari" link before;
-                // the Mac being locked isn't a rare edge case worth extra
-                // taps, and native video is paused anyway (Screen Recording
-                // can't see a locked screen, only screensharingd can).
-                // Reverts to VideoView on its own once client.hostLocked
-                // flips false (HOST_LOCK_STATE from the Mac) — no manual
-                // "reconnect" step, the native stream was never torn down.
-                LockedHostView(url: client.browserFallbackURL)
             } else if case .streaming = client.status {
                 VideoView(client: client)
                     .ignoresSafeArea()
                     .sheet(isPresented: $showRestart) { RestartMacSheet(client: client) }
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
-                            if client.hostLocked && !client.showsVNCFallback {
+                            if client.hostLocked {
                                 Label("Mac is locked. Type the password to unlock", systemImage: "lock.fill")
                                     .font(.footnote.weight(.semibold))
                                     .padding(.horizontal, 10).padding(.vertical, 6)

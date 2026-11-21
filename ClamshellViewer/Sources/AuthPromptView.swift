@@ -55,7 +55,7 @@ struct AuthPromptView: View {
                  buttons: [("Cancel", true, { client.disconnect() })])
         case let .remoteAccessOff(retryIn)?:
             card(title: "Remote access is off",
-                 text: "Remote access is off on this Mac. Turn Screen Sharing on there, or allow it from Clamshell's menu. Trying again in \(retryIn) s.",
+                 text: "Remote access is switched off in Clamshell on this Mac. Turn it on from Clamshell's menu there. Trying again in \(retryIn) s.",
                  rows: [],
                  buttons: [("Cancel", true, { client.disconnect() })])
         case let .busy(retryIn)?:

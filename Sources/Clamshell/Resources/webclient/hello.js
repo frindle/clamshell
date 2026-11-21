@@ -139,28 +139,12 @@ export function attachResizeReporter(win, sendPayload, ms = 250, timers = global
 }
 
 // HOST_LOCK_STATE payload: byte 0 = locked, optional byte 1 = 1 when the host
-// has nativeLockScreen on (keep the native stream; banner only, no noVNC),
-// optional byte 2 = 1 when the legacy VNC link can work at all (bridge on and
-// port 5900 listening). A host that sends no byte 2 is an older one: VNC is
-// assumed available there.
+// has nativeLockScreen on. The native stream carries the lock screen either
+// way; a locked host only shows a banner. Any further bytes are ignored.
 export function parseLockState(payload) {
   if (!payload || payload.length < 1) return null;
   return {
     locked: payload[0] === 1,
     native: payload.length >= 2 && payload[1] === 1,
-    vnc: payload.length < 3 || payload[2] === 1,
   };
-}
-
-// The noVNC page may be loaded only when the host is locked, is not carrying
-// the lock screen natively, and says a VNC link exists. A dead link is never
-// shown or auto-loaded.
-export function shouldShowVncFallback(ls) {
-  return !!ls && ls.locked && !ls.native && ls.vnc;
-}
-
-// After repeated failed reconnects the page used to fall back to noVNC on its
-// own. That is only sensible when the last lock report said VNC works.
-export function shouldAutoVncAfterFailures(lastLockState, attempt) {
-  return attempt >= 3 && !!lastLockState && lastLockState.vnc === true && !lastLockState.native;
 }

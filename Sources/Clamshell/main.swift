@@ -69,10 +69,9 @@ if args.count > 1 {
         exit(0)
     case "test-web":
         let server = WebServer()
-        server.onSessionChange = { active in print("browser session active: \(active)") }
         server.start()
         guard server.isRunning else { print("FAILED to start web server"); exit(1) }
-        print("Serving noVNC on http://localhost:\(server.httpPort) — ctrl-C to stop")
+        print("Serving the web client on http://localhost:\(server.httpPort) — ctrl-C to stop")
         RunLoop.main.run()
     case "stream":
         // Clamshell stream [basePort] — serve the custom video stream protocol
@@ -127,7 +126,7 @@ if args.count > 1 {
         exit(EncoderResizeSelfTest.run())
     case "reboot-readiness":
         // Print the unattended-reboot pre-flight (autorestart / FileVault /
-        // Screen Sharing / login item). Same check as the menu item, usable
+        // Remote Login / login item). Same check as the menu item, usable
         // over SSH before you travel.
         print(RebootReadiness.summary(RebootReadiness.check()))
         exit(0)
