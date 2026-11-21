@@ -1,11 +1,13 @@
 import Foundation
 
-/// Whether this build carries Clamshell's own RFB server. The redirect must
-/// never go in without one: it would send VNC clients to a closed port. The
-/// RFB server arrives in a later change; until then every gate here says no.
+/// Whether this build carries Clamshell's own RFB server, and whether it
+/// works. The redirect must never go in without one: it would send VNC
+/// clients to a closed port. `selfTest` starts the server on a scratch
+/// loopback port and drives a client through the handshake, ARD login and a
+/// ZRLE framebuffer update.
 enum RFBServerGate {
-    static let present = false
-    static func selfTest() -> Bool { present }
+    static let present = true
+    static func selfTest() -> Bool { RFBSelfTest.run(out: { _ in }) }
 }
 
 /// `clamshell redirect run | install | uninstall | status | check`.

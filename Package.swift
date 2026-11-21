@@ -22,11 +22,15 @@ let package = Package(
         // header comment). Header-only; exported by ApplicationServices at
         // runtime.
         .target(name: "AXPrivateShim"),
+        // A persistent zlib stream over the system libz, for the RFB ZRLE
+        // encoding (one deflate stream per connection, flushed per rectangle).
+        .target(name: "ZlibShim", linkerSettings: [.linkedLibrary("z")]),
         .executableTarget(
             name: "Clamshell",
             dependencies: [
                 "CGVirtualDisplayShim",
                 "AXPrivateShim",
+                "ZlibShim",
                 .product(name: "ImmurokKit", package: "immurok-yk"),
                 .product(name: "DeskHost", package: "DeskHost"),
             ],
