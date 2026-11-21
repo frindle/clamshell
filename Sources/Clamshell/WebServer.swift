@@ -930,11 +930,16 @@ final class WebServer {
             browserWS.cancel()
             innerTask?.cancel(with: .goingAway, reason: nil)
             self?.streamBridgeSessions = max(0, (self?.streamBridgeSessions ?? 1) - 1)
-            self?.sessionEnded()
+            clog("browser stream session closed")
         }
 
+        // Not counted as a browser VNC session (sessionStarted): the stream
+        // server collapses to the size the client reports in HELLO. Counting it
+        // also collapsed to the default preset first, and the rebuild a moment
+        // later raced WindowServer, so mirroring failed and the virtual display
+        // stayed an extra screen beside the real one. The stream server also
+        // restores when its client has been gone for a while.
         streamBridgeSessions += 1
-        sessionStarted()
         clog("browser stream session opened -> 127.0.0.1:\(targetPort)")
 
         func pumpBrowserToInner(_ inner: URLSessionWebSocketTask) {
@@ -942,7 +947,6 @@ final class WebServer {
                 if let error { clog("stream bridge: browserWS.receiveMessage error: \(error)") }
                 guard error == nil else { close(); return }
                 if let data, !data.isEmpty {
-                    clog("stream bridge: browser->inner \(data.count) bytes")
                     inner.send(.data(data)) { sendErr in
                         if let sendErr { clog("stream bridge: inner.send error: \(sendErr)") }
                         if sendErr != nil { close() } else { pumpBrowserToInner(inner) }
@@ -960,7 +964,6 @@ final class WebServer {
                     close()
                 case .success(let message):
                     guard case .data(let data) = message, !data.isEmpty else { pumpInnerToBrowser(inner); return }
-                    clog("stream bridge: inner->browser \(data.count) bytes")
                     let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
                     let ctx = NWConnection.ContentContext(identifier: "toBrowser", metadata: [meta])
                     browserWS.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in

@@ -413,7 +413,20 @@ final class CollapseCoordinator {
             mirroredDisplays = physical
             clog("mirrored \(physical.count) physical display(s) onto virtual \(virtualID)")
         } else {
-            clog("mirroring failed: \(err.rawValue)")
+            // WindowServer refuses (1001, kCGErrorFailure) while it is still
+            // settling a display that was just added or removed, such as a
+            // recollapse that destroyed one virtual display and made another in
+            // the same second. Giving up at once left the virtual display as an
+            // extra screen beside the real one for the whole session.
+            clog("mirroring failed: \(err.rawValue) (attempt \(attempt)/20)")
+            guard state == .collapsing || state == .collapsed, attempt < 20,
+                  virtualDisplay.displayID(for: .a) == virtualID else {
+                clog("mirrorPhysicalDisplays: giving up after \(attempt) attempts")
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.mirrorPhysicalDisplays(onto: virtualID, attempt: attempt + 1)
+            }
         }
     }
 
