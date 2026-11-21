@@ -12,11 +12,12 @@
 # never as passed.
 #
 # -DesktopOnly is the other half: it runs only those desktop steps, plus the
-# two builds they need. On our VM a second runner runs this half, so the rest
-# never waits for the VM's screen.
+# two builds they need. CI runs this half on GitHub's windows-latest (it has a
+# virtual display) and the other half on our VM, so nothing waits for the VM's
+# screen.
 #
-# Only one run at a time on a machine: the VM has two runners, and the steps
-# share ports, key stores and the screen. A second run waits for the first.
+# Only one run at a time on a machine: the steps share ports, key stores and
+# the screen. A second run waits for the first.
 #
 # Every step runs even when an earlier one fails. The last line is a count
 # only ("N of M steps passed"), so it is safe to publish. Exit code 0 means
