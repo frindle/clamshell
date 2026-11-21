@@ -87,8 +87,9 @@ framing survives any transport — the parser accepts arbitrary byte chunks.)
 | 0x5B | FILE_END         | both          | id(4 BE), status(1) |
 | 0x5C | LOGIN_CREDENTIALS | client → host | UTF-8 JSON — a saved login for the login window; see "Login window". Only to a host that advertises `loginCredentials` |
 
-Reserved, not specified yet: 0x40–0x49 (Window Handoff v2, below) and
-0x55–0x57 (further peripheral messages).
+Reserved, not specified yet: 0x55–0x57 (further peripheral messages).
+0x40–0x4C (Window Handoff v2, adopted by v3) and 0x70–0x85 (v3, app-host) are
+specified in "Window Handoff v3" at the end of this file.
 
 Codec byte: 1 = H.264, 2 = HEVC. The client *requests* a codec in HELLO; the
 host picks what its hardware encoder actually supports (HEVC preferred on
@@ -771,6 +772,7 @@ that sent no challenge has every bit 0.
 | 6 | `peripherals` | host: accepts peripherals attached to the client. Client: can send them — see "Peripherals attached to the client" |
 | 7 | `restart` | host: accepts RESTART_REQUEST. Client: can send one |
 | 8 | `loginCredentials` | host: this host is the login-window agent and types a saved login for a client. Client: can send one — see "Login window" |
+| 9 | `appHost` | both: speaks Window Handoff v3 (app-host) on the control connection — see "Window Handoff v3" |
 
 Unassigned bits are sent as 0 and ignored on receipt.
 
@@ -1466,3 +1468,110 @@ realistic (comparable to Moonlight/Sunshine on LAN); window content is
 typically smaller than a full display so should land at the favorable end.
 Real number needs a glass-to-glass test once both ends exist — extend
 `stream-selftest`/`SelfTest.cs` with per-stage timing rather than guessing.
+
+## Window Handoff v3 (app-host) (SPECIFIED — wire format implemented in `DeskProtocol/`, nothing on the wire yet)
+
+Goal: an app that runs on another Mac shows up on the operator as its own
+windows, Dock icon and menu bar (the "Desk" viewer, see the execution plan,
+section 3.1). v3 keeps v1 framing and adopts the v2 proposal's messages
+0x40–0x49, then adds the app-level messages below. The reference encoder and
+decoder is the Swift package `DeskProtocol/` (pure logic, tested on Linux);
+this section and that package must change together, and its golden-byte tests
+pin the layouts below.
+
+**Connection.** One control connection per operator–host pair on port 5910
+(the v2 proposal's port), v1 framing: `[type 1][length 4 BE][payload]`, inside
+the same device authentication and `SECURE` envelope as v1 (so the open v2
+question about control-connection auth is answered: it is authenticated and
+encrypted exactly like a stream connection). A side sends v3 messages only
+after the other set the `appHost` capability bit (bit 9). Video, audio and
+input for a window ride the same connection, tagged by window id. Every Mac
+runs both roles (host service and viewer), so either side may send any
+message whose direction below says "both".
+
+**Conventions.** Integers and Float32 are big-endian. `str8` is a 1-byte length
+then UTF-8 (v2 messages); `str16` is a 2-byte length then UTF-8 (v3 messages).
+An encoder refuses an over-long string, a list over its limit and a cursor image
+over 64 KB; it never cuts. Decoders reject non-finite floats and values outside
+the ranges below, never read past the payload, and cap list sizes (4096
+entries), menu depth (16) and menu nodes (4096). Bytes after the last
+defined field of a fixed-layout message are ignored (room for later fields).
+A type byte a side does not know is skipped, never fatal. `appId` is assigned by
+the host and is stable for the life of the connection; `windowId` is the host's
+window number, never 0, and is not reused while the connection lasts: a
+WINDOW_ADDED for an id that was added before, even if it has closed, is a
+protocol error. Coordinates in
+v3 geometry messages are points on the host's hosted display with the backing
+`scale` alongside; input coordinates are normalized 0..1 in the window's own
+bounds, as in v2.
+
+### Adopted from v2 (payloads unchanged except where noted)
+
+| Type | Name | Direction | Payload |
+|------|------|-----------|---------|
+| 0x40 | WINDOW_LIST_REQUEST | both | empty |
+| 0x41 | WINDOW_LIST_RESPONSE | both | count(2 BE), then per window: windowId(4), title(str8), appName(str8), widthPx(4), heightPx(4) |
+| 0x42 | HANDOFF_BEGIN | source → dest | windowId(4), crossX(F32), crossY(F32), title(str8), appName(str8), widthPx(4), heightPx(4) |
+| 0x43 | HANDOFF_ACCEPT | dest → source | windowId(4) |
+| 0x44 | HANDOFF_REJECT | dest → source | windowId(4), reason(str8) |
+| 0x45 | WINDOW_STREAM_START | dest → source | windowId(4) |
+| 0x46 | WINDOW_STREAM_FRAME | source → dest | windowId(4), then v1 VIDEO_FRAME payload: flags(1), ptsMicros(8), NAL data |
+| 0x47 | WINDOW_INPUT_MOUSE_MOVE | dest → source | windowId(4), x(F32), y(F32) |
+| 0x48 | HANDOFF_RETURN | dest → source | windowId(4) |
+| 0x49 | WINDOW_CLOSED | source → dest | windowId(4) |
+| 0x4A | WINDOW_INPUT_MOUSE_BUTTON | dest → source | windowId(4), button(1), down(1), x(F32), y(F32) |
+| 0x4B | WINDOW_INPUT_KEY | dest → source | windowId(4), macKeyCode(2), down(1), cgEventFlags(8) |
+| 0x4C | WINDOW_INPUT_SCROLL | dest → source | windowId(4), dx(F32), dy(F32) |
+
+The v2 table gave one type (0x47) to four input messages. v3 gives each its own
+byte: 0x47 is the move, 0x4A–0x4C the other three.
+
+### New in v3
+
+| Type | Name | Direction | Payload |
+|------|------|-----------|---------|
+| 0x70 | APP_LAUNCH | operator → host | requestId(4), bundleId(str16), activate(1), count(2), then per target: str16 (a URL or a path on shared storage) |
+| 0x84 | APP_LAUNCH_RESULT | host → operator | requestId(4), status(1: 0 started or already running, 1 not installed, 2 refused, 3 failed), appId(4) |
+| 0x82 | APP_LIST_REQUEST | both | empty |
+| 0x71 | APP_LIST | both | count(2), then per app: appId(4), bundleId(str16), name(str16), pid(4, signed, −1 if not running), windowCount(2), residentMB(4), running(1). Sent on request and whenever the set changes |
+| 0x72 | WINDOW_ADDED | host → operator | windowId(4), appId(4), kind(1: 0 main, 1 sheet, 2 popover, 3 menu, 4 tooltip, 255 other; unknown values read as other), parentId(4, 0 none), title(str16), x, y, width, height, scale (F32 ×5) |
+| 0x73 | WINDOW_MOVED | host → operator | windowId(4), x(F32), y(F32) |
+| 0x74 | WINDOW_RESIZED | host → operator | windowId(4), width(F32), height(F32), scale(F32) |
+| 0x75 | WINDOW_TITLE | host → operator | windowId(4), title(str16) |
+| 0x76 | WINDOW_RESIZE_REQUEST | operator → host | windowId(4), width(F32), height(F32) |
+| 0x77 | CHILD_WINDOW | host → operator | windowId(4), parentId(4), offsetX(F32), offsetY(F32), kind(1) — a sheet, popover, menu or tooltip, positioned relative to its parent |
+| 0x78 | MENU_TREE | host → operator | appId(4), generation(4), then a list: count(2), per item: itemId(4), title(str16), flags(1: bit 0 enabled, bit 1 checked, bit 2 separator), keyCode(2, 0xFFFF none), modifiers(4, low CGEventFlags), then the item's child list in the same form |
+| 0x79 | MENU_INVOKE | operator → host | appId(4), generation(4), itemId(4). The host ignores it if its generation is older than the menu it last sent |
+| 0x7A | CURSOR_SHAPE | host → operator | windowId(4), shape(1: 0 arrow, 1 I-beam, 2 pointing hand, 3 crosshair, 4 resize left-right, 5 resize up-down, 6 open hand, 7 closed hand, 8 not allowed, 255 custom); for custom only: hotspotX(2), hotspotY(2), PNG bytes (at most 64 KB) |
+| 0x7B | PASTEBOARD_OFFER | both | generation(4), count(1), per entry: uti(str16), size(8). The pasteboard changed; nothing is copied yet |
+| 0x7C | PASTEBOARD_FETCH | both | generation(4), uti(str16) — the receiving side pastes and asks for the bytes |
+| 0x83 | PASTEBOARD_DATA | both | generation(4), uti(str16), offset(8), total(8), bytes. One chunk of the answer to a fetch: bytes `offset ..< offset+n` of an item of `total` bytes, n at most 65,536. The sender sends the chunks in order, with other traffic allowed between them. An empty item is one chunk with total 0 |
+| 0x7D | FILE_PUSH | operator → host | requestId(4), windowId(4, drop target or 0), dropX(F32), dropY(F32), name(str16). `name` is the file's name in the host inbox, a bare file name and never a path. It is not empty, at most 255 bytes, has no `/`, `\`, `:`, `< > " | ? *`, no control character (C0, DEL or C1, so no NUL), no invisible, bidirectional or line-separator character (U+00AD, U+200B–U+200F, U+2028–U+202E, U+2060–U+206F, U+FEFF, U+3164 and similar), no look-alike dot or slash (U+FF0E, U+3002, U+2215 and similar), does not start with `.` or a blank, does not end with `.` or a blank, and is not a Windows device name (`CON`, `NUL`, `COM1`…). A receiver drops a message that breaks the rule. The bytes follow as v1 FILE_OFFER / FILE_DATA / FILE_END; that offer's `name` must equal this `name` byte for byte (the receiver uses the FILE_PUSH name and answers any other offer with status 1), so the v1 receiver sanitising has nothing to change |
+| 0x7E | FILE_PULL | operator → host | requestId(4), fileId(4) — fetch a file the host promised in FILE_PROMISE; the host answers with a v1 FILE_OFFER. The host looks the id up in its own table and ignores an id it did not issue; no path ever crosses the wire in this direction |
+| 0x85 | FILE_PROMISE | host → operator | count(2), then per file: fileId(4), name(str16, same rule as FILE_PUSH), size(8). The host issues a fresh opaque fileId for each file it offers and keeps the real location to itself |
+| 0x7F | AUDIO_FRAME (per app) | host → operator | appId(4), ptsMicros(8), one AAC-LC access unit as v1 AUDIO_FRAME |
+| 0x80 | BADGE | host → operator | appId(4), text(str16); empty text clears the badge |
+| 0x81 | NOTIFY | host → operator | appId(4), notificationId(str16), title(str16), subtitle(str16), body(str16), sound(1) |
+
+Rules:
+
+- A frame whose length field is over 4,000,000 bytes is a protocol error: the receiver closes the connection and does not try to resynchronise. A sender never builds such a frame. The limit sits under the 4,194,304-byte cap on a SECURE payload ("The host reads SECURE payloads of at most 4 MB"), so no v3 frame can close the session by size. Anything bigger is split: clipboard data into PASTEBOARD_DATA chunks, files into the v1 64 KB FILE_DATA pieces. A video frame that would not fit is dropped by the sender and the next keyframe replaces it.
+- Value ranges. Mouse and button coordinates are 0..1 (the sender clamps). Positions, offsets, drop points and scroll deltas are within ±1,000,000. Width and height in points are 0..100,000; in pixels 0..65,536. Scale is 0.1..16. Anything else is a decode error and an encoder refuses to send it.
+- Window ids. Both sides track the ids announced on the connection. The host ignores input, WINDOW_STREAM_START, resize requests and handoff messages for an id it has not announced (a WINDOW_ADDED, or a WINDOW_LIST_RESPONSE it sent) or that has closed, and the viewer ignores geometry, title and child messages for an id it was never told about. `WindowRegistry` in the package implements the check.
+- When a message of a known type fails to decode (short payload, bad value, out-of-range number, unsafe name), the receiver closes the connection: it cannot tell which earlier state the peer thinks is true, and the framing check cannot catch it. An unknown type byte is still skipped. The receiver logs the type and the reason, never the payload.
+- A type byte is never reused across versions. The v3 types sit in 0x70–0x85 because 0x60 and 0x61 are already RESTART_REQUEST and RESTART_RESULT in v1. The test suite compares them against the real v1 enum in `StreamProtocol.swift`.
+- A window's lifecycle is WINDOW_ADDED, any number of MOVED / RESIZED / TITLE,
+  then WINDOW_CLOSED. A CHILD_WINDOW follows the WINDOW_ADDED of the same id.
+- The operator draws a window only between those messages. A resize request is
+  advisory: the host answers with WINDOW_RESIZED for the size it actually got.
+- A menu generation is a counter per app that goes up each time the host sends a
+  new MENU_TREE. The operator sends only the newest generation's item ids back.
+- Pasteboard and file messages never carry more than one in-flight request id
+  per kind that the other side has not answered; a side may refuse by ignoring.
+- A receiver accepts PASTEBOARD_DATA only for a fetch it sent: the generation and uti match, `total` equals the offered size, and each chunk's `offset` is the number of bytes already received. Any other chunk closes the item (and the connection if it repeats). An item over 256 MiB is refused at the offer.
+
+### What is not yet decided
+
+Mouse-move rate limits, back-pressure for pasteboard data, and the
+notification action buttons are left to the implementation PRs; the types above
+leave room (trailing bytes are ignored).
