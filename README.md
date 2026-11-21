@@ -615,7 +615,7 @@ form.
   ended (forcefully after 5 seconds) before the previous version starts.
 - **A version that was rolled back is not installed again by itself.** You can
   still install it by hand from the menu.
-- Host setting `nativeLockScreen` (default off): when on, a locked Mac keeps streaming and accepting input, and the clients show a banner instead of switching to the browser VNC fallback. HOST_LOCK_STATE gains an optional second byte. Set with `defaults write <bundle id> nativeLockScreen -bool true`.
+- Host setting `nativeLockScreen` (default on; an unset value means on): a locked Mac keeps streaming and accepting input, and the clients show a banner instead of switching to the browser VNC fallback. HOST_LOCK_STATE carries optional second and third bytes (native, and whether a legacy VNC link exists). Turn it off with `defaults write <bundle id> nativeLockScreen -bool false`. The noVNC bridge (ports 5901/5902) is a legacy path and off unless `legacyVNCBridge` is set.
 - **The login-window probe can now settle the question.** It posts a Shift
   keystroke and reads it back, records brightness spread and whether the frame
   changes (a flat wallpaper no longer looks like success), records the

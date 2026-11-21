@@ -544,7 +544,7 @@ struct ContentView: View {
                     .sheet(isPresented: $showRestart) { RestartMacSheet(client: client) }
                     .overlay(alignment: .top) {
                         VStack(spacing: 6) {
-                            if client.hostLocked && client.hostNativeLockScreen {
+                            if client.hostLocked && !client.showsVNCFallback {
                                 Label("Mac is locked. Type the password to unlock", systemImage: "lock.fill")
                                     .font(.footnote.weight(.semibold))
                                     .padding(.horizontal, 10).padding(.vertical, 6)

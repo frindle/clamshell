@@ -320,16 +320,20 @@ Mac locks again, when no viewer has been connected for about 30 seconds, after
 12 hours, or when a new fallback session opens.
 
 
-### Native lock screen (optional trailing byte)
+### Native lock screen and VNC availability (optional trailing bytes)
 
-The host setting `nativeLockScreen` (default off) adds a second payload byte to
-HOST_LOCK_STATE: `native = 1` when it is on. The host then keeps streaming and
-injecting while locked, so the client must keep showing the native stream, show
-a banner only ("Mac is locked, type the password to unlock") and never switch to
-the browser VNC fallback. With the setting off the payload is the original single
-byte, so the default and older clients are unchanged. A missing second byte or a
-value other than 1 means off. Turn it on only after the pre-login probe shows input
-works at the lock screen: `defaults write <bundle id> nativeLockScreen -bool true`.
+The host setting `nativeLockScreen` is on unless set otherwise (an unset value
+means on; `defaults write <bundle id> nativeLockScreen -bool false` turns it
+off). HOST_LOCK_STATE carries `native = 1` as a second payload byte when it is
+on. The host then keeps streaming and injecting while locked, so the client
+must keep showing the native stream, show a banner only ("Mac is locked, type
+the password to unlock") and never switch to the browser VNC fallback.
+
+A third payload byte, `vnc`, says whether the legacy VNC link can work at all:
+1 only when the optional noVNC bridge is turned on (`legacyVNCBridge`, off by
+default) and port 5900 is listening. A client must not show or auto-load a VNC
+link when `vnc` is 0. A payload with no third byte comes from an older host;
+treat VNC as available there. Clients ignore bytes past the third.
 
 ## Cursor-follow auto-pan (CURSOR_POS)
 

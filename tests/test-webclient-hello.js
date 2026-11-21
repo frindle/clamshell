@@ -253,11 +253,34 @@ test('attachResizeReporter uses the preference factory when given', () => {
 });
 
 // ── HOST_LOCK_STATE: nativeLockScreen flag on and off ──────────────────
-test('parseLockState reads the optional native flag byte', () => {
-  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1)), { locked: true, native: false });
-  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(0)), { locked: false, native: false });
-  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 1)), { locked: true, native: true });
-  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(0, 1)), { locked: false, native: true });
-  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 0)), { locked: true, native: false });
+test('parseLockState reads the optional native and vnc flag bytes', () => {
+  // An older host sends no third byte: VNC is assumed available there.
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1)), { locked: true, native: false, vnc: true });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(0)), { locked: false, native: false, vnc: true });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 1)), { locked: true, native: true, vnc: true });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(0, 1)), { locked: false, native: true, vnc: true });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 0)), { locked: true, native: false, vnc: true });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 1, 0)), { locked: true, native: true, vnc: false });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 0, 0)), { locked: true, native: false, vnc: false });
+  assert.deepStrictEqual(H.parseLockState(Uint8Array.of(1, 0, 1)), { locked: true, native: false, vnc: true });
   assert.strictEqual(H.parseLockState(new Uint8Array(0)), null);
+});
+
+// ── No listener on 5900: the VNC link is never shown or auto-loaded ────
+test('shouldShowVncFallback only when locked, not native, and a VNC link exists', () => {
+  assert.strictEqual(H.shouldShowVncFallback(H.parseLockState(Uint8Array.of(1, 0, 1))), true);
+  assert.strictEqual(H.shouldShowVncFallback(H.parseLockState(Uint8Array.of(1, 0, 0))), false); // nothing on 5900
+  assert.strictEqual(H.shouldShowVncFallback(H.parseLockState(Uint8Array.of(1, 1, 1))), false); // native lock screen
+  assert.strictEqual(H.shouldShowVncFallback(H.parseLockState(Uint8Array.of(0, 0, 1))), false); // unlocked
+  assert.strictEqual(H.shouldShowVncFallback(null), false);
+});
+
+test('shouldAutoVncAfterFailures needs a lock report that says VNC works', () => {
+  const dead = H.parseLockState(Uint8Array.of(0, 1, 0));
+  const live = H.parseLockState(Uint8Array.of(0, 0, 1));
+  assert.strictEqual(H.shouldAutoVncAfterFailures(null, 5), false);   // never told: no auto load
+  assert.strictEqual(H.shouldAutoVncAfterFailures(dead, 5), false);
+  assert.strictEqual(H.shouldAutoVncAfterFailures(live, 2), false);   // too early
+  assert.strictEqual(H.shouldAutoVncAfterFailures(live, 3), true);
+  assert.strictEqual(H.shouldAutoVncAfterFailures(H.parseLockState(Uint8Array.of(0, 1, 1)), 9), false); // native
 });

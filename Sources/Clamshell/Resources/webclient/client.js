@@ -14,7 +14,7 @@
 
 import { codeToMacVK } from '/client/keymap.js';
 import {
-  helloPayload, clientDisplaysPayload, attachResizeReporter, loadPrefs, savePrefs, normalizePrefs, parseSize, SIZE_PRESETS, pickCodec, parseLockState,
+  helloPayload, clientDisplaysPayload, attachResizeReporter, loadPrefs, savePrefs, normalizePrefs, parseSize, SIZE_PRESETS, pickCodec, parseLockState, shouldShowVncFallback, shouldAutoVncAfterFailures,
 } from '/client/hello.js';
 import {
   HeldKeys, reconnectDelay, frameAction, ctrlAsCmdDefault, remapKey, modifierFlags, keepaliveDue,
@@ -225,6 +225,7 @@ let reconnectTimer = null;
 let countdownTimer = null;
 // Track fallback reasons to avoid conflicts between failure-based and host-locked states
 let lockedByHost = false;
+let lastLockState = null; // last HOST_LOCK_STATE, so a dead VNC link is never auto-loaded
 let fallbackDueToFailure = false;
 
 const CONNECT_TIMEOUT_MS = 10000;
@@ -415,7 +416,7 @@ function scheduleReconnect({ delay = null, quiet = false } = {}) {
   }
 
   // Check if we should fall back to noVNC after repeated failures
-  if (delay === null && reconnectAttempt >= 3 && !fallbackDueToFailure && !lockedByHost) {
+  if (delay === null && !fallbackDueToFailure && !lockedByHost && shouldAutoVncAfterFailures(lastLockState, reconnectAttempt)) {
     fallbackDueToFailure = true;
     vncFallback.src = vncFallbackURL;
     vncFallback.classList.add('show');
@@ -724,6 +725,7 @@ async function handle(type, payload) {
       const locked = ls.locked;
       // Track whether we're locked by host to avoid conflicts with failure-based fallbacks
       lockedByHost = locked;
+      lastLockState = ls;
       
       // Auto-forward into the noVNC bridge while locked, same as
       // ViewerApp.swift's LockedHostView — screensharingd can reach a
@@ -740,10 +742,18 @@ async function handle(type, payload) {
         hideStatus();
         canvas.focus();
         requestKeyframe();
-      } else if (locked) {
+      } else if (shouldShowVncFallback(ls)) {
         vncFallback.src = vncFallbackURL;
         vncFallback.classList.add('show');
         hideStatus();
+      } else if (locked) {
+        // Locked, but there is no VNC link to offer: stay on the native
+        // stream and show the banner only.
+        vncFallback.classList.remove('show');
+        vncFallback.src = 'about:blank';
+        hideStatus();
+        canvas.focus();
+        requestKeyframe();
       } else {
         vncFallback.classList.remove('show');
         vncFallback.src = 'about:blank';
@@ -751,7 +761,7 @@ async function handle(type, payload) {
         // The picture may have frozen while locked; start from a fresh one.
         requestKeyframe();
       }
-      lockBanner.textContent = (locked && ls.native) ? 'Mac is locked \u2014 type the password to unlock' : originalLockBannerText;
+      lockBanner.textContent = (locked && !shouldShowVncFallback(ls)) ? 'Mac is locked \u2014 type the password to unlock' : originalLockBannerText;
       lockBanner.classList.toggle('show', locked);
       break;
     }

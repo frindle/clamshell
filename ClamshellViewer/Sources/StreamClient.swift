@@ -32,6 +32,10 @@ final class StreamClient: ObservableObject {
     /// HOST_LOCK_STATE. When true, a locked host keeps streaming natively: show a
     /// banner, never the browser VNC fallback.
     @Published var hostNativeLockScreen = false
+    /// From the optional third byte of HOST_LOCK_STATE: false when the Mac has no
+    /// working legacy VNC link (bridge off or nothing on port 5900). A host that
+    /// sends no third byte is treated as having one (older hosts).
+    @Published var hostVNCAvailable = true
     /// Host video encoder state from VIDEO_STATE: 0 running, 1 rebuilding, 2 gave up.
     @Published var videoState: UInt8 = 0
     /// Remote cursor position from the host's periodic CURSOR_POS reports,
@@ -594,6 +598,7 @@ final class StreamClient: ObservableObject {
         softwareEncoding = false
         currentBitrateKbps = 0
         hostLocked = false
+        hostVNCAvailable = true
         hostNativeLockScreen = false
         videoState = 0
         lastError = nil
@@ -613,7 +618,7 @@ final class StreamClient: ObservableObject {
     /// the proxy and points noVNC at same-origin wss:// with no port override.
     /// True when the browser VNC fallback should replace the native video: the
     /// host is locked and has not asked to keep the native stream.
-    var showsVNCFallback: Bool { hostLocked && !hostNativeLockScreen }
+    var showsVNCFallback: Bool { hostLocked && !hostNativeLockScreen && hostVNCAvailable }
 
     var browserFallbackURL: URL? {
         guard let host = connectHost else { return nil }
@@ -764,8 +769,9 @@ final class StreamClient: ObservableObject {
             guard let byte = payload.first else { return }
             let locked = byte == 1
             let native = payload.count >= 2 && payload[payload.startIndex + 1] == 1
-            clogViewer("HOST_LOCK_STATE: host screen \(locked ? (native ? "LOCKED — native stream continues" : "LOCKED — showing browser VNC fallback") : "unlocked")")
-            DispatchQueue.main.async { self.hostLocked = locked; self.hostNativeLockScreen = native }
+            let vnc = payload.count < 3 || payload[payload.startIndex + 2] == 1
+            clogViewer("HOST_LOCK_STATE: host screen \(locked ? (native ? "LOCKED — native stream continues" : "LOCKED — \(vnc ? "showing browser VNC fallback" : "no VNC link, banner only")") : "unlocked")")
+            DispatchQueue.main.async { self.hostLocked = locked; self.hostNativeLockScreen = native; self.hostVNCAvailable = vnc }
         case .videoState:
             guard let state = payload.first else { return }
             clogViewer("VIDEO_STATE: \(state == 0 ? "running" : state == 1 ? "host is rebuilding its encoder" : "host gave up rebuilding its encoder")")

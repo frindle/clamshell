@@ -74,14 +74,8 @@ final class ConnectionMonitor {
     // MARK: - Detection
 
     static func detectActiveSession() -> Trigger? {
-        let established = establishedConnections()
-        // Screen Sharing: any established connection with local port 5900.
-        // Exclude loopback so a local VNC viewer doesn't trip the collapse.
-        for conn in established {
-            if conn.localPort == 5900 && !conn.remoteAddress.hasPrefix("127.")
-                && conn.remoteAddress != "::1" {
-                return .screenSharing
-            }
+        if screenSharingSessionActive(in: establishedConnections()) {
+            return .screenSharing
         }
         // Jump Desktop Connect: its helper holds the session sockets in-process,
         // so presence of an established connection owned by JumpConnect's
@@ -93,6 +87,16 @@ final class ConnectionMonitor {
             return .sunshine
         }
         return nil
+    }
+
+    /// Screen Sharing: any established connection with local port 5900.
+    /// Excludes loopback so a local VNC viewer doesn't trip the collapse. With
+    /// nothing listening on 5900 there is nothing established there, so this is
+    /// false and the monitor stays quiet.
+    static func screenSharingSessionActive(in connections: [Connection]) -> Bool {
+        connections.contains { conn in
+            conn.localPort == 5900 && !conn.remoteAddress.hasPrefix("127.") && conn.remoteAddress != "::1"
+        }
     }
 
     /// Sunshine's GameStream discovery endpoint is unauthenticated and
@@ -149,6 +153,10 @@ final class ConnectionMonitor {
     /// addresses as `192.168.1.5.5900` (port joined by the final dot).
     static func establishedConnections() -> [Connection] {
         guard let output = run("/usr/sbin/netstat", ["-an", "-p", "tcp"]) else { return [] }
+        return parseEstablished(netstat: output)
+    }
+
+    static func parseEstablished(netstat output: String) -> [Connection] {
         var result: [Connection] = []
         for line in output.split(separator: "\n") {
             guard line.contains("ESTABLISHED") else { continue }

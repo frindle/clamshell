@@ -231,11 +231,14 @@ final class WebServer {
         startTLSWatch()
         do {
             try startHTTP()
-            try startWS()
+            // The noVNC bridge is a legacy path, off unless `legacyVNCBridge`
+            // is set. Nothing in the clients needs it any more.
+            let legacy = StreamMessage.legacyVNCBridgeEnabled()
+            if legacy { try startWS() }
             try startStreamBridges()
             isRunning = true
             let bound = bindHosts.isEmpty ? "all interfaces" : bindHosts.joined(separator: ", ")
-            clog("web access ON: http\(LANTLS.identity != nil ? "s" : "")://\(displayHost):\(httpPort) (ws bridge :\(wsPort), bound to \(bound))")
+            clog("web access ON: http\(LANTLS.identity != nil ? "s" : "")://\(displayHost):\(httpPort) (legacy ws bridge \(legacy ? ":\(wsPort)" : "off"), bound to \(bound))")
         } catch {
             clog("web access failed to start: \(error)")
             stop()
