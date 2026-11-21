@@ -85,6 +85,10 @@ public enum FlowStateKind
     Denied,
     Invalid,
     Busy,
+    /// <summary>Busy, and the host says why: it needs Keychain approval on that Mac.</summary>
+    HostNeedsKeychain,
+    /// <summary>Busy, and the host says remote access is off on that Mac.</summary>
+    RemoteAccessOff,
     Connected,
     Failed,
 }
@@ -119,6 +123,8 @@ public sealed class FlowState
     public static FlowState Denied(string hostName) => new() { Kind = FlowStateKind.Denied, HostName = hostName };
     public static FlowState Invalid(string hostName) => new() { Kind = FlowStateKind.Invalid, HostName = hostName };
     public static FlowState Busy(int retryIn) => new() { Kind = FlowStateKind.Busy, RetryIn = retryIn };
+    public static FlowState HostNeedsKeychain(int retryIn) => new() { Kind = FlowStateKind.HostNeedsKeychain, RetryIn = retryIn };
+    public static FlowState RemoteAccessOff(int retryIn) => new() { Kind = FlowStateKind.RemoteAccessOff, RetryIn = retryIn };
     public static FlowState Connected(bool verified, string hostName) =>
         new() { Kind = FlowStateKind.Connected, Verified = verified, HostName = hostName };
     public static FlowState Failed(string message) => new() { Kind = FlowStateKind.Failed, Message = message };
@@ -458,9 +464,10 @@ public sealed class ClientAuthFlow
     private List<FlowAction> HandleResult(byte[] payload)
     {
         AuthStatus status;
+        HostBusyReason busyReason;
         var h = _handshake;
         if (h is null) return Fail("a result did not verify");
-        try { status = h.StatusOfResult(payload); }
+        try { (status, busyReason) = h.VerifiedResult(payload); }
         catch (AuthException) { return Fail("a result did not verify"); }
 
         var actions = new List<FlowAction>
@@ -523,7 +530,7 @@ public sealed class ClientAuthFlow
                 actions.AddRange(Finish(FlowEnd.Stop(), "invalid", FlowState.Invalid(name)));
                 return actions;
             case AuthStatus.Busy:
-                actions.AddRange(RetryActions(afterBusy: true));
+                actions.AddRange(RetryActions(afterBusy: true, busyReason));
                 return actions;
             case AuthStatus.Timeout:
                 if (!_carry.TimeoutRetried)
@@ -540,12 +547,18 @@ public sealed class ClientAuthFlow
         }
     }
 
-    private List<FlowAction> RetryActions(bool afterBusy)
+    private List<FlowAction> RetryActions(bool afterBusy, HostBusyReason reason = HostBusyReason.None)
     {
         var next = _carry.Clone();
         var delay = _carry.BusyDelay;
         next.BusyDelay = Math.Min(delay * 2, BusyMaxDelay);
-        return Finish(FlowEnd.Reconnect(delay, next), afterBusy ? "busy" : "timeout again", FlowState.Busy((int)delay));
+        return Finish(FlowEnd.Reconnect(delay, next), afterBusy ? "busy" : "timeout again",
+            reason switch
+            {
+                HostBusyReason.Keychain => FlowState.HostNeedsKeychain((int)delay),
+                HostBusyReason.RemoteAccessOff => FlowState.RemoteAccessOff((int)delay),
+                _ => FlowState.Busy((int)delay),
+            });
     }
 
     // MARK: Session

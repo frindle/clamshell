@@ -20,7 +20,8 @@ internal static class AuthScreens
     {
         FlowStateKind.WaitingForApproval or FlowStateKind.ConfirmHost or FlowStateKind.ChangedIdentity
             or FlowStateKind.DidNotIdentify or FlowStateKind.AskUnverified or FlowStateKind.Denied
-            or FlowStateKind.Invalid or FlowStateKind.Busy => true,
+            or FlowStateKind.Invalid or FlowStateKind.Busy or FlowStateKind.HostNeedsKeychain
+            or FlowStateKind.RemoteAccessOff => true,
         _ => false,
     };
 
@@ -34,6 +35,8 @@ internal static class AuthScreens
         FlowStateKind.Denied => "This Mac turned this PC away",
         FlowStateKind.Invalid => "This Mac sent something this viewer cannot use",
         FlowStateKind.Busy => "The Mac is busy",
+        FlowStateKind.HostNeedsKeychain => "The Mac needs Keychain approval",
+        FlowStateKind.RemoteAccessOff => "Remote access is off",
         FlowStateKind.Connecting => "Connecting",
         FlowStateKind.Connected => "Connected",
         _ => "Could not connect",
@@ -56,6 +59,10 @@ internal static class AuthScreens
         FlowStateKind.Invalid =>
             $"{s.HostName} answered in a way this viewer does not accept. Nothing more was sent to it.",
         FlowStateKind.Busy => $"The Mac is busy. Trying again in {s.RetryIn} s.",
+        FlowStateKind.HostNeedsKeychain =>
+            $"The Mac needs Keychain approval for Clamshell before it can accept devices. Approve it on the Mac. Trying again in {s.RetryIn} s.",
+        FlowStateKind.RemoteAccessOff =>
+            $"Remote access is off on this Mac. Turn Screen Sharing on there, or allow it from Clamshell's menu. Trying again in {s.RetryIn} s.",
         FlowStateKind.Failed => s.Message,
         _ => "",
     };
@@ -84,7 +91,7 @@ internal static class AuthScreens
         FlowStateKind.ConfirmHost or FlowStateKind.AskUnverified => new() { "Connect", "Cancel" },
         FlowStateKind.ChangedIdentity or FlowStateKind.DidNotIdentify or FlowStateKind.Denied
             or FlowStateKind.Invalid => new() { "Close" },
-        FlowStateKind.Busy => new() { "Cancel" },
+        FlowStateKind.Busy or FlowStateKind.HostNeedsKeychain or FlowStateKind.RemoteAccessOff => new() { "Cancel" },
         _ => new(),
     };
 
@@ -158,6 +165,8 @@ internal static class AuthScreens
             FlowState.Denied("Studio"),
             FlowState.Invalid("Studio"),
             FlowState.Busy(15),
+            FlowState.HostNeedsKeychain(15),
+            FlowState.RemoteAccessOff(15),
         };
         int answers = 0, stops = 0;
         foreach (var s in states)
@@ -184,6 +193,8 @@ internal static class AuthScreens
         Check(Buttons(states[1]).SequenceEqual(new[] { "Connect", "Cancel" }), "confirm host asks Connect or Cancel");
         Check(Rows(states[0]).Count == 2, "waiting shows both fingerprints");
         Check(Body(states[7]).Contains("15 s"), "busy shows the delay");
+        Check(Body(states[8]).Contains("Keychain approval"), "keychain state names the cause");
+        Check(Body(states[9]).Contains("Remote access is off"), "remote-off state names the cause");
         Check(!IsScreen(FlowState.Connected(true, "Studio")) && !IsScreen(FlowState.Connecting()), "connected and connecting are not screens");
 
         // Buttons do what they say.

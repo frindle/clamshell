@@ -54,6 +54,39 @@ public sealed class AuthExtension
     public AuthExtension(byte type, byte[] value) { Type = type; Value = value; }
 }
 
+/// <summary>Why a host said busy: extension type 0x02 of AUTH_RESULT, one byte.
+/// An unknown type or value is plain busy.</summary>
+public enum HostBusyReason : byte
+{
+    None = 0,
+    /// <summary>The Mac needs someone to approve Clamshell's Keychain access.</summary>
+    Keychain = 1,
+    /// <summary>Remote access is switched off on that Mac.</summary>
+    RemoteAccessOff = 2,
+}
+
+public static class HostBusyReasons
+{
+    public const byte ExtensionType = 0x02;
+
+    public static AuthExtension ToExtension(HostBusyReason reason) => new(ExtensionType, new[] { (byte)reason });
+
+    public static HostBusyReason Find(IReadOnlyList<AuthExtension> extensions)
+    {
+        foreach (var e in extensions)
+        {
+            if (e.Type != ExtensionType || e.Value.Length != 1) continue;
+            return e.Value[0] switch
+            {
+                (byte)HostBusyReason.Keychain => HostBusyReason.Keychain,
+                (byte)HostBusyReason.RemoteAccessOff => HostBusyReason.RemoteAccessOff,
+                _ => HostBusyReason.None,
+            };
+        }
+        return HostBusyReason.None;
+    }
+}
+
 /// <summary>Reads fields off the front of a payload, refusing to run past its end.</summary>
 public sealed class ByteReader
 {

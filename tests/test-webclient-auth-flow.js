@@ -416,6 +416,24 @@ test('rule 13: busy retries after 15 s, doubling to at most 2 min', async () => 
   assert.deepStrictEqual(delays, [15, 30, 60, 120, 120, 120]);
 });
 
+test('busy with a reason names the reason; an unknown reason is plain busy', async () => {
+  const cases = [
+    [Uint8Array.of(0x02, 0, 1, 1), 'hostNeedsKeychain'],
+    [Uint8Array.of(0x02, 0, 1, 2), 'remoteAccessOff'],
+    [Uint8Array.of(0x02, 0, 1, 0x7f), 'busy'],
+    [Uint8Array.of(0x09, 0, 1, 1), 'busy'], // another extension type: skipped
+  ];
+  for (const [ext, kind] of cases) {
+    const host = await TestHost.create();
+    const t = await setup({});
+    await handshake(t, host);
+    await t.feed(await host.resultMessage(A.STATUS.busy, undefined, ext));
+    const end = t.ends()[0].end;
+    assert.strictEqual(end.kind, 'reconnect');
+    assert.deepStrictEqual(t.lastState(), { kind, retryIn: end.after });
+  }
+});
+
 test('rule 13: timeout reconnects at once, once; after that as for busy', async () => {
   const host = await TestHost.create();
   const t = await setup();

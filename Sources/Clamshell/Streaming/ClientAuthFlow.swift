@@ -59,6 +59,11 @@ enum FlowState: Equatable {
     case denied(hostName: String)
     case invalid(hostName: String)
     case busy(retryIn: Int)
+    /// A busy answer that says why: the Mac needs someone to approve Clamshell's
+    /// Keychain access on it. Retrying is automatic, but only the owner can fix it.
+    case hostNeedsKeychain(retryIn: Int)
+    /// A busy answer that says remote access is switched off on that Mac.
+    case remoteAccessOff(retryIn: Int)
     case connected(verified: Bool, hostName: String)
     case failed(String)
 }
@@ -348,9 +353,10 @@ struct ClientAuthFlow {
     // MARK: Result
 
     private mutating func handleResult(_ payload: Data) -> [FlowAction] {
-        guard let h = handshake, let status = try? h.status(ofResult: payload) else {
+        guard let h = handshake, let verified = try? h.verifiedResult(payload) else {
             return fail("a result did not verify")
         }
+        let status = verified.status
         var actions: [FlowAction] = [.cancelTimer(.result), .cancelTimer(.pending)]
         let hostKnown = known.host(id: h.hostId) != nil
         // A verified result proves the host holds the key in the challenge.
@@ -397,7 +403,7 @@ struct ClientAuthFlow {
         case .invalid:
             return actions + finish(.stop, "invalid", state: .invalid(hostName: name))
         case .busy:
-            return actions + retryActions(afterBusy: true)
+            return actions + retryActions(afterBusy: true, reason: verified.busyReason)
         case .timeout:
             if !carry.timeoutRetried {
                 var next = carry
@@ -408,12 +414,17 @@ struct ClientAuthFlow {
         }
     }
 
-    private mutating func retryActions(afterBusy: Bool) -> [FlowAction] {
+    private mutating func retryActions(afterBusy: Bool, reason: HostBusyReason? = nil) -> [FlowAction] {
         var next = carry
         let delay = carry.busyDelay
         next.busyDelay = min(delay * 2, Self.busyMaxDelay)
-        return finish(.reconnect(after: delay, carry: next), afterBusy ? "busy" : "timeout again",
-                      state: .busy(retryIn: Int(delay)))
+        let state: FlowState
+        switch reason {
+        case .keychain?: state = .hostNeedsKeychain(retryIn: Int(delay))
+        case .remoteAccessOff?: state = .remoteAccessOff(retryIn: Int(delay))
+        case nil: state = .busy(retryIn: Int(delay))
+        }
+        return finish(.reconnect(after: delay, carry: next), afterBusy ? "busy" : "timeout again", state: state)
     }
 
     // MARK: Session

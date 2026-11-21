@@ -17,6 +17,16 @@ export const MSG = {
   HOST_INFO: 0x0B, CLIENT_INFO: 0x0C, SECURE: 0x0F,
 };
 export const STATUS = { accepted: 0, pending: 1, denied: 2, invalid: 3, busy: 4, timeout: 5 };
+// AUTH_RESULT extension 0x02 on a `busy`: why the host is busy. Unknown
+// reasons (and a missing record) are plain busy.
+export const BUSY_REASON = { keychain: 1, remoteAccessOff: 2 };
+export function busyReasonOf(extensions) {
+  const e = (extensions || []).find((x) => x.type === 0x02);
+  if (!e || e.value.length !== 1) return null;
+  if (e.value[0] === BUSY_REASON.keychain) return 'keychain';
+  if (e.value[0] === BUSY_REASON.remoteAccessOff) return 'remoteAccessOff';
+  return null;
+}
 export const AUTH = {
   version: 1, keyBytes: 65, nonceBytes: 32, signatureBytes: 64,
   maxNameBytes: 64, tagBytes: 16, counterLimit: 2 ** 48,
@@ -376,6 +386,11 @@ export class ClientHandshake {
    * whatever its status says.
    */
   async statusOfResult(payload) {
+    return (await this.verifiedResult(payload)).status;
+  }
+
+  /** As `statusOfResult`, with the reason a `busy` carries (or null). */
+  async verifiedResult(payload) {
     const result = parseResult(payload);
     const covered = (result.status === STATUS.busy || result.status === STATUS.timeout)
       ? new Uint8Array(0) : this.response;
@@ -383,7 +398,8 @@ export class ClientHandshake {
     if (!(await verifySignature(result.signature, input, this.hostIdentityKey, this.cr))) {
       throw new AuthError('badSignature');
     }
-    return result.status;
+    return { status: result.status,
+      busyReason: result.status === STATUS.busy ? busyReasonOf(result.extensions) : null };
   }
 
   /** The two session keys as raw bytes (see `deriveSessionMaterial`). */
@@ -1196,7 +1212,8 @@ export class AuthFlow {
   async #handleResult(payload) {
     const h = this.handshake;
     let status;
-    try { status = await h.statusOfResult(payload); } catch { return this.#fail('a result did not verify'); }
+    let busyReason = null;
+    try { ({ status, busyReason } = await h.verifiedResult(payload)); } catch { return this.#fail('a result did not verify'); }
     if (this.phase === 'ended') return;
     this.#emit({ do: 'cancelTimer', timer: 'result' });
     this.#emit({ do: 'cancelTimer', timer: 'pending' });
@@ -1245,7 +1262,7 @@ export class AuthFlow {
       case STATUS.invalid:
         return this.#finish({ kind: 'stop' }, 'invalid', { kind: 'invalid', hostName: name });
       case STATUS.busy:
-        return this.#retry(true);
+        return this.#retry(true, busyReason);
       default: // timeout
         if (!this.carry.timeoutRetried) {
           return this.#finish({ kind: 'reconnect', after: 0, carry: { ...this.carry, timeoutRetried: true } },
@@ -1255,11 +1272,13 @@ export class AuthFlow {
     }
   }
 
-  #retry(afterBusy) {
+  #retry(afterBusy, reason = null) {
     const delay = this.carry.busyDelay;
     const next = { ...this.carry, busyDelay: Math.min(delay * 2, FLOW.busyMaxDelay) };
+    const kind = reason === 'keychain' ? 'hostNeedsKeychain'
+      : reason === 'remoteAccessOff' ? 'remoteAccessOff' : 'busy';
     this.#finish({ kind: 'reconnect', after: delay, carry: next }, afterBusy ? 'busy' : 'timeout again',
-      { kind: 'busy', retryIn: delay });
+      { kind, retryIn: delay });
   }
 
   // ── Session ───────────────────────────────────────────────────────────

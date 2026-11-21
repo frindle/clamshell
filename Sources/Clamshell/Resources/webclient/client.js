@@ -634,6 +634,20 @@ function renderAuthState(conn, s) {
         buttons: [['Close', true, userDisconnect]],
       });
       break;
+    case 'hostNeedsKeychain':
+      showCard({
+        title: 'The Mac needs Keychain approval',
+        text: `The Mac needs Keychain approval for Clamshell before it can accept devices. Approve it on the Mac. Trying again in ${s.retryIn} s.`,
+        buttons: [['Cancel', true, userDisconnect]],
+      });
+      break;
+    case 'remoteAccessOff':
+      showCard({
+        title: 'Remote access is off',
+        text: `Remote access is off on this Mac. Turn Screen Sharing on there, or allow it from Clamshell's menu. Trying again in ${s.retryIn} s.`,
+        buttons: [['Cancel', true, userDisconnect]],
+      });
+      break;
     case 'busy':
       showCard({
         title: 'The Mac is busy',

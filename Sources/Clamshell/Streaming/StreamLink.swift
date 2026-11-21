@@ -436,9 +436,13 @@ final class StreamGate {
         onAdmit(link)
     }
 
-    private func finish(_ link: StreamLink, _ status: AuthStatus, response: Data = Data(), why: String) {
+    private func finish(_ link: StreamLink, _ status: AuthStatus, response: Data = Data(), why: String,
+                        busyReason: HostBusyReason? = nil) {
         guard link.phase != .closed else { return }
-        let result = link.handshake.flatMap { try? $0.result(status, response: response, sign: auth.identity.sign) }
+        let extensions = (status == .busy ? busyReason?.authExtension : nil).map { [$0] } ?? []
+        let result = link.handshake.flatMap {
+            try? $0.result(status, response: response, extensions: extensions, sign: auth.identity.sign)
+        }
         close(link, why: "\(status): \(why)",
               lastWords: result.map { StreamMessage.frame(type: .authResult, payload: $0) })
     }

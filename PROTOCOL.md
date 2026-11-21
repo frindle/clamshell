@@ -466,8 +466,12 @@ names and public keys are visible to anyone on the path. Nothing else is.
 | signature | 64 | by the host identity key |
 
 Extension records are `type(1) len(2 BE) value`, repeated to fill `extLen`. A
-record of an unknown type is skipped. Version 1 defines none; type 0x01 is
-reserved for an account-signed device certificate.
+record of an unknown type is skipped. Type 0x01 is reserved for an
+account-signed device certificate. Type 0x02, in an AUTH_RESULT with status
+`busy` only, is a one-byte reason: 1 = the Mac needs someone to approve
+Clamshell's Keychain access, 2 = remote access is switched off on that Mac. A
+client shows it ("The Mac needs Keychain approval", "Remote access is off") and
+keeps its busy back-off; a missing record or an unknown value is plain busy.
 
 **What is signed.** Write `L(x)` for `u32be(length of x) ‖ x`, and call a
 message's payload without its trailing 64 signature bytes its *body*.
