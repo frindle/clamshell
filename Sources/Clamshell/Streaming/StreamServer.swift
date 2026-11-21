@@ -646,22 +646,25 @@ final class StreamServer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 let capturedDisplayID: CGDirectDisplayID?
                 switch source {
                 case .display(let displayID):
-                    let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
-                    
-                    // Resolve the current target display ID with fallback logic
-                    guard let resolvedDisplayID = self.resolveCurrentTargetDisplayID(content: content, originalDisplayID: displayID) else {
-                        clog("STREAM: no suitable display found for capture")
+                    // A display that is still waking is not in the shareable
+                    // content yet: wake it again and look a few times.
+                    let found = try await DisplayWakeRetry.run(
+                        wake: { DisplayWake.shared.wake("Clamshell capture found no display") },
+                        sleep: { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) },
+                        attempt: { () async throws -> (SCDisplay, CGDirectDisplayID)? in
+                            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                            guard let id = self.resolveCurrentTargetDisplayID(content: content, originalDisplayID: displayID),
+                                  let sc = content.displays.first(where: { $0.displayID == id }) else { return nil }
+                            return (sc, id)
+                        })
+                    guard let found else {
+                        clog("STREAM: no suitable display found for capture, even after waking it")
                         self.failSession(sessionConn)
                         return
                     }
-                    
-                    // Use the resolved display ID to find the actual SCDisplay object
-                    guard let scDisplay = content.displays.first(where: { $0.displayID == resolvedDisplayID }) else {
-                        clog("STREAM: resolved display \(resolvedDisplayID) not found in shareable content")
-                        self.failSession(sessionConn)
-                        return
-                    }
-                    
+                    let scDisplay = found.0
+                    let resolvedDisplayID = found.1
+
                     // Native pixel resolution and refresh rate — no scaling in
                     // the capture path; the encoder sees exactly what the
                     // display shows.

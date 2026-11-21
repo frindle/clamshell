@@ -410,6 +410,7 @@ final class StreamGate {
             return
         }
         release(link)
+        DisplayWake.shared.connected(link)
         write(StreamMessage.frame(type: .authResult, payload: result), to: link)
         link.sealer = SecureSealer(key: keys.hostToClient)
         link.opener = SecureOpener(key: keys.clientToHost)
@@ -509,6 +510,7 @@ final class StreamGate {
             link.reachedReady = true
         }
         link.phase = .closed
+        DisplayWake.shared.disconnected(link)
         link.handshake = nil
         link.sealer = nil
         link.opener = nil
