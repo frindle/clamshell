@@ -71,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // be a few hundred MB of files).
         DispatchQueue.global(qos: .utility).async { UpdateInstaller.removeOldCopies() }
 
+        // App-host mode: does nothing unless the appHostEnabled default is set.
+        AppHostController.shared.startIfEnabled()
+
         // Start-at-login used to be a login item; it is a KeepAlive launch
         // agent now. Move anyone who had it on, once.
         if Bundle.main.bundleIdentifier != nil {
