@@ -92,6 +92,9 @@ final class StreamGate {
     /// and will type a saved login for a client (PROTOCOL.md "Login window").
     var advertisesLoginCredentials = false
 
+    /// Whether Clamshell's own remote-access switch is on. A test replaces it.
+    var remoteAccessEnabled: () -> Bool = { RemoteAccessSwitch.isEnabled() }
+
     private let auth: HostAuth
     private let queue: DispatchQueue
     private let label: String
@@ -112,6 +115,7 @@ final class StreamGate {
         observers = [
             center.addObserver(forName: DeviceTrustStore.didChange, object: auth.store, queue: nil, using: changed),
             center.addObserver(forName: HostAuth.approvalDidChange, object: auth, queue: nil, using: changed),
+            center.addObserver(forName: RemoteAccessSwitch.didChange, object: nil, queue: nil, using: changed),
         ]
     }
 
@@ -304,6 +308,11 @@ final class StreamGate {
         }
         link.device = device
         let who = "\(device.fingerprint) (\(DeviceTrustStore.storedName(device.name))) from \(link.from)"
+
+        if case .refuse(let reason) = RemoteAccessSwitch.decision(enabled: remoteAccessEnabled()) {
+            finish(link, .busy, why: "\(who) asked while remote access is switched off", busyReason: reason)
+            return
+        }
 
         guard auth.requireApproval else {
             auth.store.noteConnected(id: device.id, name: device.name, address: link.address,
@@ -539,6 +548,20 @@ final class StreamGate {
     // MARK: - When the device list or the setting changes
 
     private func reconcile() {
+        if case .refuse(let reason) = RemoteAccessSwitch.decision(enabled: remoteAccessEnabled()) {
+            // The switch is off: nobody stays, whatever stage they are at.
+            for link in links {
+                switch link.phase {
+                case .pending, .awaitingResponse:
+                    finish(link, .busy, why: "remote access was switched off", busyReason: reason)
+                case .accepted, .open:
+                    close(link, why: "remote access was switched off")
+                case .closed:
+                    break
+                }
+            }
+            return
+        }
         let approval = auth.requireApproval
         for link in links {
             switch link.phase {

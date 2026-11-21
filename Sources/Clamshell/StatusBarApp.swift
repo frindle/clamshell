@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// The Devices menu and the window that asks before a new device may
     /// connect (PROTOCOL.md "Approving a device").
     private let devices = DevicesController()
+    private let remoteAccessWatcher = RemoteAccessWatcher()
     private var autoMode = UserDefaults.standard.object(forKey: "autoMode") as? Bool ?? true
 
     // Remote-session state from the polled third-party detection (Jump
@@ -142,6 +143,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.recomputeSessionState()
         }
         monitor.start()
+        remoteAccessWatcher.start()
+        NotificationCenter.default.addObserver(forName: RemoteAccessSwitch.didChange, object: nil, queue: .main) { [weak self] _ in
+            self?.rebuildMenu()
+        }
         webServer.bindHosts = UserDefaults.standard.stringArray(forKey: "bindHosts")
             ?? UserDefaults.standard.string(forKey: "bindHost").map { [$0] } // migrate pre-multi-select key
             ?? []
@@ -400,6 +405,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let displayItem = NSMenuItem(title: "Display", action: nil, keyEquivalent: "")
         menu.addItem(displayItem)
         menu.setSubmenu(displayMenu, for: displayItem)
+
+        // Read-only: the macOS Screen Sharing switch is the one control, and it
+        // governs Clamshell's remote access too.
+        let remote = NSMenuItem(
+            title: remoteAccessWatcher.current
+                ? "Remote access on (System Settings > Sharing > Screen Sharing)"
+                : "Remote access OFF (turn on in System Settings > Sharing > Screen Sharing)",
+            action: nil, keyEquivalent: "")
+        remote.isEnabled = false
+        menu.addItem(remote)
 
         let streamingMenu = NSMenu()
         let web = NSMenuItem(
