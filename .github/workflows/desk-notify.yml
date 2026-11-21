@@ -1,0 +1,34 @@
+name: DeskNotify
+on:
+  push:
+    branches: [main]
+    paths: ['DeskNotify/**', 'DeskProtocol/**', 'DeskStubs/**', '.github/workflows/desk-notify.yml']
+  pull_request:
+    paths: ['DeskNotify/**', 'DeskProtocol/**', 'DeskStubs/**', '.github/workflows/desk-notify.yml']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Logic and the SQLite reader run on Linux, off the macOS runners.
+  linux:
+    name: DeskNotify (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: SQLite headers
+        run: apt-get update && apt-get install -y libsqlite3-dev
+      - name: Test
+        working-directory: DeskNotify
+        run: swift test
+  # Same package on the Apple toolchain, so a stdlib difference cannot hide.
+  macos:
+    name: DeskNotify (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        working-directory: DeskNotify
+        run: swift test
