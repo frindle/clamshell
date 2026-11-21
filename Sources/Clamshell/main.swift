@@ -257,6 +257,9 @@ if args.count > 1 {
     case "loginwindow":
         // install | uninstall | status | sync for the login-window agent.
         exit(LoginWindowCommands.run(Array(args.dropFirst(2))))
+    case "redirect":
+        // run | install | uninstall | status for the VNC-port redirect daemon.
+        exit(RedirectCommands.run(Array(args.dropFirst(2))))
     case "remote-ready":
         // Can this Mac be reached with no screen and nobody there? Exit 1
         // when any check fails.
@@ -273,7 +276,7 @@ if args.count > 1 {
         print("Usage: clamshell [collapse | restore | test-virtual-display | test-web | stream | " +
               "hello-collapse-selftest | encoder-resize-selftest | test-ultrawide-stream | stream-selftest | reboot-readiness | test-detect | window-list | " +
               "window-capture-selftest | window-hide-selftest | window-at-cursor-selftest | stream-window | " +
-              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | loginwindow | remote-ready | " +
+              "auth-gate-selftest | discovery-selftest | confirmation-bridge-selftest | confirmation-coordinator-selftest | confirmation-yubikey-selftest | self-heal-guard-selftest | loginwindow-probe | loginwindow-agent | loginwindow | redirect | remote-ready | " +
               "devices | approve | deny | revoke | forget | status | update | rollback]")
         exit(64)
     }

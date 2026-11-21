@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template, shipped in Clamshell.app/Contents/Resources/redirect-daemon/.
+  `sudo clamshell redirect install` fills the placeholders and copies the
+  result to /Library/LaunchDaemons. Do not load this file by hand.
+
+  A root daemon that keeps one packet-filter rule in place, in an anchor under
+  com.apple/ (which the stock pf.conf already evaluates): connections to the
+  standard VNC port go to Clamshell's own server on a loopback port. It checks
+  every few seconds and puts the rule back if a macOS update reset the packet
+  filter. It runs from the root-owned app copy that the login-window helper
+  keeps current. It listens on no port.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.frindle.clamshell.redirect</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__APP_BINARY__</string>
+        <string>redirect</string>
+        <string>run</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+    <key>StandardOutPath</key><string>__LOG__</string>
+    <key>StandardErrorPath</key><string>__LOG__</string>
+</dict>
+</plist>

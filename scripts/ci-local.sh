@@ -70,7 +70,7 @@ step_syntax() {
 
 step_plists() {
   # plutil is a Mac tool; plistlib parses the same XML and binary files.
-  python3 - scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist scripts/launchagent/*.plist <<'PY'
+  python3 - scripts/loginwindow-probe/*.plist scripts/loginwindow-agent/*.plist scripts/redirect-daemon/*.plist scripts/launchagent/*.plist <<'PY'
 import plistlib, sys
 bad = 0
 files = [f for f in sys.argv[1:] if not f.endswith("*.plist")]
@@ -93,6 +93,12 @@ step_ci_retry() {
   python3 -I tests/test-ci-infra-retry.py
 }
 
+step_cutover() {
+  bash -n scripts/cutover-screen-sharing.sh || return 1
+  bash tests/test-cutover-script.sh
+}
+
+run_step "Screen Sharing cutover script" step_cutover
 run_step "Web client hello test" step_hello
 run_step "Web client input and audio tests" step_input
 run_step "Web client auth tests" step_auth
