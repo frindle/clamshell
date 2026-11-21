@@ -840,25 +840,32 @@ export class KnownHosts {
    * copy that cannot be read gives an empty store and `damaged`; one with some
    * unreadable entries keeps every entry that could be read and sets `damaged`
    * too. A host key that is not a valid curve point, or whose id does not match
-   * its key, is dropped.
+   * its key, is dropped. `why` names the first problem found (no addresses or
+   * names in it), so a damaged copy can be told apart from a screenshot.
    */
   static async decode(text, cr) {
     const out = new KnownHosts();
-    if (text === undefined || text === null) return { known: out, damaged: false };
+    if (text === undefined || text === null) return { known: out, damaged: false, why: null };
     let stored;
-    try { stored = JSON.parse(text); } catch { return { known: out, damaged: true }; }
-    if (!stored || typeof stored !== 'object' || !Array.isArray(stored.hosts)) return { known: out, damaged: true };
-    let damaged = false;
+    try { stored = JSON.parse(text); } catch { return { known: out, damaged: true, why: 'the saved copy is not readable data' }; }
+    if (!stored || typeof stored !== 'object' || !Array.isArray(stored.hosts)) {
+      return { known: out, damaged: true, why: 'the saved copy has no list of Macs' };
+    }
+    let why = null;
+    const flag = (w) => { if (!why) why = w; };
     const claimed = new Set();
     for (const entry of stored.hosts) {
       const key = entry && typeof entry.key === 'string' ? fromHex(entry.key) : null;
-      if (!key || !(await isValidPublicKey(key, cr))) { damaged = true; continue; }
+      if (!key || !(await isValidPublicKey(key, cr))) { flag('a saved key is not valid'); continue; }
       const id = await keyId(key, cr);
       const addresses = [];
       for (const a of Array.isArray(entry.addresses) ? entry.addresses : []) {
         const n = a && typeof a.address === 'string' ? normalizeAddress(a.address) : null;
-        if (!n || n !== a.address || claimed.has(n) || addresses.some((x) => x.address === n)
-            || typeof a.lastUsed !== 'number') { damaged = true; continue; }
+        const bad = !n ? 'an address cannot be read'
+          : n !== a.address ? 'an address is not in its standard form'
+          : claimed.has(n) || addresses.some((x) => x.address === n) ? 'an address is listed twice'
+          : typeof a.lastUsed !== 'number' ? 'an address has no last-used time' : null;
+        if (bad) { flag(bad); continue; }
         // A path that is not a display path is dropped, not trusted.
         const path = typeof a.path === 'string' && portOf(n) === 443 && displayPath(`wss://x${a.path}`) === a.path
           ? a.path : null;
@@ -870,27 +877,29 @@ export class KnownHosts {
       }
       const name = cleanName(typeof entry.name === 'string' ? entry.name : '');
       const have = out.host(id);
-      if (have) { damaged = true; have.addresses.push(...addresses); } else out.hosts.push({ id, key: toHex(key), name, addresses });
+      if (have) { flag('a Mac is listed twice'); have.addresses.push(...addresses); } else out.hosts.push({ id, key: toHex(key), name, addresses });
       for (const a of addresses) claimed.add(a.address);
     }
     for (const h of out.hosts) out.#trim(h);
     const allowed = Array.isArray(stored.unverifiedAllowed) ? stored.unverifiedAllowed : [];
     for (const text2 of allowed) {
       const n = typeof text2 === 'string' ? normalizeAddress(text2) : null;
-      if (!n || n !== text2) { damaged = true; continue; }
+      if (!n || n !== text2) { flag('an allowed address is not in its standard form'); continue; }
       if (!claimed.has(n) && !out.unverifiedAllowed.includes(n)) out.unverifiedAllowed.push(n);
     }
     if (out.unverifiedAllowed.length > KNOWN.maxAllowedAddresses) {
       out.unverifiedAllowed = out.unverifiedAllowed.slice(-KNOWN.maxAllowedAddresses);
     }
-    return { known: out, damaged };
+    return { known: out, damaged: why !== null, why };
   }
 }
 
 /** Loads known hosts through a store. A store that cannot be read gives an empty one, damaged. */
 export async function loadKnownHosts(store, cr) {
   let text;
-  try { text = await store.get(KNOWN_HOSTS_NAME); } catch { return { known: new KnownHosts(), damaged: true }; }
+  try { text = await store.get(KNOWN_HOSTS_NAME); } catch {
+    return { known: new KnownHosts(), damaged: true, why: 'this browser\u2019s storage could not be read' };
+  }
   return KnownHosts.decode(text, cr);
 }
 

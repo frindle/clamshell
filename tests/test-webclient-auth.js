@@ -466,6 +466,7 @@ test('known hosts: a damaged store is empty and says so; readable entries are ke
   for (const bad of ['not json', '{"version":1}', '[]', '5']) {
     const r = await A.KnownHosts.decode(bad, cr);
     assert.strictEqual(r.damaged, true, bad);
+    assert.strictEqual(typeof r.why, 'string', bad);
     assert.strictEqual(r.known.hosts.length, 0);
   }
   const k = new A.KnownHosts();
@@ -478,6 +479,7 @@ test('known hosts: a damaged store is empty and says so; readable entries are ke
   stored.unverifiedAllowed = ['198.51.100.1:5903', 5];
   const r = await A.KnownHosts.decode(JSON.stringify(stored), cr);
   assert.strictEqual(r.damaged, true);
+  assert.strictEqual(r.why, 'an address is not in its standard form'); // the first problem found
   assert.deepStrictEqual(r.known.hosts.map((x) => x.id), [ID_A]);
   assert.deepStrictEqual(r.known.host(ID_A).addresses.map((x) => x.address), ['192.0.2.1:5903']);
   assert.deepStrictEqual(r.known.unverifiedAllowed, ['198.51.100.1:5903']);
@@ -502,6 +504,32 @@ test('known hosts: load and save through a store', async () => {
   assert.strictEqual(again.known.hosts.length, 1);
   const broken = await A.loadKnownHosts({ async get() { throw new Error('x'); } }, cr);
   assert.strictEqual(broken.damaged, true);
+  assert.match(broken.why, /storage could not be read/);
+});
+
+test('known hosts: the reason names the check that failed, never the address', async () => {
+  const base = () => {
+    const k = new A.KnownHosts();
+    k.recordVerified({ key: KEY_A, id: ID_A, name: 'Studio', address: '192.0.2.1:5903' }, 1);
+    return JSON.parse(k.encode());
+  };
+  const cases = [
+    ['an address is not in its standard form', (s) => { s.hosts[0].addresses[0].address = 'ws://192.0.2.1:5903'; }],
+    ['an address has no last-used time', (s) => { delete s.hosts[0].addresses[0].lastUsed; }],
+    ['an address is listed twice', (s) => { s.hosts[0].addresses.push({ ...s.hosts[0].addresses[0] }); }],
+    ['a Mac is listed twice', (s) => { s.hosts.push({ ...s.hosts[0], addresses: [] }); }],
+    ['an allowed address is not in its standard form', (s) => { s.unverifiedAllowed = ['WS://192.0.2.9']; }],
+  ];
+  for (const [why, spoil] of cases) {
+    const s = base(); spoil(s);
+    const r = await A.KnownHosts.decode(JSON.stringify(s), cr);
+    assert.strictEqual(r.damaged, true, why);
+    assert.strictEqual(r.why, why);
+    assert.ok(!r.why.includes('192.0.2'), why);
+  }
+  const ok = await A.KnownHosts.decode(JSON.stringify(base()), cr);
+  assert.strictEqual(ok.damaged, false);
+  assert.strictEqual(ok.why, null);
 });
 
 // ── Fallback addresses reach the same display ───────────────────────────

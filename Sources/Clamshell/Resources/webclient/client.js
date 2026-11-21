@@ -238,8 +238,9 @@ function loadIdentity() {
         return { store, deviceKey: null, known: new KnownHosts() };
       }
       const deviceKey = await loadDeviceKey(store);
-      const { known, damaged } = await loadKnownHosts(store);
-      if (damaged) showBanner(errBanner, 'The saved Macs could not be read. Each will be checked again as if new.');
+      const { known, damaged, why } = await loadKnownHosts(store);
+      // `why` says which check failed (never an address), so a screenshot is enough to diagnose it.
+      if (damaged) showBanner(errBanner, `The saved Macs could not be read (${why}). Each will be checked again as if new.`);
       return { store, deviceKey, known };
     })().catch((e) => { identityPromise = null; throw e; });
   }
