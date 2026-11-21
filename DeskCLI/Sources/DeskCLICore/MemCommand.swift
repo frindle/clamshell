@@ -57,7 +57,7 @@ enum MemCommand {
         out.line("  swap used:       " + Text.mb(s.swapUsedMB))
         out.line("  memory:          \(Text.mb(s.totalMB)) total, \(Text.mb(s.freeMB)) free or reclaimable")
         if let reserve = cfg.reserveMB(on: s.name), let head = cfg.headroomMB(s) {
-            let dark = reserve - PlacementConfig.clampMB(cfg.reserveBufferMB)
+            let dark = cfg.darkbloomFootprintMB[s.name] ?? 0
             out.line("  reserve:         \(Text.mb(reserve)) (Darkbloom \(Text.mb(dark)) from the rules file, plus \(Text.mb(cfg.reserveBufferMB)) buffer)")
             out.line("  headroom:        " + Text.mb(head))
         } else {
