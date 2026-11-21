@@ -134,8 +134,10 @@ final class FakeHost: DeskLinkFactory {
         _ = scheduler.schedule(after: connectLatency) { [weak self, weak link] in
             guard let self = self, let link = link, !link.dead else { return }
             self.active = link
+            // The windows to replay are those open now, before the operator reacts to the open.
+            let open = self.windows
             events.opened(self.capabilities)
-            if self.capabilities & DeskCapability.appHost != 0 { self.replay() }
+            if self.capabilities & DeskCapability.appHost != 0 { self.replay(open) }
         }
         return link
     }
@@ -161,9 +163,7 @@ final class FakeHost: DeskLinkFactory {
 
     func sendAppList() { deliver(.appList(apps)) }
 
-    func replay() {
-        // Take the list first: the operator may answer the app list by launching an app, which adds a window.
-        let open = windows
+    func replay(_ open: [HostWindow]) {
         sendAppList()
         for w in open { announce(w) }
     }
