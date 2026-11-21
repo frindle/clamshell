@@ -4,8 +4,8 @@ import Foundation
 /// the self-test serve a synthetic image.
 protocol RFBFrameSource: AnyObject {
     /// Starts capture if needed and waits for a first frame. false: no screen.
-    func acquire() -> Bool
-    func release()
+    func acquireFrames() -> Bool
+    func releaseFrames()
     /// Size in pixels of the frames `withLatestFrame` gives.
     var size: (width: Int, height: Int) { get }
     /// Runs `body` on the newest frame. false when there is none yet.
@@ -45,8 +45,8 @@ final class RFBStaticFrameSource: RFBFrameSource {
         self.width = width; self.height = height; pixels = next.pixels
     }
 
-    func acquire() -> Bool { lock.lock(); acquired += 1; lock.unlock(); return true }
-    func release() { lock.lock(); acquired -= 1; lock.unlock() }
+    func acquireFrames() -> Bool { lock.lock(); acquired += 1; lock.unlock(); return true }
+    func releaseFrames() { lock.lock(); acquired -= 1; lock.unlock() }
     var size: (width: Int, height: Int) { lock.lock(); defer { lock.unlock() }; return (width, height) }
 
     func withLatestFrame(_ body: (RFBFrameView) -> Void) -> Bool {

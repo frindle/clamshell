@@ -94,21 +94,36 @@ final class RFBClient {
     }
 
     func setPixelFormat(_ f: RFBPixelFormat) {
-        write([0, 0, 0, 0] + f.bytes)
+        var m: [UInt8] = [0, 0, 0, 0]
+        m += f.bytes
+        write(m)
         format = f
     }
 
     func setEncodings(_ list: [Int32]) {
-        write([2, 0] + RFBWire.u16(UInt16(list.count)) + list.flatMap { RFBWire.i32($0) })
+        var m: [UInt8] = [2, 0]
+        m += RFBWire.u16(UInt16(list.count))
+        for e in list { m += RFBWire.i32(e) }
+        write(m)
     }
 
     func requestUpdate(incremental: Bool, x: Int, y: Int, w: Int, h: Int) {
-        write([3, incremental ? 1 : 0] + RFBWire.u16(UInt16(x)) + RFBWire.u16(UInt16(y))
-              + RFBWire.u16(UInt16(w)) + RFBWire.u16(UInt16(h)))
+        var m: [UInt8] = [3, incremental ? 1 : 0]
+        m += RFBWire.u16(UInt16(x)) + RFBWire.u16(UInt16(y))
+        m += RFBWire.u16(UInt16(w)) + RFBWire.u16(UInt16(h))
+        write(m)
     }
 
-    func key(_ keysym: UInt32, down: Bool) { write([4, down ? 1 : 0, 0, 0] + RFBWire.u32(keysym)) }
-    func pointer(mask: UInt8, x: Int, y: Int) { write([5, mask] + RFBWire.u16(UInt16(x)) + RFBWire.u16(UInt16(y))) }
+    func key(_ keysym: UInt32, down: Bool) {
+        var m: [UInt8] = [4, down ? 1 : 0, 0, 0]
+        m += RFBWire.u32(keysym)
+        write(m)
+    }
+    func pointer(mask: UInt8, x: Int, y: Int) {
+        var m: [UInt8] = [5, mask]
+        m += RFBWire.u16(UInt16(x)) + RFBWire.u16(UInt16(y))
+        write(m)
+    }
 
     /// Reads one server message, which must be a FramebufferUpdate.
     func readUpdate() -> [Rect]? {

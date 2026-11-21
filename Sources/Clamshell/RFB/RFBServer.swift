@@ -259,8 +259,24 @@ final class RFBSession {
     }
 
     private func failure(_ reason: String) {
+        var m = RFBWire.u32(1)
+        m += reasonBytes(reason)
+        write(m)
+    }
+
+    /// A length-prefixed reason string.
+    private func reasonBytes(_ reason: String) -> [UInt8] {
         let text = Array(reason.utf8)
-        write(RFBWire.u32(1) + RFBWire.u32(UInt32(text.count)) + text)
+        var m = RFBWire.u32(UInt32(text.count))
+        m += text
+        return m
+    }
+
+    /// "No security types", then why: the way a refusal before login is told.
+    private func refuse(_ reason: String) {
+        var m: [UInt8] = [0]
+        m += reasonBytes(reason)
+        write(m)
     }
 
     // MARK: handshake
@@ -270,7 +286,7 @@ final class RFBSession {
         var input: RFBInputSink?
         var sourceHeld = false
         defer {
-            if sourceHeld { server.source.release() }
+            if sourceHeld { server.source.releaseFrames() }
             if let input { input.releaseAll() }
             if admitted { server.sessionObserver?(self, false) }
             close(fd)
@@ -284,12 +300,12 @@ final class RFBSession {
 
         // Switch off: say so and stop, before any login is offered.
         if !server.enabled() {
-            write([0] + RFBWire.u32(UInt32(RFBServer.offReason.utf8.count)) + Array(RFBServer.offReason.utf8))
+            refuse(RFBServer.offReason)
             server.log("RFB: refused \(peer): the Screen Sharing switch is off")
             return
         }
         if !server.limiter.allowed(peer: peer) {
-            write([0] + RFBWire.u32(UInt32(RFBServer.tooManyReason.utf8.count)) + Array(RFBServer.tooManyReason.utf8))
+            refuse(RFBServer.tooManyReason)
             server.log("RFB: refused \(peer): too many failed logins")
             return
         }
@@ -319,15 +335,18 @@ final class RFBSession {
         server.limiter.recordSuccess(peer: peer)
         guard write(RFBWire.u32(0)), read(1) != nil else { return }   // result, then ClientInit
 
-        guard server.source.acquire() else {
+        guard server.source.acquireFrames() else {
             server.log("RFB: no screen to share for \(peer)")
             return
         }
         sourceHeld = true
         let size = server.source.size
         let name = Array(server.options.serverName.utf8)
-        guard write(RFBWire.u16(UInt16(size.width)) + RFBWire.u16(UInt16(size.height))
-                    + RFBPixelFormat.standard.bytes + RFBWire.u32(UInt32(name.count)) + name) else { return }
+        var serverInit = RFBWire.u16(UInt16(size.width)) + RFBWire.u16(UInt16(size.height))
+        serverInit += RFBPixelFormat.standard.bytes
+        serverInit += RFBWire.u32(UInt32(name.count))
+        serverInit += name
+        guard write(serverInit) else { return }
 
         admitted = true
         server.admit(self)
@@ -412,9 +431,11 @@ final class RFBSession {
                 announced = current
                 tracker = RFBFramebufferTracker(width: current.width, height: current.height)
                 pointer?.resize(width: current.width, height: current.height)
-                let msg: [UInt8] = [0, 0] + RFBWire.u16(1) + RFBWire.u16(0) + RFBWire.u16(0)
-                    + RFBWire.u16(UInt16(current.width)) + RFBWire.u16(UInt16(current.height))
-                    + RFBWire.i32(RFBEncoding.desktopSize)
+                var msg: [UInt8] = [0, 0]
+                msg += RFBWire.u16(1)
+                msg += RFBWire.u16(0) + RFBWire.u16(0)
+                msg += RFBWire.u16(UInt16(current.width)) + RFBWire.u16(UInt16(current.height))
+                msg += RFBWire.i32(RFBEncoding.desktopSize)
                 guard write(msg) else { terminate(); return }
                 stateLock.lock(); wantsUpdate = false; stateLock.unlock()
                 continue
@@ -433,16 +454,19 @@ final class RFBSession {
                 var body: [UInt8] = []
                 for r in rects {
                     body += RFBWire.u16(UInt16(r.x)) + RFBWire.u16(UInt16(r.y))
-                        + RFBWire.u16(UInt16(r.w)) + RFBWire.u16(UInt16(r.h))
+                    body += RFBWire.u16(UInt16(r.w)) + RFBWire.u16(UInt16(r.h))
                     if useZRLE, let z = RFBEncoding.zrleRect(frame, x: r.x, y: r.y, w: r.w, h: r.h, format: fmt, deflater: deflater) {
                         body += RFBWire.i32(RFBEncoding.zrle) + z
                     } else {
                         body += RFBWire.i32(RFBEncoding.raw)
-                            + RFBEncoding.rawRect(frame, x: r.x, y: r.y, w: r.w, h: r.h, format: fmt)
+                        body += RFBEncoding.rawRect(frame, x: r.x, y: r.y, w: r.w, h: r.h, format: fmt)
                     }
                     tracker.commit(r, frame: frame)
                 }
-                message = [0, 0] + RFBWire.u16(UInt16(rects.count)) + body
+                var m: [UInt8] = [0, 0]
+                m += RFBWire.u16(UInt16(rects.count))
+                m += body
+                message = m
             }
             guard let message else { continue }   // nothing changed yet: keep waiting
             stateLock.lock(); wantsUpdate = false; stateLock.unlock()

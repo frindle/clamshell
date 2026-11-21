@@ -47,9 +47,10 @@ struct RFBPixelFormat: Equatable {
 
     func value(red: UInt8, green: UInt8, blue: UInt8) -> UInt32 {
         func scale(_ v: UInt8, _ max: UInt16) -> UInt32 { (UInt32(v) * UInt32(max) + 127) / 255 }
-        return scale(red, redMax) << UInt32(redShift)
-            | scale(green, greenMax) << UInt32(greenShift)
-            | scale(blue, blueMax) << UInt32(blueShift)
+        var v: UInt32 = scale(red, redMax) << UInt32(redShift)
+        v |= scale(green, greenMax) << UInt32(greenShift)
+        v |= scale(blue, blueMax) << UInt32(blueShift)
+        return v
     }
 
     func append(_ value: UInt32, to out: inout [UInt8]) {
@@ -314,6 +315,10 @@ enum RFBWire {
     static func i32(_ v: Int32) -> [UInt8] { u32(UInt32(bitPattern: v)) }
     static func readU16(_ b: [UInt8], _ o: Int) -> UInt16 { UInt16(b[o]) << 8 | UInt16(b[o + 1]) }
     static func readU32(_ b: [UInt8], _ o: Int) -> UInt32 {
-        UInt32(b[o]) << 24 | UInt32(b[o + 1]) << 16 | UInt32(b[o + 2]) << 8 | UInt32(b[o + 3])
+        var v = UInt32(b[o]) << 24
+        v |= UInt32(b[o + 1]) << 16
+        v |= UInt32(b[o + 2]) << 8
+        v |= UInt32(b[o + 3])
+        return v
     }
 }

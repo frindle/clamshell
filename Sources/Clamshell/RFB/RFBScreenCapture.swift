@@ -18,7 +18,7 @@ final class RFBScreenCapture: NSObject, RFBFrameSource, SCStreamOutput, SCStream
     /// The display being captured, for input mapping.
     private(set) var displayID: CGDirectDisplayID = CGMainDisplayID()
 
-    func acquire() -> Bool {
+    func acquireFrames() -> Bool {
         lock.lock()
         holders += 1
         let needStart = stream == nil && !starting
@@ -32,11 +32,11 @@ final class RFBScreenCapture: NSObject, RFBFrameSource, SCStreamOutput, SCStream
             if ready { return true }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        release()
+        releaseFrames()
         return false
     }
 
-    func release() {
+    func releaseFrames() {
         lock.lock()
         holders = max(holders - 1, 0)
         let stop = holders == 0 ? stream : nil
@@ -151,7 +151,7 @@ final class RFBRuntime {
         guard server == nil else { return }
         let capture = self.capture
         let s = RFBServer(
-            options: .init(port: RedirectPolicy.backendPort),
+            options: .init(port: UInt16(RedirectPolicy.backendPort)),
             authenticator: OpenDirectoryAuthenticator(),
             source: capture,
             makeInput: { InjectorInputSink(displayID: capture.displayID) },
