@@ -1,0 +1,49 @@
+name: DeskCLI
+on:
+  push:
+    branches: [main]
+    paths: ['DeskCLI/**', 'DeskPlacer/**', 'DeskProtocol/**', '.github/workflows/desk-cli.yml']
+  pull_request:
+    paths: ['DeskCLI/**', 'DeskPlacer/**', 'DeskProtocol/**', '.github/workflows/desk-cli.yml']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The logic and the fakes need no Apple frameworks.
+  linux:
+    name: DeskCLI (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        working-directory: DeskCLI
+        run: swift test
+  # Same tests on the Apple toolchain, plus the real executable: it must build, and its read-only `mem` must
+  # work against the runner's own memory.
+  macos:
+    name: DeskCLI (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        working-directory: DeskCLI
+        run: swift test
+      - name: Build the executable
+        working-directory: DeskCLI
+        run: swift build -c release
+      - name: Run the read-only commands
+        working-directory: DeskCLI
+        run: |
+          .build/release/desk --help
+          .build/release/desk mem --mac ci-mac --rules /nonexistent | tee "$RUNNER_TEMP/mem.txt"
+          grep -q 'memory pressure:' "$RUNNER_TEMP/mem.txt"
+          grep -q 'swap used:' "$RUNNER_TEMP/mem.txt"
+          # A move to a Mac that has not reported is refused, and nothing is quit.
+          set +e
+          .build/release/desk move com.apple.Terminal ci-other --mac ci-mac --rules /nonexistent --yes
+          test $? -eq 3
+          .build/release/desk move com.apple.finder ci-other --mac ci-mac --rules /nonexistent
+          test $? -eq 3
