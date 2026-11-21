@@ -31,7 +31,7 @@ public enum RulesFile {
         var lineNo = 0
         var seenKeys = Set<String>()
         var seenTables = Set<String>()
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        for rawLine in text.split(omittingEmptySubsequences: false, whereSeparator: { $0.isNewline }) {
             lineNo += 1
             let line = trim(stripComment(String(rawLine)))
             if line.isEmpty { continue }

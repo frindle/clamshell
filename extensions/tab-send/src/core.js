@@ -31,7 +31,10 @@
     let h;
     try { h = new URL(u).hostname.toLowerCase(); } catch (e) { return true; }
     if (h.charAt(0) === '[') return true;
-    if (h === 'localhost' || /\.(localhost|local|lan|internal|home|corp|intranet|private|localdomain|home\.arpa)$/.test(h)) return true;
+    // A trailing dot is the same name ("localhost." and "router." resolve exactly like the dotless forms).
+    h = h.replace(/\.+$/, '');
+    if (h === '') return true;
+    if (h === 'localhost' || /\.(localhost|local|lan|internal|home|corp|intranet|private|localdomain|home\.arpa|box)$/.test(h)) return true;
     if (h.indexOf('.') === -1) return true; // single-label names resolve on the local network (a router called "router")
     const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(h);
     if (m) {

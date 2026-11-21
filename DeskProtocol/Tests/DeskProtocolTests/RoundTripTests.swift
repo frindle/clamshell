@@ -175,6 +175,46 @@ final class CollisionTests: XCTestCase {
 
 // MARK: file names
 
+/// The v1 receiver's clean-up (`FileTransferCore.storedName` in the root package), copied here without the "last
+/// slash" step so the test can ask: does v1 change this name? Keep it in step with that function.
+private func v1StoredName(_ offered: String) -> String {
+    let lookAlike: Set<UInt32> = [0xFF0E, 0xFE52, 0xFF61, 0x3002, 0x2024, 0x2215, 0x2044, 0xFF0F, 0x29F8, 0x2571, 0x2216, 0xFF3C, 0xFE68, 0x29F5]
+    var scalars = Array(offered.unicodeScalars)
+    scalars.removeAll { u in
+        switch u.value {
+        case 0x00...0x1F, 0x7F...0x9F, 0x3A, 0x2028, 0x2029, 0x3164: return true
+        default: return u.properties.generalCategory == .format
+        }
+    }
+    scalars = scalars.map { lookAlike.contains($0.value) ? "_" : $0 }
+    func isBlank(_ u: Unicode.Scalar) -> Bool { u == " " || u.properties.isWhitespace || u.properties.generalCategory == .spaceSeparator }
+    while let first = scalars.first, first == "." || isBlank(first) { scalars.removeFirst() }
+    while let last = scalars.last, last == "." || isBlank(last) { scalars.removeLast() }
+    if scalars.isEmpty { return "file" }
+    var s = String.UnicodeScalarView(); s.append(contentsOf: scalars)
+    return String(s)
+}
+
+final class FileNameV1CrossCheckTests: XCTestCase {
+    /// Every name `isSafe` accepts must come out of the v1 clean-up unchanged, so the spec sentence "the v1 receiver
+    /// sanitising has nothing to change" is true. Sweeps every Unicode scalar in the middle, at the start and at the end.
+    func testEveryAcceptedNameSurvivesTheV1CleanUpUnchanged() {
+        for v in UInt32(0)...0x10FFFF {
+            guard let u = Unicode.Scalar(v) else { continue }
+            for name in ["a\(u)b", "\(u)b", "a\(u)"] where FileName.isSafe(name) {
+                XCTAssertEqual(v1StoredName(name), name, "U+\(String(v, radix: 16)) in \(name.debugDescription)")
+            }
+        }
+    }
+
+    func testNamesThatV1WouldChangeAreRefused() {
+        for bad in ["a\u{E0041}b", "a\u{2571}b", "a\u{2216}b", "a\u{FF3C}b", "a\u{FE68}b", "a\u{29F5}b",
+                    "\u{00A0}name", "name\u{00A0}", "\u{3000}name", "name\u{3000}", "a\u{2029}b"] {
+            XCTAssertFalse(FileName.isSafe(bad), bad.debugDescription)
+        }
+    }
+}
+
 final class FileNameTests: XCTestCase {
     func testRule() {
         for ok in ["a", "report.pdf", "photo \u{00E9}.jpg", "a..b", "COM", "COM10", "console.txt", "\u{65E5}\u{672C}\u{8A9E}.txt", String(repeating: "n", count: 255)] { XCTAssertTrue(FileName.isSafe(ok), ok) }
@@ -282,7 +322,9 @@ final class HostileInputTests: XCTestCase {
 
     func testBadEnumValuesRejectedOrDegraded() throws {
         var w = ByteWriter(); w.u32(1); w.u8(42)
-        XCTAssertThrowsError(try DeskMessage.decode(type: DeskType.cursorShape.rawValue, payload: w.bytes))
+        // Unknown cursor shape degrades to the arrow (the session stays open), like an unknown window kind below.
+        guard case .cursorShape(let wid, let shape, _, _, let png) = try DeskMessage.decode(type: DeskType.cursorShape.rawValue, payload: w.bytes) else { return XCTFail() }
+        XCTAssertEqual(wid, 1); XCTAssertEqual(shape, .arrow); XCTAssertTrue(png.isEmpty)
         // Unknown window kind degrades to .other rather than failing.
         var a = ByteWriter(); a.u32(1); a.u32(1); a.u8(77); a.u32(0); try! a.str16("t")
         for _ in 0..<5 { a.f32(1) }

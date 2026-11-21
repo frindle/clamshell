@@ -310,7 +310,8 @@ extension DeskMessage {
         case .menuInvoke: return .menuInvoke(appId: try r.u32(), generation: try r.u32(), itemId: try r.u32())
         case .cursorShape:
             let id = try r.u32(), raw = try r.u8()
-            guard let shape = CursorShape(rawValue: raw) else { throw DecodeError.badValue("cursor shape \(raw)") }
+            // A shape this version does not know is drawn as the arrow, like an unknown WindowKind is `other`; the connection stays open.
+            let shape = CursorShape(rawValue: raw) ?? .arrow
             if shape == .custom {
                 let hx = try r.u16(), hy = try r.u16()
                 guard r.remaining <= Limits.maxCursorPNG else { throw DecodeError.badValue("cursor image too large") }
