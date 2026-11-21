@@ -1,0 +1,35 @@
+name: DeskClient
+on:
+  push:
+    branches: [main]
+    paths: ['DeskClient/**', 'DeskProtocol/**', '.github/workflows/desk-client.yml']
+  pull_request:
+    paths: ['DeskClient/**', 'DeskProtocol/**', '.github/workflows/desk-client.yml']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The core has no Apple frameworks: it builds and tests on Linux.
+  linux:
+    name: DeskClient (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test
+        working-directory: DeskClient
+        run: swift test
+  # The same tests on the Apple toolchain, plus the macOS-only target (compile check).
+  macos:
+    name: DeskClient (macOS)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build all targets
+        working-directory: DeskClient
+        run: swift build
+      - name: Test
+        working-directory: DeskClient
+        run: swift test
