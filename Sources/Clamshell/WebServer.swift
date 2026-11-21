@@ -942,7 +942,6 @@ final class WebServer {
                 if let error { clog("stream bridge: browserWS.receiveMessage error: \(error)") }
                 guard error == nil else { close(); return }
                 if let data, !data.isEmpty {
-                    clog("stream bridge: browser->inner \(data.count) bytes")
                     inner.send(.data(data)) { sendErr in
                         if let sendErr { clog("stream bridge: inner.send error: \(sendErr)") }
                         if sendErr != nil { close() } else { pumpBrowserToInner(inner) }
@@ -960,7 +959,6 @@ final class WebServer {
                     close()
                 case .success(let message):
                     guard case .data(let data) = message, !data.isEmpty else { pumpInnerToBrowser(inner); return }
-                    clog("stream bridge: inner->browser \(data.count) bytes")
                     let meta = NWProtocolWebSocket.Metadata(opcode: .binary)
                     let ctx = NWConnection.ContentContext(identifier: "toBrowser", metadata: [meta])
                     browserWS.send(content: data, contentContext: ctx, completion: .contentProcessed { sendErr in
