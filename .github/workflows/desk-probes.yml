@@ -43,7 +43,7 @@ jobs:
           grep -q ' end: notifications=' ~/Library/Logs/NotifProbe/probe.log
       - name: Package
         run: cd "$RUNNER_TEMP/e7" && ditto -c -k --keepParent NotifProbe.app NotifProbe.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: NotifProbe
           path: ${{ runner.temp }}/e7/NotifProbe.zip
