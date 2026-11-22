@@ -42,7 +42,7 @@ jobs:
             echo "Not allowed to announce as the runner user; running the discovery selftest as root."
             sudo .build/debug/Clamshell discovery-selftest
           }
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '20'
       # Web client tests and syntax check, login-window script and plist
@@ -52,7 +52,7 @@ jobs:
       # The interop check needs a global WebSocket, which Node 20 does not have
       # without a flag. It runs the web client's auth.js against the real host
       # (`Clamshell auth-interop-host`, loopback only, temporary state directory).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
       - name: Web client auth against the real host
