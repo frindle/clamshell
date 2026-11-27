@@ -412,8 +412,10 @@ final class WebServer {
                 peer = "\(host)".split(separator: "%").first.map(String.init) ?? ""
             }
             let client = ClientAddress.resolve(peer: peer, headers: headers, trusted: HostAuth.storedTrustedProxies())
+            let publicOrigin = PhoneApprovalConfig.origin(
+                UserDefaults.standard.string(forKey: PhoneApprovalConfig.baseURLKey) ?? "")
             let reply = PhoneApproval.shared.handle(method: String(parts[0]), path: path, headers: headers,
-                                                    body: body, client: client)
+                                                    body: body, client: client, allowedOrigin: publicOrigin)
             send(conn, status: reply.status, contentType: "text/html; charset=utf-8", body: reply.body,
                  extraHeaders: reply.headers)
             return

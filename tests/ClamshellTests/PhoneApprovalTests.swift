@@ -171,6 +171,27 @@ final class PhoneApprovalTests: XCTestCase {
         XCTAssertEqual(post(t, headers: same).status, "200 OK")
     }
 
+    func testPostFromTheConfiguredOriginWorksBehindAProxyThatRewritesHost() {
+        let device = waitingDevice()
+        let t = link(for: device)
+        let proxied = [(name: "Content-Type", value: "application/x-www-form-urlencoded"),
+                       (name: "Host", value: "localhost:5901"),
+                       (name: "Origin", value: "https://clamshell.example.invalid"),
+                       (name: "Sec-Fetch-Site", value: "same-origin")]
+        // Without the configured origin the Host mismatch is refused.
+        XCTAssertEqual(service.handle(method: "POST", path: "/approve/" + t, headers: proxied,
+                                      body: Data("decision=approve".utf8), client: "198.51.100.1").status, "404 Not Found")
+        // A different configured origin does not help.
+        XCTAssertEqual(service.handle(method: "POST", path: "/approve/" + t, headers: proxied,
+                                      body: Data("decision=approve".utf8), client: "198.51.100.1",
+                                      allowedOrigin: "https://other.example.invalid").status, "404 Not Found")
+        XCTAssertEqual(store.state(of: device.id), .waiting)
+        XCTAssertEqual(service.handle(method: "POST", path: "/approve/" + t, headers: proxied,
+                                      body: Data("decision=approve".utf8), client: "198.51.100.1",
+                                      allowedOrigin: "https://clamshell.example.invalid").status, "200 OK")
+        XCTAssertEqual(store.state(of: device.id), .trusted)
+    }
+
     func testLinkIsBoundToItsDevice() {
         let a = waitingDevice(name: "A"), b = waitingDevice(name: "B")
         _ = post(link(for: a))

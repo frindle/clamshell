@@ -741,7 +741,8 @@ type, "Compare with the fingerprint the device shows", and Approve and Deny
 buttons. It never decides anything. The buttons POST
 `decision=approve|deny` (form-encoded) to the same path; the POST is refused
 unless it is a form post whose `Origin` and `Sec-Fetch-Site`, when present,
-say same-origin. Pages carry `Cache-Control: no-store` and
+say same-origin (an `Origin` equal to the configured base URL counts, since a
+tunnel may pass the host its own `Host` header). Pages carry `Cache-Control: no-store` and
 `Referrer-Policy: no-referrer`. A wrong, used, expired or voided token, a
 refused POST and a client that has failed 10 times in 10 minutes all get the
 same `404` page. The decision is applied with the store's own decide path,

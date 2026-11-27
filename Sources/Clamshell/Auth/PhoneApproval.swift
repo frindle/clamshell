@@ -208,8 +208,10 @@ final class PhoneApprovalService {
     /// `path` is the request path without its query. GET shows the device and
     /// decides nothing; POST with `decision=approve` or `deny` decides.
     /// Anything wrong with the token gets the same page.
+    /// `allowedOrigin` is the configured base URL: a tunnel or proxy may hand
+    /// the host its own Host header, so the page's public origin counts too.
     func handle(method: String, path: String, headers: [(name: String, value: String)],
-                body: Data, client: String) -> PhoneApprovalReply {
+                body: Data, client: String, allowedOrigin: String? = nil) -> PhoneApprovalReply {
         guard path.hasPrefix(Self.pathPrefix), !limiter.isBlocked(client) else { return Self.generic }
         let token = String(path.dropFirst(Self.pathPrefix.count))
         guard let deviceId = tokens.peek(token),
@@ -222,7 +224,7 @@ final class PhoneApprovalService {
         case "GET":
             return Self.reply(Self.askPage(device, token: token))
         case "POST":
-            guard Self.isSameOriginForm(headers), body.count <= 1024,
+            guard Self.isSameOriginForm(headers, allowedOrigin: allowedOrigin), body.count <= 1024,
                   let decision = Self.decision(in: body) else { return Self.generic }
             guard tokens.consume(token) == deviceId,
                   store.decide(id: deviceId, decision, by: DeviceTrustStore.decidedFromPhone,
@@ -243,13 +245,15 @@ final class PhoneApprovalService {
 
     /// A form post from this page and no other site: a form content type, and
     /// an Origin and Sec-Fetch-Site that, when the browser sends them, say so.
-    static func isSameOriginForm(_ headers: [(name: String, value: String)]) -> Bool {
+    /// The Origin may match the Host header or `allowedOrigin` (exactly).
+    static func isSameOriginForm(_ headers: [(name: String, value: String)], allowedOrigin: String? = nil) -> Bool {
         guard let type = header("content-type", in: headers)?.lowercased(),
               type.hasPrefix("application/x-www-form-urlencoded") else { return false }
         if let site = header("sec-fetch-site", in: headers)?.lowercased(), site != "same-origin", site != "none" {
             return false
         }
         if let origin = header("origin", in: headers) {
+            if let allowed = allowedOrigin, !allowed.isEmpty, origin.lowercased() == allowed.lowercased() { return true }
             guard let host = header("host", in: headers), let c = URLComponents(string: origin),
                   let originHost = c.host else { return false }
             let named = c.port.map { "\(originHost):\($0)" } ?? originHost
