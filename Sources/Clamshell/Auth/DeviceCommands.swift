@@ -141,6 +141,7 @@ enum DeviceCommands {
         switch by {
         case DeviceTrustStore.decidedOnHost: return ", \(verb) on this Mac"
         case DeviceTrustStore.decidedOnCommandLine: return ", \(verb) from the command line"
+        case DeviceTrustStore.decidedFromPhone: return ", \(verb) from a phone"
         default: return ", \(verb) from device \(DeviceIdentity.fingerprint(ofId: by))"
         }
     }

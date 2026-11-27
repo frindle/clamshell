@@ -620,6 +620,12 @@ form.
 
 ### Unreleased
 
+- **Approve new devices from a phone.** With "Approve New Devices from a
+  Phone (Pushover)" on in the Devices menu, each newly waiting device sends one
+  Pushover notification with a one-time link (10 minutes, one device). The
+  page shows the fingerprint to compare and decides only when Approve or Deny
+  is pressed. Set up: two Keychain items and an https base URL (PROTOCOL.md,
+  "Approval from a phone").
 - **Clamshell replaces Apple Screen Sharing for remote access.** The Screen
   Sharing switch in System Settings (General > Sharing) is the one control: on,
   Clamshell serves; off, it refuses new sessions (clients are told remote

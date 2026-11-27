@@ -654,10 +654,10 @@ therefore cannot use it.
 
 ### Approving a device
 
-A waiting device is approved or denied in one of three ways: on the host's own
+A waiting device is approved or denied in one of four ways: on the host's own
 screen, on the host's command line (`clamshell approve <id or fingerprint>`,
-usable over SSH), or from a connected trusted device with the two messages
-below. Revoking a trusted device makes it `denied` and closes its live
+usable over SSH), from a connected trusted device with the two messages
+below, or from the owner's phone (see "Approval from a phone"). Revoking a trusted device makes it `denied` and closes its live
 connections; forgetting a device removes it, so it may ask again.
 
 A device that is denied can be approved after all in two places only: the
@@ -705,6 +705,49 @@ window away for 12 hours. A device the user picks in the host's menu is shown
 at once, and its answer changes neither n nor the quiet time. While the window
 stays away, waiting devices stay in the Devices menu and the menu-bar icon shows
 that devices are waiting.
+
+### Approval from a phone
+
+Off unless set up. When a new device starts waiting, the Mac sends one Pushover
+notification to the owner: the device name, where it came from (worded as the
+Devices list words it) and its fingerprint, with a link
+`<base URL>/approve/<token>` as the notification's URL. The notification asks
+Pushover to drop it after 10 minutes.
+
+Settings (`defaults`, domain `com.frindle.clamshell`; the host's Devices menu
+has the switch):
+
+- `phoneApprovalEnabled` (bool): the switch "Approve New Devices from a Phone
+  (Pushover)".
+- `phoneApprovalBaseURL` (string): the public `https://host[:port]` the web
+  server is reachable at, with no path. Nothing is built in.
+- `phoneApprovalKeychainService` (string, optional): the Keychain service name,
+  `clamshell-phone-approval` if unset. Two generic-password items under it hold
+  the secrets, never the preferences, the log or the diagnostics: account
+  `pushover-app-token` (the Pushover application token) and account
+  `pushover-user-key` (the owner's user key).
+
+  `security add-generic-password -s clamshell-phone-approval -a pushover-app-token -w`
+
+If any setting or item is missing, nothing is sent.
+
+The token is 32 bytes from `SecRandomCopyBytes` (64 hex digits), bound to one
+device id, good for one decision and for 10 minutes, and void as soon as that
+device is decided any other way. Only its SHA-256 is held, in memory, compared
+in constant time; a restart voids every token.
+
+`GET /approve/<token>` shows the device name, address and fingerprint in large
+type, "Compare with the fingerprint the device shows", and Approve and Deny
+buttons. It never decides anything. The buttons POST
+`decision=approve|deny` (form-encoded) to the same path; the POST is refused
+unless it is a form post whose `Origin` and `Sec-Fetch-Site`, when present,
+say same-origin (an `Origin` equal to the configured base URL counts, since a
+tunnel may pass the host its own `Host` header). Pages carry `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`. A wrong, used, expired or voided token, a
+refused POST and a client that has failed 10 times in 10 minutes all get the
+same `404` page. The decision is applied with the store's own decide path,
+recorded as decided by `phone`; the Devices list, the notification and the
+approval window say "from a phone", as they say "from the command line".
 
 ### The Windows host
 

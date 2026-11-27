@@ -371,6 +371,15 @@ final class WebServer {
         return 0
     }
 
+    /// The header lines of a request head as (name, value) pairs.
+    static func headerFields(in head: String) -> [(name: String, value: String)] {
+        head.split(separator: "\r\n").dropFirst().compactMap { line in
+            guard let colon = line.firstIndex(of: ":") else { return nil }
+            return (String(line[..<colon]).trimmingCharacters(in: .whitespaces),
+                    line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces))
+        }
+    }
+
     private func respond(_ conn: NWConnection, requestHead: String, body: Data) {
         let requestLine = requestHead.split(separator: "\r\n").first.map(String.init) ?? ""
         let parts = requestLine.split(separator: " ")
@@ -391,6 +400,24 @@ final class WebServer {
                 return
             }
             handleClipboard(conn, method: String(parts[0]), body: body)
+            return
+        }
+
+        // Phone approval: the one-time link from the push notification. GET shows
+        // a page and decides nothing; the decision is a POST (PROTOCOL.md).
+        if path.hasPrefix(PhoneApprovalService.pathPrefix) {
+            let headers = Self.headerFields(in: requestHead)
+            var peer = ""
+            if case .hostPort(let host, _)? = conn.currentPath?.remoteEndpoint {
+                peer = "\(host)".split(separator: "%").first.map(String.init) ?? ""
+            }
+            let client = ClientAddress.resolve(peer: peer, headers: headers, trusted: HostAuth.storedTrustedProxies())
+            let publicOrigin = PhoneApprovalConfig.origin(
+                UserDefaults.standard.string(forKey: PhoneApprovalConfig.baseURLKey) ?? "")
+            let reply = PhoneApproval.shared.handle(method: String(parts[0]), path: path, headers: headers,
+                                                    body: body, client: client, allowedOrigin: publicOrigin)
+            send(conn, status: reply.status, contentType: "text/html; charset=utf-8", body: reply.body,
+                 extraHeaders: reply.headers)
             return
         }
 
@@ -483,7 +510,8 @@ final class WebServer {
         head += "Content-Type: \(contentType)\r\n"
         for h in extraHeaders { head += "\(h)\r\n" }
         head += "Content-Length: \(body.count)\r\n"
-        head += "Cache-Control: no-cache\r\nConnection: close\r\n\r\n"
+        if !extraHeaders.contains(where: { $0.lowercased().hasPrefix("cache-control:") }) { head += "Cache-Control: no-cache\r\n" }
+        head += "Connection: close\r\n\r\n"
         var payload = Data(head.utf8)
         payload.append(body)
         conn.send(content: payload, completion: .contentProcessed { _ in conn.cancel() })

@@ -135,7 +135,42 @@ final class DevicesController: NSObject {
         updatePanel(picked: picked)
         announce(news)
         announceWaiting()
+        pushToPhone()
         onChange?()
+    }
+
+    // MARK: phone approval
+
+    /// Waiting devices already pushed to the phone, so each gets one.
+    private var pushed: Set<String> = []
+    private let pushQueue = DispatchQueue(label: "clamshell.phone-approval", qos: .utility)
+
+    /// One push for each device that began waiting in the last 10 minutes,
+    /// when phone approval is on and set up. A device decided any other way
+    /// loses its link.
+    private func pushToPhone() {
+        let waiting = ApprovalPrompts.waiting(records)
+        pushed.formIntersection(waiting.map(\.id))
+        PhoneApproval.shared.reconcile()
+        guard PhoneApprovalConfig.isEnabled() else { return }
+        let now = Date().timeIntervalSince1970
+        let fresh = waiting.filter { !pushed.contains($0.id) && now - $0.firstSeen < PhoneApprovalTokens.lifetime }
+        guard !fresh.isEmpty else { return }
+        pushed.formUnion(fresh.map(\.id))
+        pushQueue.async {
+            guard let config = PhoneApprovalConfig.load() else {
+                clog("DEVICES: phone approval is on but not set up (base URL or Keychain items missing)")
+                return
+            }
+            for device in fresh {
+                PhoneApproval.shared.notify(device, config: config, transport: URLSessionPushoverTransport())
+            }
+        }
+    }
+
+    @objc private func togglePhoneApproval() {
+        UserDefaults.standard.set(!PhoneApprovalConfig.isEnabled(), forKey: PhoneApprovalConfig.enabledKey)
+        refresh()
     }
 
     /// For the timers: the list has no event for a waiting device whose time
@@ -345,6 +380,13 @@ final class DevicesController: NSObject {
         let toggle = item("Ask Before a New Device Can Connect", #selector(toggleApproval))
         toggle.state = auth.requireApproval ? .on : .off
         menu.addItem(toggle)
+        let phone = item("Approve New Devices from a Phone (Pushover)", #selector(togglePhoneApproval))
+        phone.state = PhoneApprovalConfig.isEnabled() ? .on : .off
+        menu.addItem(phone)
+        if PhoneApprovalConfig.isEnabled(), PhoneApprovalConfig.origin(
+            UserDefaults.standard.string(forKey: PhoneApprovalConfig.baseURLKey) ?? "") == nil {
+            menu.addItem(note("Phone approval needs an https base URL (see PROTOCOL.md)"))
+        }
         let unapproved = auth.unapprovedSessions()
         if unapproved > 0 {
             menu.addItem(note("\(Self.sessions(unapproved)) connected without approval"))
