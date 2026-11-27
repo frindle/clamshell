@@ -219,7 +219,7 @@ final class PhoneApprovalTests: XCTestCase {
         XCTAssertEqual(get(t, client: "198.51.100.9").status, "404 Not Found")
         XCTAssertEqual(get(t, client: "198.51.100.10").status, "200 OK")
         clock.addTimeInterval(PhoneApprovalLimiter.window)
-        XCTAssertEqual(get(t, client: "198.51.100.9").status, "200 OK")
+        XCTAssertEqual(get(link(for: device), client: "198.51.100.9").status, "200 OK")
     }
 
     // MARK: host-side wording
