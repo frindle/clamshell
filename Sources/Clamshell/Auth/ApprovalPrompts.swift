@@ -241,13 +241,14 @@ struct ApprovalPrompts {
 
     // MARK: wording shared by the window, the menu and notifications
 
-    /// "on this Mac", "from the command line" or "from “iPad” AB12-…". Empty
+    /// "on this Mac", "from the command line", "from a phone" or "from “iPad” AB12-…". Empty
     /// when nothing is recorded.
     static func source(of by: String?, among records: [DeviceRecord]) -> String {
         switch by {
         case nil: return ""
         case DeviceTrustStore.decidedOnHost?: return "on this Mac"
         case DeviceTrustStore.decidedOnCommandLine?: return "from the command line"
+        case DeviceTrustStore.decidedFromPhone?: return "from a phone"
         case let id?:
             let fingerprint = DeviceIdentity.fingerprint(ofId: id)
             if let relay = records.first(where: { $0.id == id }) {

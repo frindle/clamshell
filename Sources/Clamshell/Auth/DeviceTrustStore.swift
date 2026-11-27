@@ -129,6 +129,8 @@ final class DeviceTrustStore {
     static let didChange = Notification.Name("com.frindle.clamshell.devices.didChange")
     static let decidedOnHost = "host"
     static let decidedOnCommandLine = "cli"
+    /// Approved or denied from the one-time link sent to the owner's phone.
+    static let decidedFromPhone = "phone"
 
     enum Answer: Equatable {
         case trusted
@@ -657,7 +659,7 @@ final class DeviceTrustStore {
             r.name = Self.storedName(r.name)
             r.address = AuthWire.cleanName(r.address)
             r.reportedAddress = storedReported(r.reportedAddress)
-            if let by = r.decidedBy, by != decidedOnHost, by != decidedOnCommandLine,
+            if let by = r.decidedBy, by != decidedOnHost, by != decidedOnCommandLine, by != decidedFromPhone,
                !DeviceIdentity.isWellFormedId(by) {
                 r.decidedBy = nil
             }
