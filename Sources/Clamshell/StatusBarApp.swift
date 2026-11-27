@@ -115,6 +115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             if state == .idle {
                 self.externallyCollapsed = false
                 self.streamCollapsed = false
+                self.coordinator.comfort.holdDisplayAwake = true
                 self.coordinator.resizable = false
                 self.restoreSavedPreset() // undo any client-dimension/dual override
             }
@@ -1031,6 +1032,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         coordinator.dualMode = dual
         externallyCollapsed = true
         if fromStream { streamCollapsed = true }
+        // No stream-liveness signal here, so don't hold the display awake.
+        coordinator.comfort.holdDisplayAwake = false
         coordinator.collapse()
     }
 
