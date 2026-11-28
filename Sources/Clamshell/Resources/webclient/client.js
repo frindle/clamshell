@@ -653,7 +653,8 @@ function fallBackToH264(reason) {
 
 let decoder = null;
 let videoW = 0, videoH = 0;
-let kbps = 0;
+let kbps = 0; // the encoder's current ceiling (STREAM_STATUS), not what is sent
+let videoBytes = 0; // video payload received since the last stats tick
 let framesDrawn = 0;
 let waitingForKey = false;
 
@@ -701,6 +702,7 @@ async function handle(type, payload) {
       break;
     }
     case T.VIDEO_FRAME:
+      videoBytes += payload.length;
       onVideoFrame(payload);
       break;
     case T.AUDIO_FRAME:
@@ -1307,10 +1309,14 @@ if (isPrimary && audioSupported()) {
 
 setInterval(() => {
   const fps = framesDrawn; framesDrawn = 0;
+  const sent = videoBytes; videoBytes = 0;
   const open = ws && ws.readyState === WebSocket.OPEN;
   if (!open) { statsEl.textContent = 'Not connected'; qualityDot.style.background = '#c0392b'; return; }
   if (!kbps) qualityDot.style.background = '#666';
-  const rate = kbps ? ` · ${(kbps / 1000).toFixed(1)} Mbps` : '';
+  // What the video actually used this second. The encoder only spends up to
+  // its ceiling when the picture changes a lot; a still screen costs little.
+  const cap = kbps ? ` (cap ${Math.round(kbps / 1000)})` : '';
+  const rate = ` · ${(sent * 8 / 1e6).toFixed(1)} Mbps${cap}`;
   statsEl.textContent = videoW ? `${videoW}×${videoH} · ${fps} fps${rate}` : 'Connected';
   qualityDot.title = statsEl.textContent;
 }, 1000);

@@ -14,8 +14,8 @@ namespace Clamshell;
 // primary shortcut modifier on a Mac), Alt -> Option, Shift -> Shift. Left
 // and right variants collapse to the same mac code.
 //
-// ponytail: standard US-layout key set only, same scope as the host's table.
-// Exotic/keypad keys not listed fall through unmapped (silently ignored);
+// ponytail: standard US-layout key set plus the keypad, same scope as the host's table.
+// Exotic keys not listed fall through unmapped (silently ignored);
 // add rows if a user hits one.
 internal static class MacKeyMap
 {
@@ -47,6 +47,12 @@ internal static class MacKeyMap
         // Function keys (Win VK_F1=0x70..VK_F12=0x7B)
         [0x70]=122, [0x71]=120, [0x72]=99, [0x73]=118, [0x74]=96, [0x75]=97,
         [0x76]=98, [0x77]=100, [0x78]=101, [0x79]=109, [0x7A]=103, [0x7B]=111,
+        // Numeric keypad with Num Lock on (VK_NUMPAD0..9, * + - . /). With it
+        // off Windows reports the navigation keys above instead. Keypad Enter
+        // arrives as VK_RETURN and is sent as Return.
+        [0x60]=82, [0x61]=83, [0x62]=84, [0x63]=85, [0x64]=86, [0x65]=87,
+        [0x66]=88, [0x67]=89, [0x68]=91, [0x69]=92,
+        [0x6A]=67, [0x6B]=69, [0x6D]=78, [0x6E]=65, [0x6F]=75,
     };
 
     /// <summary>Maps a Win32 virtual key to a macOS virtual key code, or null

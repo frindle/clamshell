@@ -213,3 +213,21 @@ test('capability bit positions match PROTOCOL.md', () => {
     deviceApproval: 16, fileTransfer: 32, peripherals: 64, restart: 128, loginCredentials: 256,
   });
 });
+
+import { codeToMacVK } from '../Sources/Clamshell/Resources/webclient/keymap.js';
+
+test('browser keypad keys match the iOS KeyMap.swift keypad table', () => {
+  // HID usage -> KeyboardEvent.code for the keypad block (USB HID usage table 0x07).
+  const hidToCode = {
+    0x53: 'NumLock', 0x54: 'NumpadDivide', 0x55: 'NumpadMultiply', 0x56: 'NumpadSubtract',
+    0x57: 'NumpadAdd', 0x58: 'NumpadEnter', 0x59: 'Numpad1', 0x5A: 'Numpad2', 0x5B: 'Numpad3',
+    0x5C: 'Numpad4', 0x5D: 'Numpad5', 0x5E: 'Numpad6', 0x5F: 'Numpad7', 0x60: 'Numpad8',
+    0x61: 'Numpad9', 0x62: 'Numpad0', 0x63: 'NumpadDecimal', 0x67: 'NumpadEqual',
+  };
+  const swift = readFileSync(new URL('../ClamshellViewer/Sources/KeyMap.swift', import.meta.url), 'utf8');
+  const ios = {};
+  for (const [, hid, vk] of swift.matchAll(/0x([0-9A-F]{2}):\s*(\d+)/g)) ios[parseInt(hid, 16)] = Number(vk);
+  for (const [hid, code] of Object.entries(hidToCode)) {
+    assert.strictEqual(codeToMacVK[code], ios[hid], `${code} (HID 0x${Number(hid).toString(16)})`);
+  }
+});

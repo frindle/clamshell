@@ -28,4 +28,11 @@ export const codeToMacVK = {
   // Modifiers
   ControlLeft: 59, ShiftLeft: 56, AltLeft: 58, MetaLeft: 55,
   ControlRight: 62, ShiftRight: 60, AltRight: 61, MetaRight: 54,
+  // Numeric keypad. KeyboardEvent.code names the physical key whatever the
+  // local Num Lock state, and a Mac keypad always types digits, so Numpad1 is
+  // always kVK_ANSI_Keypad1. NumLock sits where a Mac keypad has Clear.
+  NumLock: 71, NumpadDivide: 75, NumpadMultiply: 67, NumpadSubtract: 78,
+  NumpadAdd: 69, NumpadEnter: 76, NumpadDecimal: 65, NumpadEqual: 81,
+  Numpad1: 83, Numpad2: 84, Numpad3: 85, Numpad4: 86, Numpad5: 87,
+  Numpad6: 88, Numpad7: 89, Numpad8: 91, Numpad9: 92, Numpad0: 82,
 };
