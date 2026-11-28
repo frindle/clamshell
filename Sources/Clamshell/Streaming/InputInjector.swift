@@ -148,6 +148,9 @@ final class InputInjector {
 
     // MARK: - CGEvent layer
 
+    /// kVK_ANSI_Keypad* codes: . * + Clear / Enter - = 0-9.
+    static let keypadCodes: Set<UInt16> = [65, 67, 69, 71, 75, 76, 78, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92]
+
     private static func post(_ event: InputEvent) {
         switch event {
         case let .mouse(action, button, point, clickCount, delta):
@@ -180,7 +183,10 @@ final class InputInjector {
                     wheel1: dy, wheel2: dx, wheel3: 0)?.post(tap: .cghidEventTap)
         case let .key(code, down, flags):
             guard let ev = CGEvent(keyboardEventSource: nil, virtualKey: CGKeyCode(code), keyDown: down) else { return }
-            ev.flags = CGEventFlags(rawValue: flags)
+            var f = CGEventFlags(rawValue: flags)
+            // A real keypad press carries the numeric-pad flag; some apps check it.
+            if InputInjector.keypadCodes.contains(code) { f.insert(.maskNumericPad) }
+            ev.flags = f
             ev.post(tap: .cghidEventTap)
         case let .text(chunk):
             let units = Array(chunk.utf16)

@@ -8,7 +8,7 @@ namespace Clamshell;
 // equivalent is Ctrl, so BOTH mac Command and mac Control map to VK_CONTROL
 // (Cmd+C -> Ctrl+C "just works"). Option -> Alt, Shift -> Shift.
 //
-// ponytail: covers the standard US-layout key set. Exotic/keypad keys not in
+// ponytail: covers the standard US-layout key set plus the keypad. Exotic keys not in
 // the table fall through unmapped (logged once); add rows if a user hits one.
 internal static class MacKeyMap
 {
@@ -47,6 +47,11 @@ internal static class MacKeyMap
         // Function keys F1..F12 (Win VK_F1=0x70..VK_F12=0x7B)
         [122]=0x70, [120]=0x71, [99]=0x72, [118]=0x73, [96]=0x74, [97]=0x75,
         [98]=0x76, [100]=0x77, [101]=0x78, [109]=0x79, [103]=0x7A, [111]=0x7B,
+        // Numeric keypad (mac kVK_ANSI_Keypad* -> VK_NUMPAD0..9, * + - . /).
+        // Keypad Enter -> Return. Clear and = have no Windows keypad key.
+        [82]=0x60, [83]=0x61, [84]=0x62, [85]=0x63, [86]=0x64, [87]=0x65,
+        [88]=0x66, [89]=0x67, [91]=0x68, [92]=0x69,
+        [67]=0x6A, [69]=0x6B, [78]=0x6D, [65]=0x6E, [75]=0x6F, [76]=VK_RETURN,
     };
 
     /// <summary>Maps a macOS virtual key code to a Win32 VK, or null if unmapped.</summary>
